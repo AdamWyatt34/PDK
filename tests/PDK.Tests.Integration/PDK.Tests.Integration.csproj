@@ -27,4 +27,8 @@
     <ProjectReference Include="..\..\src\PDK.CLI\PDK.CLI.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="Fixtures\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

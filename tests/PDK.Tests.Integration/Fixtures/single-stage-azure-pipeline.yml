@@ -1,0 +1,45 @@
+name: Single-Stage Pipeline
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  buildConfiguration: 'Release'
+
+jobs:
+  - job: BuildJob
+    displayName: 'Build Application'
+    steps:
+      - task: DotNetCoreCLI@2
+        displayName: 'Restore packages'
+        inputs:
+          command: 'restore'
+
+      - task: DotNetCoreCLI@2
+        displayName: 'Build solution'
+        inputs:
+          command: 'build'
+          arguments: '--configuration $(buildConfiguration)'
+
+  - job: TestJob
+    displayName: 'Test Application'
+    dependsOn: BuildJob
+    steps:
+      - task: DotNetCoreCLI@2
+        displayName: 'Run unit tests'
+        inputs:
+          command: 'test'
+          arguments: '--configuration $(buildConfiguration) --no-build'
+
+  - job: PublishJob
+    displayName: 'Publish Artifacts'
+    dependsOn:
+      - BuildJob
+      - TestJob
+    condition: succeeded()
+    steps:
+      - task: DotNetCoreCLI@2
+        displayName: 'Publish application'
+        inputs:
+          command: 'publish'
+          arguments: '--configuration $(buildConfiguration) --output $(Build.ArtifactStagingDirectory)'

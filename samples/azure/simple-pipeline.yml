@@ -1,0 +1,35 @@
+name: Simple .NET Pipeline
+
+trigger:
+  branches:
+    include:
+    - main
+    - develop
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  buildConfiguration: 'Release'
+  dotnetVersion: '8.0.x'
+
+jobs:
+  - job: BuildAndTest
+    displayName: 'Build and Test .NET Application'
+    steps:
+      - task: UseDotNet@2
+        displayName: 'Install .NET SDK'
+        inputs:
+          version: $(dotnetVersion)
+
+      - script: dotnet restore
+        displayName: 'Restore NuGet packages'
+
+      - script: dotnet build --configuration $(buildConfiguration) --no-restore
+        displayName: 'Build solution'
+
+      - script: dotnet test --configuration $(buildConfiguration) --no-build --verbosity normal
+        displayName: 'Run unit tests'
+
+      - bash: echo "Build completed successfully!"
+        displayName: 'Build summary'

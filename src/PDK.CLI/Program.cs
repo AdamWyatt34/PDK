@@ -3,6 +3,9 @@ using System.CommandLine;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using PDK.CLI;
+using PDK.Core.Models;
+using PDK.Providers.AzureDevOps;
+using PDK.Providers.GitHub;
 using Spectre.Console;
 
 var services = new ServiceCollection();
@@ -173,11 +176,14 @@ static void ConfigureServices(ServiceCollection services)
         builder.AddConsole();
     });
 
+    // Register parsers
+    services.AddSingleton<IPipelineParser, GitHubActionsParser>();
+    services.AddSingleton<IPipelineParser, AzureDevOpsParser>();
+
     // Register services
     services.AddSingleton<PipelineParserFactory>();
     services.AddSingleton<PipelineExecutor>();
-    
-    // TODO: Register parsers and runners as they're implemented
-    // services.AddSingleton<IPipelineParser, GitHubActionsParser>();
+
+    // TODO: Register runners as they're implemented
     // services.AddSingleton<IJobRunner, DockerRunner>();
 }

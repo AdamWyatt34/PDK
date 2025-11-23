@@ -1,0 +1,38 @@
+name: Invalid Pipeline Example
+
+trigger:
+  branches:
+    include:
+    - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  buildConfiguration: 'Release'
+
+stages:
+  - stage: Build
+    displayName: 'Build Stage'
+    jobs:
+      # Error 1: Missing 'job' identifier
+      - displayName: 'Missing Job ID'
+        steps:
+          - script: echo "This job is missing the 'job' field"
+
+      - job: TestJob
+        displayName: 'Valid Job'
+        # Error 2: Circular dependency (depends on itself)
+        dependsOn: TestJob
+        steps:
+          - script: echo "This job has a circular dependency"
+
+  - stage: Deploy
+    displayName: 'Deploy Stage'
+    # Error 3: Depends on non-existent stage
+    dependsOn: NonExistentStage
+    jobs:
+      - job: DeployJob
+        displayName: 'Deploy Application'
+        steps:
+          - script: echo "This stage depends on a stage that doesn't exist"

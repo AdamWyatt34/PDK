@@ -1,0 +1,85 @@
+name: All Common Tasks Pipeline
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  dockerImageName: 'myapp'
+  dockerTag: 'latest'
+
+steps:
+  # DotNetCoreCLI@2 task
+  - task: DotNetCoreCLI@2
+    displayName: 'Build .NET project'
+    inputs:
+      command: 'build'
+      projects: '**/*.csproj'
+      arguments: '--configuration Release'
+
+  # PowerShell@2 task with inline script
+  - task: PowerShell@2
+    displayName: 'Run PowerShell script (inline)'
+    inputs:
+      targetType: 'inline'
+      script: |
+        Write-Host "Running PowerShell task"
+        $config = "Release"
+        Write-Host "Build configuration: $config"
+
+  # PowerShell@2 task with file path
+  - task: PowerShell@2
+    displayName: 'Run PowerShell script (file)'
+    inputs:
+      targetType: 'filePath'
+      filePath: 'scripts/deploy.ps1'
+
+  # Bash@3 task with inline script
+  - task: Bash@3
+    displayName: 'Run Bash script (inline)'
+    inputs:
+      targetType: 'inline'
+      script: |
+        echo "Running Bash task"
+        export ENV_VAR="test"
+        echo "Environment variable set: $ENV_VAR"
+
+  # Bash@3 task with file path
+  - task: Bash@3
+    displayName: 'Run Bash script (file)'
+    inputs:
+      targetType: 'filePath'
+      filePath: 'scripts/build.sh'
+
+  # Docker@2 task
+  - task: Docker@2
+    displayName: 'Build Docker image'
+    inputs:
+      command: 'build'
+      Dockerfile: '**/Dockerfile'
+      tags: '$(dockerImageName):$(dockerTag)'
+
+  # CmdLine@2 task
+  - task: CmdLine@2
+    displayName: 'Run command line'
+    inputs:
+      script: |
+        echo "Running command line task"
+        dir
+        echo "Task completed"
+
+  # Script shortcuts
+  - bash: echo 'Bash shortcut script'
+    displayName: 'Bash shortcut'
+
+  - pwsh: Write-Host 'PowerShell Core shortcut'
+    displayName: 'PowerShell Core shortcut'
+
+  - script: echo 'Generic script shortcut'
+    displayName: 'Generic script shortcut'
+
+  - powershell: Write-Host 'Windows PowerShell shortcut'
+    displayName: 'Windows PowerShell shortcut'
+
+  # Checkout step
+  - checkout: self
+    displayName: 'Checkout repository'

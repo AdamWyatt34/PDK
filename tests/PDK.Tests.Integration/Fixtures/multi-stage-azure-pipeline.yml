@@ -1,0 +1,63 @@
+name: Multi-Stage Pipeline
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    exclude:
+      - docs/**
+      - '*.md'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  buildConfiguration: 'Release'
+  vmImageWindows: 'windows-latest'
+
+stages:
+  - stage: Build
+    displayName: 'Build Stage'
+    jobs:
+      - job: CompileCode
+        displayName: 'Compile Application'
+        steps:
+          - task: DotNetCoreCLI@2
+            displayName: 'Restore NuGet packages'
+            inputs:
+              command: 'restore'
+
+          - task: DotNetCoreCLI@2
+            displayName: 'Build solution'
+            inputs:
+              command: 'build'
+              arguments: '--configuration $(buildConfiguration) --no-restore'
+
+      - job: RunTests
+        displayName: 'Run Unit Tests'
+        dependsOn: CompileCode
+        steps:
+          - task: DotNetCoreCLI@2
+            displayName: 'Execute tests'
+            inputs:
+              command: 'test'
+              arguments: '--configuration $(buildConfiguration) --no-build'
+
+  - stage: Deploy
+    displayName: 'Deploy Stage'
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - job: DeployProd
+        displayName: 'Deploy to Production'
+        pool:
+          vmImage: $(vmImageWindows)
+        timeoutInMinutes: 60
+        steps:
+          - bash: echo 'Deploying to production...'
+            displayName: 'Deploy application'
+
+          - pwsh: Write-Host 'Deployment complete'
+            displayName: 'Confirm deployment'
