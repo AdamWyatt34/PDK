@@ -1,0 +1,54 @@
+name: Pool Inheritance Pipeline
+
+# Pipeline-level pool (lowest priority)
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  customPool: 'MyCustomPool'
+
+stages:
+  - stage: StageWithDefaultPool
+    displayName: 'Stage Using Pipeline Pool'
+    jobs:
+      - job: JobInheritsFromPipeline
+        displayName: 'Job Inherits Pipeline Pool'
+        steps:
+          - bash: echo 'Using ubuntu-latest from pipeline'
+
+  - stage: StageWithOwnPool
+    displayName: 'Stage With Override Pool'
+    pool:
+      vmImage: 'windows-latest'
+    jobs:
+      - job: JobInheritsFromStage
+        displayName: 'Job Inherits Stage Pool'
+        steps:
+          - pwsh: Write-Host 'Using windows-latest from stage'
+
+      - job: JobWithOwnPool
+        displayName: 'Job With Override Pool'
+        pool:
+          vmImage: 'macos-latest'
+        steps:
+          - bash: echo 'Using macos-latest from job override'
+
+  - stage: SelfHostedPool
+    displayName: 'Self-Hosted Agent Pool'
+    jobs:
+      - job: UseSelfHostedPool
+        displayName: 'Job on Self-Hosted Pool'
+        pool:
+          name: '$(customPool)'
+          demands:
+            - 'Agent.OS -equals Linux'
+            - docker
+        steps:
+          - bash: echo 'Running on self-hosted agent'
+
+  - stage: NoPoolSpecified
+    displayName: 'No Pool Override (Uses Pipeline Default)'
+    jobs:
+      - job: DefaultPoolJob
+        steps:
+          - bash: echo "Falls back to pipeline pool - ubuntu-latest"
