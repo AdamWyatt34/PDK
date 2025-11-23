@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using PDK.CLI.Diagnostics;
 using PDK.Core.Models;
 using Spectre.Console;
 
@@ -7,11 +8,15 @@ namespace PDK.CLI;
 public class PipelineExecutor
 {
     private readonly PipelineParserFactory _parserFactory;
+    private readonly PDK.Runners.IContainerManager _containerManager;
     private readonly IJobRunner _runner;
 
-    public PipelineExecutor(PipelineParserFactory parserFactory)
+    public PipelineExecutor(
+        PipelineParserFactory parserFactory,
+        PDK.Runners.IContainerManager containerManager)
     {
         _parserFactory = parserFactory;
+        _containerManager = containerManager;
         // TODO: Inject IJobRunner when implemented
         _runner = null!;
     }
@@ -26,6 +31,24 @@ public class PipelineExecutor
         {
             AnsiConsole.MarkupLine("[green]✓ Pipeline validation successful[/]");
             return;
+        }
+
+        // Check Docker availability if Docker mode is enabled (REQ-DK-007)
+        if (options.UseDocker)
+        {
+            var dockerStatus = await _containerManager.GetDockerStatusAsync();
+
+            if (!dockerStatus.IsAvailable)
+            {
+                AnsiConsole.WriteLine();
+                DockerDiagnostics.DisplayQuickError(dockerStatus);
+                Environment.Exit(1);
+            }
+
+            if (options.Verbose)
+            {
+                AnsiConsole.MarkupLine($"[dim]Using Docker version {dockerStatus.Version}[/]");
+            }
         }
 
         // Determine which jobs to run
