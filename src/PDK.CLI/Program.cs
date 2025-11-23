@@ -3,9 +3,12 @@ using System.CommandLine;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using PDK.CLI;
+using PDK.CLI.Diagnostics;
 using PDK.Core.Models;
 using PDK.Providers.AzureDevOps;
 using PDK.Providers.GitHub;
+using PDK.Runners;
+using PDK.Runners.Docker;
 using Spectre.Console;
 
 var services = new ServiceCollection();
@@ -162,10 +165,42 @@ versionCommand.SetHandler(() =>
     AnsiConsole.MarkupLine("Pipeline Development Kit");
 });
 
+// Doctor command (REQ-DK-007: Docker Availability Detection)
+var doctorCommand = new Command("doctor", "Check system requirements and Docker availability");
+doctorCommand.SetHandler(async () =>
+{
+    AnsiConsole.MarkupLine("[bold]PDK Doctor - System Diagnostics[/]");
+    AnsiConsole.WriteLine();
+
+    await AnsiConsole.Status()
+        .Spinner(Spinner.Known.Dots)
+        .StartAsync("Checking Docker availability...", async ctx =>
+        {
+            try
+            {
+                var containerManager = new DockerContainerManager();
+                var status = await containerManager.GetDockerStatusAsync();
+
+                ctx.Status("Done"); // Update status
+
+                DockerDiagnostics.DisplayDockerStatus(status);
+
+                Environment.ExitCode = status.IsAvailable ? 0 : 1;
+            }
+            catch (Exception ex)
+            {
+                ctx.Status("Error occurred");
+                AnsiConsole.MarkupLine($"[red]Error:[/] {ex.Message}");
+                Environment.ExitCode = 1;
+            }
+        });
+});
+
 rootCommand.AddCommand(runCommand);
 rootCommand.AddCommand(listCommand);
 rootCommand.AddCommand(validateCommand);
 rootCommand.AddCommand(versionCommand);
+rootCommand.AddCommand(doctorCommand);
 
 return await rootCommand.InvokeAsync(args);
 
@@ -183,6 +218,9 @@ static void ConfigureServices(ServiceCollection services)
     // Register services
     services.AddSingleton<PipelineParserFactory>();
     services.AddSingleton<PipelineExecutor>();
+
+    // Register container manager
+    services.AddSingleton<PDK.Runners.IContainerManager, DockerContainerManager>();
 
     // TODO: Register runners as they're implemented
     // services.AddSingleton<IJobRunner, DockerRunner>();
