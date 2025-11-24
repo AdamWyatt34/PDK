@@ -1,0 +1,34 @@
+name: Environment Variables Test
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  BUILD_CONFIG: 'Release'
+  VERSION: '1.0.0'
+  GLOBAL_VAR: 'GlobalValue'
+
+steps:
+  - script: |
+      echo "BUILD_CONFIG=$BUILD_CONFIG"
+      echo "VERSION=$VERSION"
+      echo "GLOBAL_VAR=$GLOBAL_VAR"
+    displayName: 'Print environment variables'
+    env:
+      STEP_VAR: 'StepValue'
+
+  - script: |
+      echo "Verifying variables..."
+      if [ "$BUILD_CONFIG" = "Release" ]; then
+        echo "BUILD_CONFIG is correct"
+      else
+        echo "ERROR: BUILD_CONFIG is $BUILD_CONFIG, expected Release"
+        exit 1
+      fi
+      if [ "$VERSION" = "1.0.0" ]; then
+        echo "VERSION is correct"
+      else
+        echo "ERROR: VERSION is $VERSION, expected 1.0.0"
+        exit 1
+      fi
+    displayName: 'Verify environment variables'
