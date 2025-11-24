@@ -461,6 +461,8 @@ public class DockerContainerManager : IContainerManager
                 WorkingDir = workingDirectory
             };
 
+            // Only set Env if user provided environment variables
+            // Otherwise let Docker use the container's default environment
             if (envArray != null && envArray.Count > 0)
             {
                 execCreateParams.Env = envArray;

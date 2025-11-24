@@ -11,12 +11,13 @@ public class ImageMapper : IImageMapper
     /// <summary>
     /// Standard runner name to Docker image mappings.
     /// Case-insensitive to handle variations like "Ubuntu-Latest" or "UBUNTU-LATEST".
+    /// Uses buildpack-deps images for Ubuntu as they include bash and common CI/CD tools.
     /// </summary>
     private static readonly Dictionary<string, string> RunnerMappings = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["ubuntu-latest"] = "ubuntu:22.04",
-        ["ubuntu-22.04"] = "ubuntu:22.04",
-        ["ubuntu-20.04"] = "ubuntu:20.04",
+        ["ubuntu-latest"] = "buildpack-deps:jammy",     // Ubuntu 22.04 with bash and build tools
+        ["ubuntu-22.04"] = "buildpack-deps:jammy",      // Ubuntu 22.04 with bash and build tools
+        ["ubuntu-20.04"] = "buildpack-deps:focal",      // Ubuntu 20.04 with bash and build tools
         ["windows-latest"] = "mcr.microsoft.com/windows/servercore:ltsc2022",
         ["windows-2022"] = "mcr.microsoft.com/windows/servercore:ltsc2022",
         ["windows-2019"] = "mcr.microsoft.com/windows/servercore:ltsc2019"

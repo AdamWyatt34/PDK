@@ -1,0 +1,16 @@
+name: Failing Step Test
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+  - script: echo "Step 1 - This should succeed"
+    displayName: 'Step 1 (success)'
+
+  - script: |
+      echo "Step 2 - This step will fail"
+      exit 1
+    displayName: 'Step 2 (failure)'
+
+  - script: echo "Step 3 - This should NOT execute"
+    displayName: 'Step 3 (should not run)'

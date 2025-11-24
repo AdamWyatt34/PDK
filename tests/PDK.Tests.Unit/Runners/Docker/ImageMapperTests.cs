@@ -24,7 +24,7 @@ public class ImageMapperTests
         var result = _mapper.MapRunnerToImage(runnerName);
 
         // Assert
-        result.Should().Be("ubuntu:22.04");
+        result.Should().Be("buildpack-deps:jammy");
     }
 
     [Fact]
@@ -37,7 +37,7 @@ public class ImageMapperTests
         var result = _mapper.MapRunnerToImage(runnerName);
 
         // Assert
-        result.Should().Be("ubuntu:20.04");
+        result.Should().Be("buildpack-deps:focal");
     }
 
     [Fact]
@@ -50,7 +50,7 @@ public class ImageMapperTests
         var result = _mapper.MapRunnerToImage(runnerName);
 
         // Assert
-        result.Should().Be("ubuntu:22.04");
+        result.Should().Be("buildpack-deps:jammy");
     }
 
     [Fact]
@@ -149,7 +149,7 @@ public class ImageMapperTests
         var result = _mapper.MapRunnerToImage(runnerName);
 
         // Assert
-        result.Should().Be("ubuntu:22.04");
+        result.Should().Be("buildpack-deps:jammy");
     }
 
     [Fact]

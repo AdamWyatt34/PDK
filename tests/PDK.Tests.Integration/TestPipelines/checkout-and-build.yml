@@ -1,0 +1,20 @@
+name: Checkout and Build Test
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+  - checkout: self
+    displayName: 'Checkout repository'
+
+  - script: ls -la
+    displayName: 'List files'
+
+  - script: |
+      if [ -d ".git" ]; then
+        echo "Repository checked out successfully"
+      else
+        echo "ERROR: .git directory not found"
+        exit 1
+      fi
+    displayName: 'Verify checkout'

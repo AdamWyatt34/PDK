@@ -1,0 +1,19 @@
+name: Multi-Step Bash Test
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+  - script: echo "Step 1"
+    displayName: 'First step'
+
+  - script: echo "Step 2"
+    displayName: 'Second step'
+
+  - script: echo "Step 3"
+    displayName: 'Third step'
+
+  - script: |
+      echo "Step 4 - Multi-line"
+      echo "Additional output"
+    displayName: 'Fourth step (multi-line)'

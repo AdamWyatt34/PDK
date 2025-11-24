@@ -1,0 +1,8 @@
+name: Simple Hello World Test
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+  - script: echo "Hello World"
+    displayName: 'Print Hello World'
