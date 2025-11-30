@@ -1,0 +1,25 @@
+name: Ubuntu Shell Pipeline
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-image:
+    runs-on: ubuntu:latest
+
+    steps:
+      - name: Show OS info
+        run: cat /etc/os-release
+
+      - name: List workspace contents
+        run: ls -la
+
+      - name: Show environment
+        run: env | sort
+
+      - name: Create a test file
+        run: echo "Hello from PDK!" > test.txt && cat test.txt
+
+      - name: Show disk usage
+        run: df -h
