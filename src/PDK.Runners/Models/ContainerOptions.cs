@@ -48,4 +48,18 @@ public record ContainerOptions
     /// Default is false (container will be removed).
     /// </summary>
     public bool KeepContainer { get; init; }
+
+    /// <summary>
+    /// Gets or initializes a value indicating whether to mount the Docker socket into the container.
+    /// This enables Docker-in-Docker functionality, allowing Docker commands to be executed inside the container.
+    /// The host's Docker socket (/var/run/docker.sock on Unix or npipe://./pipe/docker_engine on Windows)
+    /// will be mounted into the container at the same path.
+    /// Default is false.
+    /// </summary>
+    /// <remarks>
+    /// SECURITY WARNING: Mounting the Docker socket gives the container full control over the Docker daemon.
+    /// Only enable this for trusted workloads as it provides root-level access to the host system.
+    /// Required for steps that use DockerStepExecutor to build/run Docker images.
+    /// </remarks>
+    public bool MountDockerSocket { get; init; }
 }

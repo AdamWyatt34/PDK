@@ -299,6 +299,16 @@ public class DockerContainerManager : IContainerManager
                 _logger?.LogDebug("Mounting volume: {Bind}", bind);
             }
 
+            // Mount Docker socket if requested (for Docker-in-Docker)
+            if (options.MountDockerSocket)
+            {
+                var dockerSocketPath = GetDockerSocketPath();
+                var dockerSocketBind = $"{dockerSocketPath}:{dockerSocketPath}";
+                binds.Add(dockerSocketBind);
+                _logger?.LogDebug("Mounting Docker socket: {Bind}", dockerSocketBind);
+                _logger?.LogWarning("Docker socket mounted - container has full access to Docker daemon");
+            }
+
             // Prepare host configuration
             var hostConfig = new HostConfig
             {
@@ -647,6 +657,23 @@ public class DockerContainerManager : IContainerManager
             // Linux and macOS use Unix socket
             return new Uri("unix:///var/run/docker.sock");
         }
+    }
+
+    /// <summary>
+    /// Gets the Docker socket path for bind mounting based on the current platform.
+    /// </summary>
+    /// <returns>The Docker socket path for the current platform.</returns>
+    /// <remarks>
+    /// On Windows with Docker Desktop using WSL2 backend (the default), Linux containers
+    /// still access the Docker socket via /var/run/docker.sock inside the WSL2 VM.
+    /// The named pipe is only used by the Docker client on the Windows host to communicate
+    /// with the Docker daemon, but for bind mounting into Linux containers, we use the Unix socket path.
+    /// </remarks>
+    private static string GetDockerSocketPath()
+    {
+        // For Linux containers (which is the typical case), always use Unix socket path
+        // This works on Linux, macOS, and Windows (with Docker Desktop/WSL2)
+        return "/var/run/docker.sock";
     }
 
     /// <summary>
