@@ -1,0 +1,14 @@
+{
+  "name": "pdk-node-sample",
+  "version": "1.0.0",
+  "description": "Simple Node.js application for integration testing PDK executors",
+  "main": "index.js",
+  "scripts": {
+    "build": "echo 'Building...' && mkdir -p dist && echo 'console.log(\"Built!\");' > dist/index.js",
+    "test": "node test/index.test.js",
+    "start": "node index.js"
+  },
+  "keywords": ["pdk", "test"],
+  "author": "PDK Team",
+  "license": "MIT"
+}

@@ -9,6 +9,7 @@ using PDK.Providers.AzureDevOps;
 using PDK.Providers.GitHub;
 using PDK.Runners;
 using PDK.Runners.Docker;
+using PDK.Runners.StepExecutors;
 using Spectre.Console;
 
 var services = new ServiceCollection();
@@ -222,6 +223,18 @@ static void ConfigureServices(ServiceCollection services)
     // Register container manager
     services.AddSingleton<PDK.Runners.IContainerManager, DockerContainerManager>();
 
-    // TODO: Register runners as they're implemented
-    // services.AddSingleton<IJobRunner, DockerRunner>();
+    // Register step executors
+    services.AddSingleton<IStepExecutor, CheckoutStepExecutor>();
+    services.AddSingleton<IStepExecutor, ScriptStepExecutor>();
+    services.AddSingleton<IStepExecutor, PowerShellStepExecutor>();
+    services.AddSingleton<IStepExecutor, DotnetStepExecutor>();
+    services.AddSingleton<IStepExecutor, NpmStepExecutor>();
+    services.AddSingleton<IStepExecutor, DockerStepExecutor>();
+
+    // Register step executor factory
+    services.AddSingleton<StepExecutorFactory>();
+
+    // Register job runner
+    services.AddSingleton<PDK.Runners.IJobRunner, DockerJobRunner>();
+    services.AddSingleton<IImageMapper, ImageMapper>();
 }

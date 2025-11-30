@@ -1,6 +1,7 @@
 ﻿using System.Diagnostics;
 using PDK.CLI.Diagnostics;
 using PDK.Core.Models;
+using PDK.Runners;
 using Spectre.Console;
 
 namespace PDK.CLI;
@@ -9,16 +10,16 @@ public class PipelineExecutor
 {
     private readonly PipelineParserFactory _parserFactory;
     private readonly PDK.Runners.IContainerManager _containerManager;
-    private readonly IJobRunner _runner;
+    private readonly PDK.Runners.IJobRunner _jobRunner;
 
     public PipelineExecutor(
         PipelineParserFactory parserFactory,
-        PDK.Runners.IContainerManager containerManager)
+        PDK.Runners.IContainerManager containerManager,
+        PDK.Runners.IJobRunner jobRunner)
     {
         _parserFactory = parserFactory;
         _containerManager = containerManager;
-        // TODO: Inject IJobRunner when implemented
-        _runner = null!;
+        _jobRunner = jobRunner;
     }
 
     public async Task Execute(ExecutionOptions options)
@@ -57,34 +58,46 @@ public class PipelineExecutor
             : [pipeline.Jobs[options.JobName]];
 
         // Execute jobs
+        var workspacePath = Directory.GetCurrentDirectory();
+        var allJobsSucceeded = true;
+
         await AnsiConsole.Progress()
             .StartAsync(async ctx =>
             {
                 foreach (var job in jobsToRun)
                 {
                     var task = ctx.AddTask($"[bold]{job.Name}[/]");
-                    
+
                     AnsiConsole.MarkupLine($"\n[bold blue]Running job:[/] {job.Name}");
-                    
+
                     var stopwatch = Stopwatch.StartNew();
-                    
-                    // TODO: Actually run the job when IJobRunner is implemented
-                    // var result = await _runner.RunJob(job, new RunContext
-                    // {
-                    //     UseDocker = options.UseDocker,
-                    //     SpecificStep = options.StepName
-                    // });
-                    
-                    // Simulate for now
-                    await Task.Delay(100);
+
+                    // Execute the job
+                    var result = await _jobRunner.RunJobAsync(job, workspacePath);
+
                     task.Increment(100);
-                    
                     stopwatch.Stop();
-                    
-                    AnsiConsole.MarkupLine($"[green]✓ Job completed in {stopwatch.Elapsed.TotalSeconds:F2}s[/]");
+
+                    if (result.Success)
+                    {
+                        AnsiConsole.MarkupLine($"[green]✓ Job completed in {stopwatch.Elapsed.TotalSeconds:F2}s[/]");
+                    }
+                    else
+                    {
+                        AnsiConsole.MarkupLine($"[red]✗ Job failed in {stopwatch.Elapsed.TotalSeconds:F2}s[/]");
+                        allJobsSucceeded = false;
+                    }
                 }
             });
 
-        AnsiConsole.MarkupLine("\n[bold green]Pipeline execution complete![/]");
+        if (allJobsSucceeded)
+        {
+            AnsiConsole.MarkupLine("\n[bold green]Pipeline execution complete![/]");
+        }
+        else
+        {
+            AnsiConsole.MarkupLine("\n[bold red]Pipeline execution failed![/]");
+            Environment.Exit(1);
+        }
     }
 }

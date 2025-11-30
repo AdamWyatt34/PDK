@@ -1,0 +1,22 @@
+name: .NET Build Pipeline
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: mcr.microsoft.com/dotnet/sdk:8.0
+
+    steps:
+      - name: Show .NET version
+        run: dotnet --version
+
+      - name: List workspace contents
+        run: ls -la
+
+      - name: Restore packages
+        run: dotnet restore || echo "No projects to restore"
+
+      - name: Build solution
+        run: dotnet build --configuration Release || echo "No projects to build"

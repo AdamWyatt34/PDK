@@ -33,6 +33,7 @@
   <ItemGroup>
     <None Include="Fixtures\**\*" CopyToOutputDirectory="PreserveNewest" />
     <None Include="TestPipelines\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\TestProjects\**\*" CopyToOutputDirectory="PreserveNewest" LinkBase="TestProjects" />
   </ItemGroup>
 
 </Project>
