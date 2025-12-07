@@ -228,21 +228,32 @@ public class CheckoutStepExecutorTests : RunnerTestBase
     #region ExecuteAsync - Error Scenarios
 
     [Fact]
-    public async Task ExecuteAsync_MissingRepository_ThrowsArgumentException()
+    public async Task ExecuteAsync_MissingRepository_UsesSelfCheckout()
     {
-        // Arrange
-        var step = CreateTestStep(StepType.Checkout, "Checkout without repo");
-        step.With.Clear(); // No repository specified
+        // Arrange - no repository specified means "self checkout"
+        var step = CreateTestStep(StepType.Checkout, "Checkout self");
+        step.With.Clear(); // No repository specified = self checkout
         step.Script = null; // Checkout steps don't have scripts
+
+        // Mock the git rev-parse check (workspace is a git repo)
+        MockContainerManager
+            .Setup(x => x.ExecuteCommandAsync(
+                It.IsAny<string>(),
+                It.Is<string>(cmd => cmd.Contains("rev-parse")),
+                It.IsAny<string>(),
+                It.IsAny<IDictionary<string, string>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreateSuccessResult());
 
         var executor = new CheckoutStepExecutor();
         var context = CreateTestContext();
 
         // Act
-        Func<Task> act = async () => await executor.ExecuteAsync(step, context);
+        var result = await executor.ExecuteAsync(step, context);
 
-        // Assert
-        await act.Should().ThrowAsync<ArgumentException>();
+        // Assert - self checkout should succeed
+        result.Success.Should().BeTrue();
+        result.Output.Should().Contain("local workspace");
     }
 
     [Fact]

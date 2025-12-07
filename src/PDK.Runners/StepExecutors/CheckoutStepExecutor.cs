@@ -18,7 +18,7 @@ public class CheckoutStepExecutor : IStepExecutor
         ExecutionContext context,
         CancellationToken cancellationToken = default)
     {
-        // Resolve repository URL (validates that repository is provided)
+        // Resolve repository URL (null means "self" checkout - use current workspace)
         var repositoryUrl = GetRepositoryUrl(step);
 
         // Resolve optional ref/branch/tag
@@ -31,11 +31,29 @@ public class CheckoutStepExecutor : IStepExecutor
 
         try
         {
-
-            // Check if repository already exists
+            // Check if repository already exists in workspace
             var repoExists = await CheckRepositoryExistsAsync(context, cancellationToken);
 
-            if (repoExists)
+            if (repositoryUrl == null)
+            {
+                // Self checkout - workspace should already have the code mounted
+                // This is the common case for local development
+                outputBuilder.AppendLine("Using local workspace (self checkout)");
+
+                if (repoExists)
+                {
+                    // Optionally pull latest if we're in a git repo
+                    // Skip pull for local development - user's workspace is authoritative
+                    outputBuilder.AppendLine("Workspace contains git repository - using as-is");
+                }
+                else
+                {
+                    // No git repo, but that's OK for self checkout
+                    // The workspace files are mounted and ready to use
+                    outputBuilder.AppendLine("Workspace ready (no git repository detected)");
+                }
+            }
+            else if (repoExists)
             {
                 // Repository exists - pull latest changes
                 var pullResult = await ExecuteGitCommandAsync(
@@ -86,8 +104,8 @@ public class CheckoutStepExecutor : IStepExecutor
                 }
             }
 
-            // Checkout specific ref/branch/tag if specified
-            if (!string.IsNullOrWhiteSpace(checkoutRef))
+            // Checkout specific ref/branch/tag if specified (only for explicit repos)
+            if (!string.IsNullOrWhiteSpace(checkoutRef) && repositoryUrl != null)
             {
                 var checkoutCommand = $"git checkout {checkoutRef}";
                 var checkoutResult = await ExecuteGitCommandAsync(
@@ -155,37 +173,33 @@ public class CheckoutStepExecutor : IStepExecutor
 
     /// <summary>
     /// Extracts the repository URL from the step configuration.
+    /// Returns null for "self" checkout (use current workspace).
     /// </summary>
     /// <param name="step">The step containing checkout configuration.</param>
-    /// <returns>The repository URL to clone.</returns>
-    /// <exception cref="ArgumentException">Thrown when repository URL is not provided or is invalid.</exception>
-    private static string GetRepositoryUrl(Step step)
+    /// <returns>The repository URL to clone, or null for self/local checkout.</returns>
+    private static string? GetRepositoryUrl(Step step)
     {
         // Try to get repository from With dictionary
         if (step.With.TryGetValue("repository", out var repository))
         {
             if (string.IsNullOrWhiteSpace(repository))
             {
-                throw new ArgumentException(
-                    $"Repository URL is empty for checkout step '{step.Name}'.",
-                    nameof(step));
+                // Empty repository means use current workspace (self)
+                return null;
             }
 
-            // Handle special value "self" (Azure DevOps)
+            // Handle special value "self" (Azure DevOps style)
             if (string.Equals(repository, "self", StringComparison.OrdinalIgnoreCase))
             {
-                throw new NotSupportedException(
-                    $"Checkout 'self' is not yet supported for step '{step.Name}'. " +
-                    "Please specify an explicit repository URL.");
+                return null; // Use current workspace
             }
 
             return repository;
         }
 
-        throw new ArgumentException(
-            $"No repository URL specified for checkout step '{step.Name}'. " +
-            "Please provide a 'repository' parameter.",
-            nameof(step));
+        // No repository specified = checkout self (current workspace)
+        // This is the default behavior for actions/checkout@v4
+        return null;
     }
 
     /// <summary>

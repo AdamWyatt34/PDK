@@ -3,7 +3,13 @@ using System.CommandLine;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using PDK.CLI;
+using PDK.CLI.Commands;
 using PDK.CLI.Diagnostics;
+using PDK.CLI.ErrorHandling;
+using PDK.CLI.UI;
+using PDK.Core.Diagnostics;
+using PDK.Core.Logging;
+using PDK.Core.Progress;
 using PDK.Core.Models;
 using PDK.Providers.AzureDevOps;
 using PDK.Providers.GitHub;
@@ -58,17 +64,38 @@ var verboseOption = new Option<bool>(
     description: "Enable verbose logging",
     getDefaultValue: () => false);
 
+var quietOption = new Option<bool>(
+    aliases: ["--quiet", "-q"],
+    description: "Suppress step output (show only job/step status)",
+    getDefaultValue: () => false);
+
+var interactiveOption = new Option<bool>(
+    aliases: ["--interactive", "-i"],
+    description: "Run in interactive mode for guided pipeline exploration",
+    getDefaultValue: () => false);
+
 runCommand.AddOption(fileOption);
 runCommand.AddOption(jobOption);
 runCommand.AddOption(stepOption);
 runCommand.AddOption(hostOption);
 runCommand.AddOption(validateOption);
 runCommand.AddOption(verboseOption);
+runCommand.AddOption(quietOption);
+runCommand.AddOption(interactiveOption);
 
-runCommand.SetHandler(async (file, job, step, host, validate, verbose) =>
+runCommand.SetHandler(async (file, job, step, host, validate, verbose, quiet, interactive) =>
 {
     try
     {
+        // Interactive mode takes precedence (REQ-06-020)
+        if (interactive)
+        {
+            var cmd = serviceProvider.GetRequiredService<InteractiveCommand>();
+            cmd.File = file;
+            Environment.ExitCode = await cmd.ExecuteAsync();
+            return;
+        }
+
         var executor = serviceProvider.GetRequiredService<PipelineExecutor>();
         await executor.Execute(new ExecutionOptions
         {
@@ -77,60 +104,56 @@ runCommand.SetHandler(async (file, job, step, host, validate, verbose) =>
             StepName = step,
             UseDocker = !host,
             ValidateOnly = validate,
-            Verbose = verbose
+            Verbose = verbose,
+            Quiet = quiet
         });
     }
     catch (Exception ex)
     {
-        AnsiConsole.MarkupLine($"[red]Error:[/] {ex.Message}");
-        if (verbose)
-        {
-            AnsiConsole.WriteException(ex);
-        }
+        var errorFormatter = serviceProvider.GetRequiredService<ErrorFormatter>();
+        errorFormatter.DisplayError(ex, verbose);
         Environment.Exit(1);
     }
-}, fileOption, jobOption, stepOption, hostOption, validateOption, verboseOption);
+}, fileOption, jobOption, stepOption, hostOption, validateOption, verboseOption, quietOption, interactiveOption);
 
 // List command
 var listCommand = new Command("list", "List jobs in a pipeline");
-listCommand.AddOption(fileOption);
 
-listCommand.SetHandler(async file =>
+var listFileOption = new Option<FileInfo?>(
+    aliases: ["--file", "-f"],
+    description: "Path to the pipeline file (auto-detects if not specified)");
+
+var detailsOption = new Option<bool>(
+    aliases: ["--details", "-d"],
+    description: "Show detailed step information",
+    getDefaultValue: () => false);
+
+var formatOption = new Option<OutputFormat>(
+    aliases: ["--format"],
+    description: "Output format (table, json, minimal)",
+    getDefaultValue: () => OutputFormat.Table);
+
+listCommand.AddOption(listFileOption);
+listCommand.AddOption(detailsOption);
+listCommand.AddOption(formatOption);
+
+listCommand.SetHandler(async (file, details, format) =>
 {
     try
     {
-        var parserFactory = serviceProvider.GetRequiredService<PipelineParserFactory>();
-        var parser = parserFactory.GetParser(file.FullName);
-        var pipeline = await parser.ParseFile(file.FullName);
-
-        AnsiConsole.MarkupLine($"[bold]Pipeline:[/] {pipeline.Name}");
-        AnsiConsole.MarkupLine($"[bold]Provider:[/] {pipeline.Provider}");
-        AnsiConsole.WriteLine();
-
-        var table = new Table();
-        table.AddColumn("Job ID");
-        table.AddColumn("Name");
-        table.AddColumn("Runs On");
-        table.AddColumn("Steps");
-
-        foreach (var (jobId, jobDef) in pipeline.Jobs)
-        {
-            table.AddRow(
-                jobId,
-                jobDef.Name,
-                jobDef.RunsOn,
-                jobDef.Steps.Count.ToString()
-            );
-        }
-
-        AnsiConsole.Write(table);
+        var cmd = serviceProvider.GetRequiredService<ListCommand>();
+        cmd.File = file;
+        cmd.Details = details;
+        cmd.Format = format;
+        Environment.ExitCode = await cmd.ExecuteAsync();
     }
     catch (Exception ex)
     {
-        AnsiConsole.MarkupLine($"[red]Error:[/] {ex.Message}");
+        var errorFormatter = serviceProvider.GetRequiredService<ErrorFormatter>();
+        errorFormatter.DisplayError(ex, verbose: false);
         Environment.Exit(1);
     }
-}, fileOption);
+}, listFileOption, detailsOption, formatOption);
 
 // Validate command
 var validateCommand = new Command("validate", "Validate a pipeline file");
@@ -144,27 +167,59 @@ validateCommand.SetHandler(async file =>
         var parser = parserFactory.GetParser(file.FullName);
         var pipeline = await parser.ParseFile(file.FullName);
 
-        AnsiConsole.MarkupLine($"[green]✓[/] Pipeline is valid");
+        AnsiConsole.MarkupLine($"[green]\u2713[/] Pipeline is valid");
         AnsiConsole.MarkupLine($"  Provider: {pipeline.Provider}");
         AnsiConsole.MarkupLine($"  Jobs: {pipeline.Jobs.Count}");
         AnsiConsole.MarkupLine($"  Total Steps: {pipeline.Jobs.Values.Sum(j => j.Steps.Count)}");
     }
     catch (Exception ex)
     {
-        AnsiConsole.MarkupLine($"[red]✗ Pipeline validation failed[/]");
-        AnsiConsole.MarkupLine($"  {ex.Message}");
+        AnsiConsole.MarkupLine($"[red]\u2717 Pipeline validation failed[/]");
+        var errorFormatter = serviceProvider.GetRequiredService<ErrorFormatter>();
+        errorFormatter.DisplayError(ex, verbose: false);
         Environment.Exit(1);
     }
 }, fileOption);
 
-// Version command
+// Version command (REQ-06-040 through REQ-06-043)
 var versionCommand = new Command("version", "Show version information");
-versionCommand.SetHandler(() =>
+
+var versionFullOption = new Option<bool>(
+    aliases: ["--full", "-f"],
+    description: "Show full system information including Docker status, providers, and executors",
+    getDefaultValue: () => false);
+
+var versionFormatOption = new Option<VersionOutputFormat>(
+    aliases: ["--format"],
+    description: "Output format (human, json)",
+    getDefaultValue: () => VersionOutputFormat.Human);
+
+var noUpdateCheckOption = new Option<bool>(
+    aliases: ["--no-update-check"],
+    description: "Skip checking for updates",
+    getDefaultValue: () => false);
+
+versionCommand.AddOption(versionFullOption);
+versionCommand.AddOption(versionFormatOption);
+versionCommand.AddOption(noUpdateCheckOption);
+
+versionCommand.SetHandler(async (full, format, noUpdate) =>
 {
-    var version = typeof(Program).Assembly.GetName().Version;
-    AnsiConsole.MarkupLine($"[bold]PDK[/] v{version}");
-    AnsiConsole.MarkupLine("Pipeline Development Kit");
-});
+    try
+    {
+        var cmd = serviceProvider.GetRequiredService<VersionCommand>();
+        cmd.Full = full;
+        cmd.Format = format;
+        cmd.NoUpdateCheck = noUpdate;
+        Environment.ExitCode = await cmd.ExecuteAsync();
+    }
+    catch (Exception ex)
+    {
+        var errorFormatter = serviceProvider.GetRequiredService<ErrorFormatter>();
+        errorFormatter.DisplayError(ex, verbose: false);
+        Environment.Exit(1);
+    }
+}, versionFullOption, versionFormatOption, noUpdateCheckOption);
 
 // Doctor command (REQ-DK-007: Docker Availability Detection)
 var doctorCommand = new Command("doctor", "Check system requirements and Docker availability");
@@ -197,20 +252,62 @@ doctorCommand.SetHandler(async () =>
         });
 });
 
+// Interactive command (REQ-06-020)
+var interactiveCommand = new Command("interactive", "Interactive pipeline exploration and execution");
+var interactiveFileOption = new Option<FileInfo?>(
+    aliases: ["--file", "-f"],
+    description: "Path to pipeline file (auto-detects if not specified)");
+
+interactiveCommand.AddOption(interactiveFileOption);
+interactiveCommand.SetHandler(async file =>
+{
+    try
+    {
+        var cmd = serviceProvider.GetRequiredService<InteractiveCommand>();
+        cmd.File = file;
+        Environment.ExitCode = await cmd.ExecuteAsync();
+    }
+    catch (Exception ex)
+    {
+        var errorFormatter = serviceProvider.GetRequiredService<ErrorFormatter>();
+        errorFormatter.DisplayError(ex, verbose: false);
+        Environment.Exit(1);
+    }
+}, interactiveFileOption);
+
 rootCommand.AddCommand(runCommand);
 rootCommand.AddCommand(listCommand);
 rootCommand.AddCommand(validateCommand);
 rootCommand.AddCommand(versionCommand);
 rootCommand.AddCommand(doctorCommand);
+rootCommand.AddCommand(interactiveCommand);
 
 return await rootCommand.InvokeAsync(args);
 
 static void ConfigureServices(ServiceCollection services)
 {
+    // Configure logging with Serilog (file + structured logging)
     services.AddLogging(builder =>
     {
-        builder.AddConsole();
+        builder.ConfigurePdkLogging();
     });
+
+    // Register UI services
+    services.AddSingleton<IAnsiConsole>(AnsiConsole.Console);
+    services.AddSingleton<IConsoleOutput>(sp =>
+        new ConsoleOutput(sp.GetRequiredService<IAnsiConsole>()));
+    services.AddSingleton<IProgressReporter>(sp =>
+        new ConsoleProgressReporter(sp.GetRequiredService<IAnsiConsole>()));
+
+    // Register secret masker
+    services.AddSingleton<ISecretMasker, SecretMasker>();
+
+    // Register error handling services
+    services.AddSingleton<ErrorSuggestionEngine>();
+    services.AddSingleton<ErrorFormatter>(sp =>
+        new ErrorFormatter(
+            sp.GetRequiredService<IAnsiConsole>(),
+            sp.GetRequiredService<ISecretMasker>()));
 
     // Register parsers
     services.AddSingleton<IPipelineParser, GitHubActionsParser>();
@@ -218,7 +315,10 @@ static void ConfigureServices(ServiceCollection services)
 
     // Register services
     services.AddSingleton<PipelineParserFactory>();
+    services.AddSingleton<IPipelineParserFactory>(sp => sp.GetRequiredService<PipelineParserFactory>());
     services.AddSingleton<PipelineExecutor>();
+    services.AddTransient<ListCommand>();
+    services.AddTransient<InteractiveCommand>();
 
     // Register container manager
     services.AddSingleton<PDK.Runners.IContainerManager, DockerContainerManager>();
@@ -237,4 +337,10 @@ static void ConfigureServices(ServiceCollection services)
     // Register job runner
     services.AddSingleton<PDK.Runners.IJobRunner, DockerJobRunner>();
     services.AddSingleton<IImageMapper, ImageMapper>();
+
+    // Register version command services (REQ-06-040 through REQ-06-043)
+    // Registered after parsers, executors, and container manager as SystemInfo depends on them
+    services.AddSingleton<ISystemInfo, SystemInfo>();
+    services.AddSingleton<IUpdateChecker, UpdateChecker>();
+    services.AddTransient<VersionCommand>();
 }

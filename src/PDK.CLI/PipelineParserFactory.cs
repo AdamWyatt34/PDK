@@ -3,9 +3,23 @@
 namespace PDK.CLI;
 
 /// <summary>
+/// Interface for selecting the appropriate pipeline parser based on file type.
+/// </summary>
+public interface IPipelineParserFactory
+{
+    /// <summary>
+    /// Gets the appropriate parser for the given file.
+    /// </summary>
+    /// <param name="filePath">Path to the pipeline file.</param>
+    /// <returns>A parser that can handle the file.</returns>
+    /// <exception cref="NotSupportedException">Thrown when no parser is found for the file.</exception>
+    IPipelineParser GetParser(string filePath);
+}
+
+/// <summary>
 /// Factory for selecting the appropriate pipeline parser based on file type.
 /// </summary>
-public class PipelineParserFactory
+public class PipelineParserFactory : IPipelineParserFactory
 {
     private readonly IEnumerable<IPipelineParser> _parsers;
 
@@ -18,12 +32,7 @@ public class PipelineParserFactory
         _parsers = parsers ?? throw new ArgumentNullException(nameof(parsers));
     }
 
-    /// <summary>
-    /// Gets the appropriate parser for the given file.
-    /// </summary>
-    /// <param name="filePath">Path to the pipeline file.</param>
-    /// <returns>A parser that can handle the file.</returns>
-    /// <exception cref="NotSupportedException">Thrown when no parser is found for the file.</exception>
+    /// <inheritdoc/>
     public IPipelineParser GetParser(string filePath)
     {
         var parser = _parsers.FirstOrDefault(p => p.CanParse(filePath));
