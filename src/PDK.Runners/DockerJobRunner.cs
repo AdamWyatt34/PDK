@@ -2,6 +2,7 @@ namespace PDK.Runners;
 
 using Microsoft.Extensions.Logging;
 using PDK.Core.Models;
+using PDK.Core.Progress;
 using PDK.Runners.Models;
 using PDK.Runners.StepExecutors;
 
@@ -15,6 +16,7 @@ public class DockerJobRunner : IJobRunner
     private readonly IImageMapper _imageMapper;
     private readonly StepExecutorFactory _executorFactory;
     private readonly ILogger<DockerJobRunner> _logger;
+    private readonly IProgressReporter _progressReporter;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="DockerJobRunner"/> class.
@@ -23,16 +25,19 @@ public class DockerJobRunner : IJobRunner
     /// <param name="imageMapper">The image mapper for resolving runner names to Docker images.</param>
     /// <param name="executorFactory">The factory for resolving step executors.</param>
     /// <param name="logger">The logger for structured logging.</param>
+    /// <param name="progressReporter">Optional progress reporter for UI feedback. Defaults to NullProgressReporter if not provided.</param>
     public DockerJobRunner(
         IContainerManager containerManager,
         IImageMapper imageMapper,
         StepExecutorFactory executorFactory,
-        ILogger<DockerJobRunner> logger)
+        ILogger<DockerJobRunner> logger,
+        IProgressReporter? progressReporter = null)
     {
         _containerManager = containerManager ?? throw new ArgumentNullException(nameof(containerManager));
         _imageMapper = imageMapper ?? throw new ArgumentNullException(nameof(imageMapper));
         _executorFactory = executorFactory ?? throw new ArgumentNullException(nameof(executorFactory));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _progressReporter = progressReporter ?? NullProgressReporter.Instance;
     }
 
     /// <inheritdoc/>
@@ -93,6 +98,13 @@ public class DockerJobRunner : IJobRunner
                     job.Steps.Count,
                     step.Name);
 
+                // Report step start to progress reporter
+                await _progressReporter.ReportStepStartAsync(
+                    step.Name,
+                    i + 1,
+                    job.Steps.Count,
+                    cancellationToken);
+
                 try
                 {
                     // Resolve executor for this step type
@@ -101,6 +113,13 @@ public class DockerJobRunner : IJobRunner
                     // Execute step (executor handles step-level environment merging)
                     var stepResult = await executor.ExecuteAsync(step, context, cancellationToken);
                     stepResults.Add(stepResult);
+
+                    // Report step completion to progress reporter
+                    await _progressReporter.ReportStepCompleteAsync(
+                        step.Name,
+                        stepResult.Success,
+                        stepResult.Duration,
+                        cancellationToken);
 
                     // Log step completion
                     if (stepResult.Success)

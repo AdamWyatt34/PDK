@@ -5,7 +5,22 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <SourceRevisionId Condition="'$(GIT_COMMIT)' != ''">$(GIT_COMMIT)</SourceRevisionId>
   </PropertyGroup>
+
+  <!-- Assembly metadata for version command (REQ-06-040) -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>BuildDate</_Parameter1>
+      <_Parameter2>$([System.DateTime]::UtcNow.ToString("o"))</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="PDK.Tests.Unit" />
+    <InternalsVisibleTo Include="PDK.Tests.Integration" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.0" />
