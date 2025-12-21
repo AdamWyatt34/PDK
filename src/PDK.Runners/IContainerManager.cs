@@ -85,4 +85,31 @@ public interface IContainerManager : IAsyncDisposable
         string image,
         IProgress<string>? progress = null,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets a tar archive of files from a container path.
+    /// </summary>
+    /// <param name="containerId">The ID of the container.</param>
+    /// <param name="containerPath">The path in the container to archive.</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>A stream containing the tar archive.</returns>
+    /// <exception cref="ContainerException">Thrown when archive retrieval fails.</exception>
+    Task<Stream> GetArchiveFromContainerAsync(
+        string containerId,
+        string containerPath,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Extracts a tar archive to a path in the container.
+    /// </summary>
+    /// <param name="containerId">The ID of the container.</param>
+    /// <param name="containerPath">The target path in the container.</param>
+    /// <param name="tarStream">The tar archive stream to extract.</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <exception cref="ContainerException">Thrown when archive extraction fails.</exception>
+    Task PutArchiveToContainerAsync(
+        string containerId,
+        string containerPath,
+        Stream tarStream,
+        CancellationToken cancellationToken = default);
 }

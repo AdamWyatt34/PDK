@@ -761,4 +761,132 @@ public class DockerContainerManager : IContainerManager
 
         return (stdoutBuilder.ToString(), stderrBuilder.ToString());
     }
+
+    /// <inheritdoc/>
+    public async Task<Stream> GetArchiveFromContainerAsync(
+        string containerId,
+        string containerPath,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(containerId))
+        {
+            throw new ArgumentException("Container ID cannot be null or empty.", nameof(containerId));
+        }
+
+        if (string.IsNullOrWhiteSpace(containerPath))
+        {
+            throw new ArgumentException("Container path cannot be null or empty.", nameof(containerPath));
+        }
+
+        try
+        {
+            _logger?.LogDebug(
+                "Getting archive from container {ContainerId} at path {Path}",
+                containerId,
+                containerPath);
+
+            var response = await _dockerClient.Containers.GetArchiveFromContainerAsync(
+                containerId,
+                new GetArchiveFromContainerParameters { Path = containerPath },
+                statOnly: false,
+                cancellationToken);
+
+            _logger?.LogDebug("Successfully retrieved archive from container");
+
+            return response.Stream;
+        }
+        catch (DockerApiException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            throw new ContainerException(
+                $"Path '{containerPath}' not found in container '{containerId}'",
+                ex)
+            {
+                ContainerId = containerId
+            };
+        }
+        catch (DockerApiException ex)
+        {
+            throw new ContainerException(
+                $"Failed to get archive from container '{containerId}': {ex.Message}",
+                ex)
+            {
+                ContainerId = containerId
+            };
+        }
+        catch (Exception ex) when (ex is not ContainerException)
+        {
+            throw new ContainerException(
+                $"Failed to get archive from container '{containerId}': {ex.Message}",
+                ex)
+            {
+                ContainerId = containerId
+            };
+        }
+    }
+
+    /// <inheritdoc/>
+    public async Task PutArchiveToContainerAsync(
+        string containerId,
+        string containerPath,
+        Stream tarStream,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(containerId))
+        {
+            throw new ArgumentException("Container ID cannot be null or empty.", nameof(containerId));
+        }
+
+        if (string.IsNullOrWhiteSpace(containerPath))
+        {
+            throw new ArgumentException("Container path cannot be null or empty.", nameof(containerPath));
+        }
+
+        if (tarStream == null)
+        {
+            throw new ArgumentNullException(nameof(tarStream));
+        }
+
+        try
+        {
+            _logger?.LogDebug(
+                "Putting archive to container {ContainerId} at path {Path}",
+                containerId,
+                containerPath);
+
+            await _dockerClient.Containers.ExtractArchiveToContainerAsync(
+                containerId,
+                new ContainerPathStatParameters { Path = containerPath, AllowOverwriteDirWithFile = false },
+                tarStream,
+                cancellationToken);
+
+            _logger?.LogDebug("Successfully extracted archive to container");
+        }
+        catch (DockerApiException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            throw new ContainerException(
+                $"Container '{containerId}' or path '{containerPath}' not found",
+                ex)
+            {
+                ContainerId = containerId
+            };
+        }
+        catch (DockerApiException ex)
+        {
+            throw new ContainerException(
+                $"Failed to put archive to container '{containerId}': {ex.Message}",
+                ex)
+            {
+                ContainerId = containerId
+            };
+        }
+        catch (Exception ex) when (ex is not ContainerException)
+        {
+            throw new ContainerException(
+                $"Failed to put archive to container '{containerId}': {ex.Message}",
+                ex)
+            {
+                ContainerId = containerId
+            };
+        }
+    }
 }

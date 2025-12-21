@@ -511,6 +511,11 @@ static void ConfigureServices(ServiceCollection services)
     // Register container manager
     services.AddSingleton<PDK.Runners.IContainerManager, DockerContainerManager>();
 
+    // Register artifact services (Sprint 8)
+    services.AddSingleton<PDK.Core.Artifacts.IFileSelector, PDK.Core.Artifacts.FileSelector>();
+    services.AddSingleton<PDK.Core.Artifacts.IArtifactCompressor, PDK.Core.Artifacts.ArtifactCompressor>();
+    services.AddSingleton<PDK.Core.Artifacts.IArtifactManager, PDK.Core.Artifacts.ArtifactManager>();
+
     // Register step executors
     services.AddSingleton<IStepExecutor, CheckoutStepExecutor>();
     services.AddSingleton<IStepExecutor, ScriptStepExecutor>();
@@ -518,6 +523,8 @@ static void ConfigureServices(ServiceCollection services)
     services.AddSingleton<IStepExecutor, DotnetStepExecutor>();
     services.AddSingleton<IStepExecutor, NpmStepExecutor>();
     services.AddSingleton<IStepExecutor, DockerStepExecutor>();
+    services.AddSingleton<IStepExecutor, UploadArtifactExecutor>();
+    services.AddSingleton<IStepExecutor, DownloadArtifactExecutor>();
 
     // Register step executor factory
     services.AddSingleton<StepExecutorFactory>();

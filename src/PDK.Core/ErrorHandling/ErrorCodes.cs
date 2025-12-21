@@ -171,6 +171,37 @@ public static class ErrorCodes
 
     #endregion
 
+    #region Artifact Errors (PDK-E-ARTIFACT-XXX)
+
+    /// <summary>Invalid artifact name format.</summary>
+    public const string ArtifactInvalidName = "PDK-E-ARTIFACT-001";
+
+    /// <summary>No files matched the specified pattern.</summary>
+    public const string ArtifactNoFilesMatched = "PDK-E-ARTIFACT-002";
+
+    /// <summary>Artifact with this name already exists.</summary>
+    public const string ArtifactAlreadyExists = "PDK-E-ARTIFACT-003";
+
+    /// <summary>Artifact not found.</summary>
+    public const string ArtifactNotFound = "PDK-E-ARTIFACT-004";
+
+    /// <summary>Permission denied accessing artifact path.</summary>
+    public const string ArtifactPermissionDenied = "PDK-E-ARTIFACT-005";
+
+    /// <summary>Insufficient disk space for artifact.</summary>
+    public const string ArtifactDiskSpaceLow = "PDK-E-ARTIFACT-006";
+
+    /// <summary>Artifact metadata is corrupt or invalid.</summary>
+    public const string ArtifactCorruptMetadata = "PDK-E-ARTIFACT-007";
+
+    /// <summary>Failed to compress artifact.</summary>
+    public const string ArtifactCompressionFailed = "PDK-E-ARTIFACT-008";
+
+    /// <summary>Failed to decompress artifact.</summary>
+    public const string ArtifactDecompressionFailed = "PDK-E-ARTIFACT-009";
+
+    #endregion
+
     #region Config Warnings (PDK-W-CONFIG-XXX)
 
     /// <summary>Optional configuration is missing.</summary>
@@ -257,6 +288,17 @@ public static class ErrorCodes
             SecretStorageFailed => "Secret storage operation failed",
             SecretInvalidName => "Secret name is invalid",
 
+            // Artifact errors
+            ArtifactInvalidName => "Invalid artifact name format",
+            ArtifactNoFilesMatched => "No files matched the specified pattern",
+            ArtifactAlreadyExists => "Artifact with this name already exists",
+            ArtifactNotFound => "Artifact not found",
+            ArtifactPermissionDenied => "Permission denied accessing artifact path",
+            ArtifactDiskSpaceLow => "Insufficient disk space for artifact",
+            ArtifactCorruptMetadata => "Artifact metadata is corrupt or invalid",
+            ArtifactCompressionFailed => "Failed to compress artifact",
+            ArtifactDecompressionFailed => "Failed to decompress artifact",
+
             // Config warnings
             MissingOptionalConfig => "Optional configuration is missing",
             DeprecatedConfig => "Configuration option is deprecated",
@@ -337,6 +379,16 @@ public static class ErrorCodes
         yield return SecretNotFound;
         yield return SecretStorageFailed;
         yield return SecretInvalidName;
+
+        yield return ArtifactInvalidName;
+        yield return ArtifactNoFilesMatched;
+        yield return ArtifactAlreadyExists;
+        yield return ArtifactNotFound;
+        yield return ArtifactPermissionDenied;
+        yield return ArtifactDiskSpaceLow;
+        yield return ArtifactCorruptMetadata;
+        yield return ArtifactCompressionFailed;
+        yield return ArtifactDecompressionFailed;
 
         yield return MissingOptionalConfig;
         yield return DeprecatedConfig;

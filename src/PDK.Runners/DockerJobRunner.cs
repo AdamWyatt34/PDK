@@ -1,6 +1,7 @@
 namespace PDK.Runners;
 
 using Microsoft.Extensions.Logging;
+using PDK.Core.Artifacts;
 using PDK.Core.Logging;
 using PDK.Core.Models;
 using PDK.Core.Progress;
@@ -97,7 +98,11 @@ public class DockerJobRunner : IJobRunner
             _logger.LogInformation("Container created: {ContainerId}", containerId);
 
             // 4. Build base execution context
-            var context = BuildExecutionContext(job, containerId, workspacePath);
+            var baseContext = BuildExecutionContext(job, containerId, workspacePath);
+
+            // Generate run ID for artifact context (Sprint 8)
+            var runId = ArtifactContext.GenerateRunId();
+            _logger.LogDebug("Generated run ID for artifacts: {RunId}", runId);
 
             // Update variable context with job name (Sprint 7)
             _variableResolver.UpdateContext(new VariableContext
@@ -111,6 +116,19 @@ public class DockerJobRunner : IJobRunner
             for (int i = 0; i < job.Steps.Count; i++)
             {
                 var step = job.Steps[i];
+
+                // Create artifact context for this step (Sprint 8)
+                var artifactContext = new ArtifactContext
+                {
+                    WorkspacePath = workspacePath,
+                    RunId = runId,
+                    JobName = SanitizeFileName(job.Name),
+                    StepIndex = i,
+                    StepName = SanitizeFileName(step.Name ?? $"step-{i}")
+                };
+
+                // Create step-specific execution context with artifact context
+                var context = baseContext with { ArtifactContext = artifactContext };
 
                 // Update variable context with step name (Sprint 7)
                 _variableResolver.UpdateContext(new VariableContext
@@ -381,5 +399,21 @@ public class DockerJobRunner : IJobRunner
             StartTime = result.StartTime,
             EndTime = result.EndTime
         };
+    }
+
+    /// <summary>
+    /// Sanitizes a string for use as a filename by replacing invalid characters.
+    /// </summary>
+    /// <param name="name">The name to sanitize.</param>
+    /// <returns>A sanitized filename-safe string.</returns>
+    private static string SanitizeFileName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return "unnamed";
+        }
+
+        var invalidChars = Path.GetInvalidFileNameChars();
+        return string.Join("_", name.Split(invalidChars, StringSplitOptions.RemoveEmptyEntries));
     }
 }

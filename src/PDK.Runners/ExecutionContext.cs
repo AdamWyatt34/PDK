@@ -1,3 +1,5 @@
+using PDK.Core.Artifacts;
+
 namespace PDK.Runners;
 
 /// <summary>
@@ -43,4 +45,10 @@ public record ExecutionContext
     /// Gets the metadata about the job being executed.
     /// </summary>
     public JobMetadata JobInfo { get; init; } = null!;
+
+    /// <summary>
+    /// Gets the artifact context for artifact upload/download operations.
+    /// Contains run ID, job name, step info for organizing artifacts.
+    /// </summary>
+    public ArtifactContext? ArtifactContext { get; init; }
 }

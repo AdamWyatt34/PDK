@@ -1,0 +1,80 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  BuildConfiguration: Release
+  ArtifactName: drop
+
+stages:
+  - stage: Build
+    displayName: Build Stage
+    jobs:
+      - job: BuildJob
+        displayName: Build and Publish
+        steps:
+          - checkout: self
+            displayName: Checkout code
+
+          - task: DotNetCoreCLI@2
+            displayName: Restore dependencies
+            inputs:
+              command: restore
+              projects: '**/*.csproj'
+
+          - task: DotNetCoreCLI@2
+            displayName: Build solution
+            inputs:
+              command: build
+              projects: '**/*.csproj'
+              arguments: '--configuration $(BuildConfiguration) --no-restore'
+
+          - task: DotNetCoreCLI@2
+            displayName: Run tests
+            inputs:
+              command: test
+              projects: '**/*Tests.csproj'
+              arguments: '--configuration $(BuildConfiguration) --no-build'
+
+          - task: PublishBuildArtifacts@1
+            displayName: Publish build artifacts
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              ArtifactName: $(ArtifactName)
+              publishLocation: Container
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publish pipeline artifact
+            inputs:
+              targetPath: '$(Build.SourcesDirectory)/output'
+              artifactName: pipeline-output
+              publishLocation: pipeline
+
+  - stage: Deploy
+    displayName: Deploy Stage
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - job: DeployJob
+        displayName: Deploy Application
+        steps:
+          - task: DownloadBuildArtifacts@0
+            displayName: Download build artifacts
+            inputs:
+              artifactName: $(ArtifactName)
+              downloadPath: $(System.ArtifactsDirectory)
+
+          - task: DownloadPipelineArtifact@2
+            displayName: Download pipeline artifact
+            inputs:
+              artifactName: pipeline-output
+              targetPath: $(Pipeline.Workspace)/artifacts
+
+          - script: |
+              echo "Deploying from $(System.ArtifactsDirectory)"
+              ls -la $(System.ArtifactsDirectory)
+            displayName: Deploy application
