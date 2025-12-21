@@ -29,9 +29,19 @@ public class SecretStorageTests : IDisposable
         }
 
         var directory = Path.GetDirectoryName(_testStoragePath);
-        if (Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any())
+        if (!string.IsNullOrEmpty(directory) && Directory.Exists(directory))
         {
-            Directory.Delete(directory);
+            try
+            {
+                if (!Directory.EnumerateFileSystemEntries(directory).Any())
+                {
+                    Directory.Delete(directory);
+                }
+            }
+            catch (DirectoryNotFoundException)
+            {
+                // Directory was already deleted or never existed
+            }
         }
     }
 

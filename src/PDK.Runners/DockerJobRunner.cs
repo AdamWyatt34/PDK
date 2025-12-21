@@ -1,8 +1,10 @@
 namespace PDK.Runners;
 
 using Microsoft.Extensions.Logging;
+using PDK.Core.Logging;
 using PDK.Core.Models;
 using PDK.Core.Progress;
+using PDK.Core.Variables;
 using PDK.Runners.Models;
 using PDK.Runners.StepExecutors;
 
@@ -17,6 +19,9 @@ public class DockerJobRunner : IJobRunner
     private readonly StepExecutorFactory _executorFactory;
     private readonly ILogger<DockerJobRunner> _logger;
     private readonly IProgressReporter _progressReporter;
+    private readonly IVariableResolver _variableResolver;
+    private readonly IVariableExpander _variableExpander;
+    private readonly ISecretMasker _secretMasker;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="DockerJobRunner"/> class.
@@ -25,18 +30,27 @@ public class DockerJobRunner : IJobRunner
     /// <param name="imageMapper">The image mapper for resolving runner names to Docker images.</param>
     /// <param name="executorFactory">The factory for resolving step executors.</param>
     /// <param name="logger">The logger for structured logging.</param>
+    /// <param name="variableResolver">The variable resolver for managing variables.</param>
+    /// <param name="variableExpander">The variable expander for interpolating variable references.</param>
+    /// <param name="secretMasker">The secret masker for hiding sensitive data in output.</param>
     /// <param name="progressReporter">Optional progress reporter for UI feedback. Defaults to NullProgressReporter if not provided.</param>
     public DockerJobRunner(
         IContainerManager containerManager,
         IImageMapper imageMapper,
         StepExecutorFactory executorFactory,
         ILogger<DockerJobRunner> logger,
+        IVariableResolver variableResolver,
+        IVariableExpander variableExpander,
+        ISecretMasker secretMasker,
         IProgressReporter? progressReporter = null)
     {
         _containerManager = containerManager ?? throw new ArgumentNullException(nameof(containerManager));
         _imageMapper = imageMapper ?? throw new ArgumentNullException(nameof(imageMapper));
         _executorFactory = executorFactory ?? throw new ArgumentNullException(nameof(executorFactory));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _variableResolver = variableResolver ?? throw new ArgumentNullException(nameof(variableResolver));
+        _variableExpander = variableExpander ?? throw new ArgumentNullException(nameof(variableExpander));
+        _secretMasker = secretMasker ?? throw new ArgumentNullException(nameof(secretMasker));
         _progressReporter = progressReporter ?? NullProgressReporter.Instance;
     }
 
@@ -85,10 +99,30 @@ public class DockerJobRunner : IJobRunner
             // 4. Build base execution context
             var context = BuildExecutionContext(job, containerId, workspacePath);
 
+            // Update variable context with job name (Sprint 7)
+            _variableResolver.UpdateContext(new VariableContext
+            {
+                Workspace = workspacePath,
+                Runner = job.RunsOn,
+                JobName = job.Name
+            });
+
             // 5. Execute each step in order
             for (int i = 0; i < job.Steps.Count; i++)
             {
                 var step = job.Steps[i];
+
+                // Update variable context with step name (Sprint 7)
+                _variableResolver.UpdateContext(new VariableContext
+                {
+                    Workspace = workspacePath,
+                    Runner = job.RunsOn,
+                    JobName = job.Name,
+                    StepName = step.Name
+                });
+
+                // Expand variables in step properties (Sprint 7)
+                var expandedStep = ExpandStepVariables(step);
 
                 // Log step start
                 _logger.LogInformation(
@@ -96,11 +130,11 @@ public class DockerJobRunner : IJobRunner
                     job.Name,
                     i + 1,
                     job.Steps.Count,
-                    step.Name);
+                    expandedStep.Name);
 
                 // Report step start to progress reporter
                 await _progressReporter.ReportStepStartAsync(
-                    step.Name,
+                    expandedStep.Name,
                     i + 1,
                     job.Steps.Count,
                     cancellationToken);
@@ -108,10 +142,13 @@ public class DockerJobRunner : IJobRunner
                 try
                 {
                     // Resolve executor for this step type
-                    var executor = _executorFactory.GetExecutor(step.Type);
+                    var executor = _executorFactory.GetExecutor(expandedStep.Type);
 
                     // Execute step (executor handles step-level environment merging)
-                    var stepResult = await executor.ExecuteAsync(step, context, cancellationToken);
+                    var stepResult = await executor.ExecuteAsync(expandedStep, context, cancellationToken);
+
+                    // Mask secrets in output (Sprint 7)
+                    stepResult = MaskStepResultSecrets(stepResult);
                     stepResults.Add(stepResult);
 
                     // Report step completion to progress reporter
@@ -282,6 +319,67 @@ public class DockerJobRunner : IJobRunner
                 JobId = job.Id ?? Guid.NewGuid().ToString(),
                 Runner = job.RunsOn
             }
+        };
+    }
+
+    /// <summary>
+    /// Expands variables in all step properties that may contain variable references.
+    /// </summary>
+    /// <param name="step">The step with variable references.</param>
+    /// <returns>A new step with all variables expanded.</returns>
+    private Step ExpandStepVariables(Step step)
+    {
+        return new Step
+        {
+            Id = step.Id,
+            Name = step.Name,
+            Type = step.Type,
+            Script = step.Script != null
+                ? _variableExpander.Expand(step.Script, _variableResolver)
+                : null,
+            Shell = step.Shell,
+            With = ExpandDictionary(step.With),
+            Environment = ExpandDictionary(step.Environment),
+            ContinueOnError = step.ContinueOnError,
+            Condition = step.Condition,
+            WorkingDirectory = step.WorkingDirectory != null
+                ? _variableExpander.Expand(step.WorkingDirectory, _variableResolver)
+                : null
+        };
+    }
+
+    /// <summary>
+    /// Expands variables in all dictionary values.
+    /// </summary>
+    /// <param name="dict">The dictionary with variable references in values.</param>
+    /// <returns>A new dictionary with all values expanded.</returns>
+    private Dictionary<string, string> ExpandDictionary(Dictionary<string, string> dict)
+    {
+        var result = new Dictionary<string, string>();
+        foreach (var (key, value) in dict)
+        {
+            result[key] = _variableExpander.Expand(value, _variableResolver);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Masks secret values in step output and error output.
+    /// </summary>
+    /// <param name="result">The step execution result.</param>
+    /// <returns>A new result with secrets masked.</returns>
+    private StepExecutionResult MaskStepResultSecrets(StepExecutionResult result)
+    {
+        return new StepExecutionResult
+        {
+            StepName = result.StepName,
+            Success = result.Success,
+            ExitCode = result.ExitCode,
+            Output = _secretMasker.MaskSecrets(result.Output),
+            ErrorOutput = _secretMasker.MaskSecrets(result.ErrorOutput),
+            Duration = result.Duration,
+            StartTime = result.StartTime,
+            EndTime = result.EndTime
         };
     }
 }

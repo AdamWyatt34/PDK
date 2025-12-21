@@ -16,7 +16,11 @@ using PDK.Providers.GitHub;
 using PDK.Runners;
 using PDK.Runners.Docker;
 using PDK.Runners.StepExecutors;
+using PDK.Core.Configuration;
+using PDK.Core.Variables;
+using PDK.Core.Secrets;
 using Spectre.Console;
+using System.Text;
 
 var services = new ServiceCollection();
 ConfigureServices(services);
@@ -74,6 +78,36 @@ var interactiveOption = new Option<bool>(
     description: "Run in interactive mode for guided pipeline exploration",
     getDefaultValue: () => false);
 
+var configOption = new Option<string?>(
+    aliases: ["--config", "-c"],
+    description: "Path to configuration file (auto-discovers if not specified)");
+
+var varOption = new Option<string[]>(
+    aliases: ["--var"],
+    description: "Set variable (NAME=VALUE, can be repeated)")
+{
+    AllowMultipleArgumentsPerToken = true
+};
+
+var varFileOption = new Option<FileInfo?>(
+    aliases: ["--var-file"],
+    description: "Load variables from JSON file");
+varFileOption.AddValidator(result =>
+{
+    var file = result.GetValueForOption(varFileOption);
+    if (file?.Exists == false)
+    {
+        result.ErrorMessage = $"Variable file not found: {file.FullName}";
+    }
+});
+
+var secretOption = new Option<string[]>(
+    aliases: ["--secret"],
+    description: "Set secret (NAME=VALUE, WARNING: visible in process list)")
+{
+    AllowMultipleArgumentsPerToken = true
+};
+
 runCommand.AddOption(fileOption);
 runCommand.AddOption(jobOption);
 runCommand.AddOption(stepOption);
@@ -82,9 +116,26 @@ runCommand.AddOption(validateOption);
 runCommand.AddOption(verboseOption);
 runCommand.AddOption(quietOption);
 runCommand.AddOption(interactiveOption);
+runCommand.AddOption(configOption);
+runCommand.AddOption(varOption);
+runCommand.AddOption(varFileOption);
+runCommand.AddOption(secretOption);
 
-runCommand.SetHandler(async (file, job, step, host, validate, verbose, quiet, interactive) =>
+runCommand.SetHandler(async context =>
 {
+    var file = context.ParseResult.GetValueForOption(fileOption)!;
+    var job = context.ParseResult.GetValueForOption(jobOption);
+    var step = context.ParseResult.GetValueForOption(stepOption);
+    var host = context.ParseResult.GetValueForOption(hostOption);
+    var validate = context.ParseResult.GetValueForOption(validateOption);
+    var verbose = context.ParseResult.GetValueForOption(verboseOption);
+    var quiet = context.ParseResult.GetValueForOption(quietOption);
+    var interactive = context.ParseResult.GetValueForOption(interactiveOption);
+    var configPath = context.ParseResult.GetValueForOption(configOption);
+    var vars = context.ParseResult.GetValueForOption(varOption) ?? [];
+    var varFile = context.ParseResult.GetValueForOption(varFileOption);
+    var secrets = context.ParseResult.GetValueForOption(secretOption) ?? [];
+
     try
     {
         // Interactive mode takes precedence (REQ-06-020)
@@ -96,6 +147,17 @@ runCommand.SetHandler(async (file, job, step, host, validate, verbose, quiet, in
             return;
         }
 
+        // Parse NAME=VALUE arrays into dictionaries
+        var cliVariables = ParseKeyValuePairs(vars);
+        var cliSecrets = ParseKeyValuePairs(secrets);
+
+        // Warn if secrets passed via CLI
+        if (cliSecrets.Count > 0)
+        {
+            AnsiConsole.MarkupLine("[yellow]Warning:[/] Secrets passed via --secret are visible in process lists.");
+            AnsiConsole.MarkupLine("[yellow]Recommendation:[/] Use 'pdk secret set NAME' or PDK_SECRET_* environment variables.");
+        }
+
         var executor = serviceProvider.GetRequiredService<PipelineExecutor>();
         await executor.Execute(new ExecutionOptions
         {
@@ -105,7 +167,11 @@ runCommand.SetHandler(async (file, job, step, host, validate, verbose, quiet, in
             UseDocker = !host,
             ValidateOnly = validate,
             Verbose = verbose,
-            Quiet = quiet
+            Quiet = quiet,
+            ConfigPath = configPath,
+            CliVariables = cliVariables,
+            VarFilePath = varFile?.FullName,
+            CliSecrets = cliSecrets
         });
     }
     catch (Exception ex)
@@ -114,7 +180,7 @@ runCommand.SetHandler(async (file, job, step, host, validate, verbose, quiet, in
         errorFormatter.DisplayError(ex, verbose);
         Environment.Exit(1);
     }
-}, fileOption, jobOption, stepOption, hostOption, validateOption, verboseOption, quietOption, interactiveOption);
+});
 
 // List command
 var listCommand = new Command("list", "List jobs in a pipeline");
@@ -275,12 +341,115 @@ interactiveCommand.SetHandler(async file =>
     }
 }, interactiveFileOption);
 
+// Secret command (Sprint 7)
+var secretCommand = new Command("secret", "Manage secrets");
+
+// pdk secret set NAME [--value VALUE] [--stdin]
+var secretSetCommand = new Command("set", "Set a secret value");
+var secretNameArg = new Argument<string>("name", "Secret name");
+var secretValueOption = new Option<string?>("--value", "Secret value (WARNING: visible in process list)");
+var secretStdinOption = new Option<bool>("--stdin", "Read value from stdin");
+secretSetCommand.AddArgument(secretNameArg);
+secretSetCommand.AddOption(secretValueOption);
+secretSetCommand.AddOption(secretStdinOption);
+
+secretSetCommand.SetHandler(async (name, valueOpt, useStdin) =>
+{
+    try
+    {
+        var manager = serviceProvider.GetRequiredService<ISecretManager>();
+        string value;
+
+        if (useStdin)
+        {
+            // Read from stdin (for piping: echo 'secret' | pdk secret set NAME --stdin)
+            value = await Console.In.ReadToEndAsync();
+            value = value.TrimEnd('\r', '\n');
+        }
+        else if (!string.IsNullOrEmpty(valueOpt))
+        {
+            // Use --value option (with warning)
+            AnsiConsole.MarkupLine("[yellow]Warning:[/] Value provided via CLI is visible in process list.");
+            value = valueOpt;
+        }
+        else
+        {
+            // Interactive mode (recommended)
+            AnsiConsole.MarkupLine($"Enter value for [blue]{name}[/]:");
+            value = ReadSecretFromConsole();
+        }
+
+        await manager.SetSecretAsync(name, value);
+        AnsiConsole.MarkupLine($"[green]\u2713[/] Secret '{name}' saved");
+    }
+    catch (Exception ex)
+    {
+        AnsiConsole.MarkupLine($"[red]Error:[/] {ex.Message}");
+        Environment.ExitCode = 1;
+    }
+}, secretNameArg, secretValueOption, secretStdinOption);
+
+// pdk secret list
+var secretListCommand = new Command("list", "List secret names");
+secretListCommand.SetHandler(async () =>
+{
+    try
+    {
+        var manager = serviceProvider.GetRequiredService<ISecretManager>();
+        var names = await manager.ListSecretNamesAsync();
+        if (!names.Any())
+        {
+            AnsiConsole.MarkupLine("[dim]No secrets stored[/]");
+            return;
+        }
+        foreach (var name in names)
+        {
+            AnsiConsole.WriteLine(name);
+        }
+    }
+    catch (Exception ex)
+    {
+        AnsiConsole.MarkupLine($"[red]Error:[/] {ex.Message}");
+        Environment.ExitCode = 1;
+    }
+});
+
+// pdk secret delete NAME
+var secretDeleteCommand = new Command("delete", "Delete a secret");
+var deleteNameArg = new Argument<string>("name", "Secret name to delete");
+secretDeleteCommand.AddArgument(deleteNameArg);
+secretDeleteCommand.SetHandler(async (name) =>
+{
+    try
+    {
+        var manager = serviceProvider.GetRequiredService<ISecretManager>();
+        if (!await manager.SecretExistsAsync(name))
+        {
+            AnsiConsole.MarkupLine($"[yellow]Secret '{name}' not found[/]");
+            Environment.ExitCode = 1;
+            return;
+        }
+        await manager.DeleteSecretAsync(name);
+        AnsiConsole.MarkupLine($"[green]\u2713[/] Secret '{name}' deleted");
+    }
+    catch (Exception ex)
+    {
+        AnsiConsole.MarkupLine($"[red]Error:[/] {ex.Message}");
+        Environment.ExitCode = 1;
+    }
+}, deleteNameArg);
+
+secretCommand.AddCommand(secretSetCommand);
+secretCommand.AddCommand(secretListCommand);
+secretCommand.AddCommand(secretDeleteCommand);
+
 rootCommand.AddCommand(runCommand);
 rootCommand.AddCommand(listCommand);
 rootCommand.AddCommand(validateCommand);
 rootCommand.AddCommand(versionCommand);
 rootCommand.AddCommand(doctorCommand);
 rootCommand.AddCommand(interactiveCommand);
+rootCommand.AddCommand(secretCommand);
 
 return await rootCommand.InvokeAsync(args);
 
@@ -301,6 +470,25 @@ static void ConfigureServices(ServiceCollection services)
 
     // Register secret masker
     services.AddSingleton<ISecretMasker, SecretMasker>();
+
+    // Register configuration services (Sprint 7)
+    services.AddSingleton<ConfigurationValidator>();
+    services.AddSingleton<IConfigurationLoader, ConfigurationLoader>();
+    services.AddSingleton<IConfigurationMerger, ConfigurationMerger>();
+
+    // Register variable services (Sprint 7)
+    services.AddSingleton<IBuiltInVariables, BuiltInVariables>();
+    services.AddSingleton<IVariableResolver, VariableResolver>();
+    services.AddSingleton<IVariableExpander, VariableExpander>();
+
+    // Register secret services (Sprint 7)
+    services.AddSingleton<ISecretEncryption, SecretEncryption>();
+    services.AddSingleton<SecretStorage>();
+    services.AddSingleton<ISecretManager>(sp => new SecretManager(
+        sp.GetRequiredService<ISecretEncryption>(),
+        sp.GetRequiredService<SecretStorage>(),
+        sp.GetRequiredService<ISecretMasker>()));
+    services.AddSingleton<ISecretDetector, SecretDetector>();
 
     // Register error handling services
     services.AddSingleton<ErrorSuggestionEngine>();
@@ -343,4 +531,42 @@ static void ConfigureServices(ServiceCollection services)
     services.AddSingleton<ISystemInfo, SystemInfo>();
     services.AddSingleton<IUpdateChecker, UpdateChecker>();
     services.AddTransient<VersionCommand>();
+}
+
+/// <summary>
+/// Parses an array of NAME=VALUE strings into a dictionary.
+/// </summary>
+static Dictionary<string, string> ParseKeyValuePairs(string[]? pairs)
+{
+    var result = new Dictionary<string, string>();
+    foreach (var pair in pairs ?? [])
+    {
+        var eqIndex = pair.IndexOf('=');
+        if (eqIndex > 0)
+        {
+            var key = pair[..eqIndex];
+            var value = pair[(eqIndex + 1)..];
+            result[key] = value;
+        }
+    }
+    return result;
+}
+
+/// <summary>
+/// Reads a secret value from the console with masked input.
+/// </summary>
+static string ReadSecretFromConsole()
+{
+    var value = new StringBuilder();
+    while (true)
+    {
+        var key = Console.ReadKey(intercept: true);
+        if (key.Key == ConsoleKey.Enter) break;
+        if (key.Key == ConsoleKey.Backspace && value.Length > 0)
+            value.Length--;
+        else if (!char.IsControl(key.KeyChar))
+            value.Append(key.KeyChar);
+    }
+    Console.WriteLine();
+    return value.ToString();
 }

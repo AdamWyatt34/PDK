@@ -1,8 +1,14 @@
 using System.Diagnostics;
+using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using PDK.CLI.Diagnostics;
 using PDK.CLI.UI;
+using PDK.Core.Configuration;
+using PDK.Core.Logging;
 using PDK.Core.Models;
 using PDK.Core.Progress;
+using PDK.Core.Secrets;
+using PDK.Core.Variables;
 using PDK.Runners;
 using Spectre.Console;
 
@@ -19,6 +25,13 @@ public class PipelineExecutor
     private readonly IConsoleOutput _output;
     private readonly IProgressReporter _progressReporter;
     private readonly IAnsiConsole _console;
+    private readonly IConfigurationLoader _configLoader;
+    private readonly IConfigurationMerger _configMerger;
+    private readonly IVariableResolver _variableResolver;
+    private readonly ISecretManager _secretManager;
+    private readonly ISecretMasker _secretMasker;
+    private readonly ISecretDetector _secretDetector;
+    private readonly ILogger<PipelineExecutor> _logger;
 
     /// <summary>
     /// Initializes a new instance of <see cref="PipelineExecutor"/>.
@@ -29,13 +42,27 @@ public class PipelineExecutor
     /// <param name="output">Console output service.</param>
     /// <param name="progressReporter">Progress reporter for UI feedback.</param>
     /// <param name="console">Spectre.Console instance for rich output.</param>
+    /// <param name="configLoader">Configuration loader for discovering and loading config files.</param>
+    /// <param name="configMerger">Configuration merger for combining config sources.</param>
+    /// <param name="variableResolver">Variable resolver for managing variables.</param>
+    /// <param name="secretManager">Secret manager for encrypted secret storage.</param>
+    /// <param name="secretMasker">Secret masker for hiding sensitive data in output.</param>
+    /// <param name="secretDetector">Secret detector for warning about potential secrets.</param>
+    /// <param name="logger">Logger for structured logging.</param>
     public PipelineExecutor(
         PipelineParserFactory parserFactory,
         PDK.Runners.IContainerManager containerManager,
         PDK.Runners.IJobRunner jobRunner,
         IConsoleOutput output,
         IProgressReporter progressReporter,
-        IAnsiConsole console)
+        IAnsiConsole console,
+        IConfigurationLoader configLoader,
+        IConfigurationMerger configMerger,
+        IVariableResolver variableResolver,
+        ISecretManager secretManager,
+        ISecretMasker secretMasker,
+        ISecretDetector secretDetector,
+        ILogger<PipelineExecutor> logger)
     {
         _parserFactory = parserFactory ?? throw new ArgumentNullException(nameof(parserFactory));
         _containerManager = containerManager ?? throw new ArgumentNullException(nameof(containerManager));
@@ -43,6 +70,13 @@ public class PipelineExecutor
         _output = output ?? throw new ArgumentNullException(nameof(output));
         _progressReporter = progressReporter ?? throw new ArgumentNullException(nameof(progressReporter));
         _console = console ?? throw new ArgumentNullException(nameof(console));
+        _configLoader = configLoader ?? throw new ArgumentNullException(nameof(configLoader));
+        _configMerger = configMerger ?? throw new ArgumentNullException(nameof(configMerger));
+        _variableResolver = variableResolver ?? throw new ArgumentNullException(nameof(variableResolver));
+        _secretManager = secretManager ?? throw new ArgumentNullException(nameof(secretManager));
+        _secretMasker = secretMasker ?? throw new ArgumentNullException(nameof(secretMasker));
+        _secretDetector = secretDetector ?? throw new ArgumentNullException(nameof(secretDetector));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     /// <summary>
@@ -65,6 +99,10 @@ public class PipelineExecutor
             _output.WriteSuccess("Pipeline validation successful");
             return;
         }
+
+        // Initialize configuration, variables, and secrets (Sprint 7)
+        var workspacePath = Directory.GetCurrentDirectory();
+        await InitializeVariablesAndSecretsAsync(options, workspacePath);
 
         // Check Docker availability if Docker mode is enabled (REQ-DK-007)
         if (options.UseDocker)
@@ -90,7 +128,6 @@ public class PipelineExecutor
             : [pipeline.Jobs[options.JobName]];
 
         // Execute jobs and collect results for summary
-        var workspacePath = Directory.GetCurrentDirectory();
         var allJobsSucceeded = true;
         var totalJobs = jobsToRun.Count;
         var jobResults = new List<JobExecutionResult>();
@@ -251,5 +288,105 @@ public class PipelineExecutor
                 Output = s.Output,
                 ErrorOutput = s.ErrorOutput
             });
+    }
+
+    /// <summary>
+    /// Initializes configuration, variables, and secrets for pipeline execution.
+    /// </summary>
+    /// <param name="options">Execution options containing CLI-provided values.</param>
+    /// <param name="workspacePath">The workspace path for the pipeline.</param>
+    private async Task InitializeVariablesAndSecretsAsync(ExecutionOptions options, string workspacePath)
+    {
+        // 1. Load configuration (auto-discover or explicit path)
+        var config = await _configLoader.LoadAsync(options.ConfigPath);
+        if (config != null)
+        {
+            var defaults = DefaultConfiguration.Create();
+            config = _configMerger.Merge(defaults, config);
+
+            // Load variables from configuration
+            _variableResolver.LoadFromConfiguration(config);
+            _logger.LogDebug("Loaded {Count} variables from configuration", config.Variables?.Count ?? 0);
+        }
+
+        // 2. Load from environment (includes PDK_VAR_* and PDK_SECRET_* patterns)
+        _variableResolver.LoadFromEnvironment();
+
+        // 3. Load variables from --var-file if specified
+        if (!string.IsNullOrEmpty(options.VarFilePath))
+        {
+            await LoadVariablesFromFileAsync(options.VarFilePath);
+        }
+
+        // 4. Apply CLI --var arguments (highest variable precedence)
+        foreach (var (name, value) in options.CliVariables)
+        {
+            _variableResolver.SetVariable(name, value, VariableSource.CliArgument);
+
+            // Warn if variable looks like a secret
+            _secretDetector.WarnIfPotentialSecret(name, value, _logger);
+        }
+
+        // 5. Apply CLI --secret arguments (with warning already displayed in handler)
+        foreach (var (name, value) in options.CliSecrets)
+        {
+            _variableResolver.SetVariable(name, value, VariableSource.Secret);
+            _secretMasker.RegisterSecret(value);
+        }
+
+        // 6. Load secrets from storage
+        await _variableResolver.LoadSecretsAsync(_secretManager);
+
+        // 7. Register all stored secret values with masker
+        var allSecrets = await _secretManager.GetAllSecretsAsync();
+        foreach (var (_, value) in allSecrets)
+        {
+            _secretMasker.RegisterSecret(value);
+        }
+
+        // 8. Register PDK_SECRET_* environment variables with masker
+        foreach (var key in Environment.GetEnvironmentVariables().Keys)
+        {
+            var keyStr = key?.ToString();
+            if (keyStr?.StartsWith("PDK_SECRET_") == true)
+            {
+                var value = Environment.GetEnvironmentVariable(keyStr);
+                if (!string.IsNullOrEmpty(value))
+                {
+                    _secretMasker.RegisterSecret(value);
+                }
+            }
+        }
+
+        // 9. Update variable context with workspace
+        _variableResolver.UpdateContext(new VariableContext
+        {
+            Workspace = workspacePath,
+            Runner = "docker"
+        });
+
+        _logger.LogDebug("Variable and secret initialization complete");
+    }
+
+    /// <summary>
+    /// Loads variables from a JSON file.
+    /// </summary>
+    /// <param name="filePath">Path to the JSON file containing variables.</param>
+    private async Task LoadVariablesFromFileAsync(string filePath)
+    {
+        var json = await File.ReadAllTextAsync(filePath);
+        var variables = JsonSerializer.Deserialize<Dictionary<string, string>>(json, new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true
+        });
+
+        if (variables != null)
+        {
+            foreach (var (name, value) in variables)
+            {
+                _variableResolver.SetVariable(name, value, VariableSource.Configuration);
+            }
+            _logger.LogDebug("Loaded {Count} variables from file: {Path}", variables.Count, filePath);
+        }
     }
 }
