@@ -8,6 +8,7 @@ using Xunit;
 
 public class SecretManagerTests : IDisposable
 {
+    private readonly string _testDir;
     private readonly string _testStoragePath;
     private readonly SecretStorage _storage;
     private readonly SecretEncryption _encryption;
@@ -16,10 +17,14 @@ public class SecretManagerTests : IDisposable
 
     public SecretManagerTests()
     {
-        _testStoragePath = Path.Combine(
+        // Use a unique directory per test instance to avoid conflicts with parallel tests
+        _testDir = Path.Combine(
             Path.GetTempPath(),
-            "pdk-test",
-            $"secrets-manager-{Guid.NewGuid()}.json");
+            $"pdk-test-secrets-{Guid.NewGuid()}");
+
+        Directory.CreateDirectory(_testDir);
+
+        _testStoragePath = Path.Combine(_testDir, "secrets.json");
 
         _storage = new SecretStorage(_testStoragePath);
         _encryption = new SecretEncryption();
@@ -29,25 +34,20 @@ public class SecretManagerTests : IDisposable
 
     public void Dispose()
     {
-        if (File.Exists(_testStoragePath))
+        try
         {
-            File.Delete(_testStoragePath);
+            if (Directory.Exists(_testDir))
+            {
+                Directory.Delete(_testDir, recursive: true);
+            }
         }
-
-        var directory = Path.GetDirectoryName(_testStoragePath);
-        if (!string.IsNullOrEmpty(directory) && Directory.Exists(directory))
+        catch (IOException)
         {
-            try
-            {
-                if (!Directory.EnumerateFileSystemEntries(directory).Any())
-                {
-                    Directory.Delete(directory);
-                }
-            }
-            catch (DirectoryNotFoundException)
-            {
-                // Directory was already deleted or never existed
-            }
+            // Ignore cleanup errors - temp directory will be cleaned up eventually
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Ignore permission errors during cleanup
         }
     }
 
