@@ -91,6 +91,8 @@ public class StepExecutorFactory
             StepType.Maven => "maven",
             StepType.Gradle => "gradle",
             StepType.FileOperation => "fileoperation",
+            StepType.UploadArtifact => "uploadartifact",
+            StepType.DownloadArtifact => "downloadartifact",
             _ => throw new ArgumentException($"Unsupported step type: {stepType}", nameof(stepType))
         };
     }
