@@ -1,6 +1,7 @@
 # PDK (Pipeline Development Kit)
 
 ![CI](https://github.com/AdamWyatt34/pdk/workflows/CI/badge.svg)
+[![codecov](https://codecov.io/gh/AdamWyatt34/pdk/graph/badge.svg)](https://codecov.io/gh/AdamWyatt34/pdk)
 
 A unified CLI tool for running CI/CD pipelines locally across GitHub Actions, Azure DevOps, and GitLab CI.
 
@@ -193,6 +194,27 @@ dotnet test
 
 # Run CLI locally
 dotnet run --project src/PDK.CLI -- run --file samples/github/ci.yml
+```
+
+### Running Tests with Coverage
+
+```bash
+# Collect coverage
+dotnet test --collect:"XPlat Code Coverage" --settings coverlet.runsettings
+
+# Generate HTML report
+dotnet tool install -g dotnet-reportgenerator-globaltool
+reportgenerator -reports:**/coverage.cobertura.xml -targetdir:coveragereport -reporttypes:Html
+
+# Open report
+start coveragereport/index.html  # Windows
+open coveragereport/index.html   # macOS
+xdg-open coveragereport/index.html # Linux
+```
+
+Or use the convenience script:
+```bash
+./scripts/coverage.sh
 ```
 
 ## Roadmap

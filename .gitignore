@@ -29,3 +29,11 @@ bld/
 # PDK specific
 .pdk/
 *.log
+
+# Coverage
+**/TestResults/
+coverage.cobertura.xml
+coverage.json
+coverage.info
+coveragereport/
+*.coverage
