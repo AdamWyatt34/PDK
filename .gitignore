@@ -28,6 +28,7 @@ bld/
 
 # PDK specific
 .pdk/
+.pdk-dogfood/
 *.log
 
 # Coverage
