@@ -1,0 +1,143 @@
+# Azure DevOps Pipeline for PDK (Pipeline Development Kit)
+# FR-09-002: Azure DevOps CI/CD Pipeline
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - '*.md'
+      - 'docs/**'
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - '*.md'
+      - 'docs/**'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  buildConfiguration: 'Release'
+  dotnetVersion: '8.0.x'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+
+stages:
+  - stage: Build
+    displayName: 'Build and Test'
+    jobs:
+      - job: BuildTestPack
+        displayName: 'Build, Test, and Pack'
+        timeoutInMinutes: 15
+
+        steps:
+          - checkout: self
+            fetchDepth: 0
+            displayName: 'Checkout repository'
+
+          - task: UseDotNet@2
+            displayName: 'Setup .NET $(dotnetVersion)'
+            inputs:
+              version: '$(dotnetVersion)'
+              packageType: 'sdk'
+
+          - task: DotNetCoreCLI@2
+            displayName: 'Restore dependencies'
+            inputs:
+              command: 'restore'
+              projects: '**/*.csproj'
+
+          - task: DotNetCoreCLI@2
+            displayName: 'Build solution'
+            inputs:
+              command: 'build'
+              projects: '**/*.csproj'
+              arguments: '--configuration $(buildConfiguration) --no-restore'
+
+          - task: DotNetCoreCLI@2
+            displayName: 'Run tests with coverage'
+            inputs:
+              command: 'test'
+              projects: 'tests/**/*.csproj'
+              arguments: '--configuration $(buildConfiguration) --no-build --collect:"XPlat Code Coverage" --settings coverlet.runsettings --logger "trx;LogFileName=test-results.trx"'
+              publishTestResults: true
+
+          - script: |
+              dotnet tool install -g dotnet-reportgenerator-globaltool
+              reportgenerator -reports:**/coverage.cobertura.xml -targetdir:coveragereport -reporttypes:Html
+            displayName: 'Generate coverage report'
+
+          - task: PublishCodeCoverageResults@2
+            displayName: 'Publish code coverage'
+            inputs:
+              summaryFileLocation: '**/coverage.cobertura.xml'
+
+          - task: DotNetCoreCLI@2
+            displayName: 'Pack as dotnet tool'
+            inputs:
+              command: 'pack'
+              packagesToPack: 'src/PDK.CLI/PDK.CLI.csproj'
+              configuration: '$(buildConfiguration)'
+              packDirectory: '$(Build.ArtifactStagingDirectory)/package'
+              nobuild: true
+
+          - script: |
+              echo "Verifying package creation..."
+              ls -la $(Build.ArtifactStagingDirectory)/package/
+              if [ ! -f $(Build.ArtifactStagingDirectory)/package/*.nupkg ]; then
+                echo "Error: Package not found"
+                exit 1
+              fi
+              echo "Package created successfully"
+            displayName: 'Verify package'
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish package artifact'
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/package'
+              artifact: 'nuget-package'
+              publishLocation: 'pipeline'
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish coverage report'
+            inputs:
+              targetPath: 'coveragereport'
+              artifact: 'coverage-report'
+              publishLocation: 'pipeline'
+
+  - stage: Publish
+    displayName: 'Publish Artifacts'
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - job: PublishPackage
+        displayName: 'Publish NuGet Package'
+        pool:
+          vmImage: 'ubuntu-latest'
+
+        steps:
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download package artifact'
+            inputs:
+              buildType: 'current'
+              artifactName: 'nuget-package'
+              targetPath: '$(Pipeline.Workspace)/package'
+
+          - script: |
+              echo "Package contents:"
+              ls -la $(Pipeline.Workspace)/package/
+            displayName: 'List package contents'
+
+          # Future: Push to NuGet feed
+          # - task: NuGetCommand@2
+          #   inputs:
+          #     command: 'push'
+          #     packagesToPush: '$(Pipeline.Workspace)/package/*.nupkg'
+          #     nuGetFeedType: 'internal'
+          #     publishVstsFeed: 'your-feed-id'
