@@ -38,4 +38,29 @@ public class ExecutionOptions
     /// When true, only job/step status is shown without detailed output.
     /// </summary>
     public bool Quiet { get; set; }
+
+    /// <summary>
+    /// Gets or sets the explicit path to a configuration file.
+    /// If null, configuration is auto-discovered using standard search order.
+    /// </summary>
+    public string? ConfigPath { get; set; }
+
+    /// <summary>
+    /// Gets or sets CLI-provided variables (from --var NAME=VALUE).
+    /// These have highest precedence and override all other sources.
+    /// </summary>
+    public Dictionary<string, string> CliVariables { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets the path to a JSON file containing variables.
+    /// Variables from this file are treated as configuration-level precedence.
+    /// </summary>
+    public string? VarFilePath { get; set; }
+
+    /// <summary>
+    /// Gets or sets CLI-provided secrets (from --secret NAME=VALUE).
+    /// WARNING: Using --secret exposes values in process list.
+    /// These values are automatically registered for masking in output.
+    /// </summary>
+    public Dictionary<string, string> CliSecrets { get; set; } = new();
 }

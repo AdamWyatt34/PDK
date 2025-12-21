@@ -3,7 +3,9 @@ namespace PDK.Tests.Unit.Runners;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
+using PDK.Core.Logging;
 using PDK.Core.Models;
+using PDK.Core.Variables;
 using PDK.Runners;
 using PDK.Runners.Models;
 using PDK.Runners.StepExecutors;
@@ -16,12 +18,18 @@ public class DockerJobRunnerTests : RunnerTestBase
     private readonly Mock<IImageMapper> _mockImageMapper;
     private readonly StepExecutorFactory _executorFactory;
     private readonly Mock<IStepExecutor> _mockStepExecutor;
+    private readonly Mock<IVariableResolver> _mockVariableResolver;
+    private readonly Mock<IVariableExpander> _mockVariableExpander;
+    private readonly Mock<ISecretMasker> _mockSecretMasker;
     private readonly DockerJobRunner _runner;
 
     public DockerJobRunnerTests()
     {
         _mockImageMapper = new Mock<IImageMapper>();
         _mockStepExecutor = new Mock<IStepExecutor>();
+        _mockVariableResolver = new Mock<IVariableResolver>();
+        _mockVariableExpander = new Mock<IVariableExpander>();
+        _mockSecretMasker = new Mock<ISecretMasker>();
 
         // Create real factory with a single mock executor
         var executors = new[] { _mockStepExecutor.Object };
@@ -35,11 +43,24 @@ public class DockerJobRunnerTests : RunnerTestBase
             .Setup(x => x.StepType)
             .Returns("script");
 
+        // Setup variable expander to return input unchanged (passthrough)
+        _mockVariableExpander
+            .Setup(x => x.Expand(It.IsAny<string>(), It.IsAny<IVariableResolver>()))
+            .Returns<string, IVariableResolver>((input, _) => input);
+
+        // Setup secret masker to return input unchanged (passthrough)
+        _mockSecretMasker
+            .Setup(x => x.MaskSecrets(It.IsAny<string>()))
+            .Returns<string>(input => input);
+
         _runner = new DockerJobRunner(
             MockContainerManager.Object,
             _mockImageMapper.Object,
             _executorFactory,
-            MockLogger.Object);
+            MockLogger.Object,
+            _mockVariableResolver.Object,
+            _mockVariableExpander.Object,
+            _mockSecretMasker.Object);
     }
 
     #region RunJobAsync - Success Scenarios

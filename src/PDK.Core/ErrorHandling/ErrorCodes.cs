@@ -102,6 +102,75 @@ public static class ErrorCodes
 
     #endregion
 
+    #region Configuration Errors (PDK-E-CONFIG-XXX)
+
+    /// <summary>Configuration file was not found at specified path.</summary>
+    public const string ConfigFileNotFound = "PDK-E-CONFIG-001";
+
+    /// <summary>Configuration file contains invalid JSON.</summary>
+    public const string ConfigInvalidJson = "PDK-E-CONFIG-002";
+
+    /// <summary>Configuration validation failed.</summary>
+    public const string ConfigValidationFailed = "PDK-E-CONFIG-003";
+
+    /// <summary>Configuration version is invalid or unsupported.</summary>
+    public const string ConfigInvalidVersion = "PDK-E-CONFIG-004";
+
+    /// <summary>Variable name does not match required pattern.</summary>
+    public const string ConfigInvalidVariableName = "PDK-E-CONFIG-005";
+
+    /// <summary>Memory limit format is invalid.</summary>
+    public const string ConfigInvalidMemoryLimit = "PDK-E-CONFIG-006";
+
+    /// <summary>CPU limit value is invalid.</summary>
+    public const string ConfigInvalidCpuLimit = "PDK-E-CONFIG-007";
+
+    /// <summary>Log level value is invalid.</summary>
+    public const string ConfigInvalidLogLevel = "PDK-E-CONFIG-008";
+
+    /// <summary>Retention days value is invalid.</summary>
+    public const string ConfigInvalidRetentionDays = "PDK-E-CONFIG-009";
+
+    #endregion
+
+    #region Variable Errors (PDK-E-VAR-XXX)
+
+    /// <summary>Circular reference detected during variable expansion.</summary>
+    public const string VariableCircularReference = "PDK-E-VAR-001";
+
+    /// <summary>Variable expansion exceeded maximum recursion depth.</summary>
+    public const string VariableRecursionLimit = "PDK-E-VAR-002";
+
+    /// <summary>Required variable is not defined.</summary>
+    public const string VariableRequired = "PDK-E-VAR-003";
+
+    /// <summary>Variable syntax is invalid.</summary>
+    public const string VariableInvalidSyntax = "PDK-E-VAR-004";
+
+    /// <summary>Variable file reference not found.</summary>
+    public const string VariableFileNotFound = "PDK-E-VAR-005";
+
+    #endregion
+
+    #region Secret Errors (PDK-E-SECRET-XXX)
+
+    /// <summary>Secret encryption failed.</summary>
+    public const string SecretEncryptionFailed = "PDK-E-SECRET-001";
+
+    /// <summary>Secret decryption failed.</summary>
+    public const string SecretDecryptionFailed = "PDK-E-SECRET-002";
+
+    /// <summary>Secret not found.</summary>
+    public const string SecretNotFound = "PDK-E-SECRET-003";
+
+    /// <summary>Secret storage operation failed.</summary>
+    public const string SecretStorageFailed = "PDK-E-SECRET-004";
+
+    /// <summary>Secret name is invalid.</summary>
+    public const string SecretInvalidName = "PDK-E-SECRET-005";
+
+    #endregion
+
     #region Config Warnings (PDK-W-CONFIG-XXX)
 
     /// <summary>Optional configuration is missing.</summary>
@@ -163,6 +232,31 @@ public static class ErrorCodes
             ConnectionRefused => "Connection was refused",
             DnsResolutionFailed => "DNS resolution failed",
 
+            // Configuration errors
+            ConfigFileNotFound => "Configuration file was not found at specified path",
+            ConfigInvalidJson => "Configuration file contains invalid JSON",
+            ConfigValidationFailed => "Configuration validation failed",
+            ConfigInvalidVersion => "Configuration version is invalid or unsupported",
+            ConfigInvalidVariableName => "Variable name does not match required pattern",
+            ConfigInvalidMemoryLimit => "Memory limit format is invalid",
+            ConfigInvalidCpuLimit => "CPU limit value is invalid",
+            ConfigInvalidLogLevel => "Log level value is invalid",
+            ConfigInvalidRetentionDays => "Retention days value is invalid",
+
+            // Variable errors
+            VariableCircularReference => "Circular reference detected during variable expansion",
+            VariableRecursionLimit => "Variable expansion exceeded maximum recursion depth",
+            VariableRequired => "Required variable is not defined",
+            VariableInvalidSyntax => "Variable syntax is invalid",
+            VariableFileNotFound => "Variable file reference not found",
+
+            // Secret errors
+            SecretEncryptionFailed => "Secret encryption failed",
+            SecretDecryptionFailed => "Secret decryption failed",
+            SecretNotFound => "Secret not found",
+            SecretStorageFailed => "Secret storage operation failed",
+            SecretInvalidName => "Secret name is invalid",
+
             // Config warnings
             MissingOptionalConfig => "Optional configuration is missing",
             DeprecatedConfig => "Configuration option is deprecated",
@@ -221,6 +315,28 @@ public static class ErrorCodes
         yield return NetworkTimeout;
         yield return ConnectionRefused;
         yield return DnsResolutionFailed;
+
+        yield return ConfigFileNotFound;
+        yield return ConfigInvalidJson;
+        yield return ConfigValidationFailed;
+        yield return ConfigInvalidVersion;
+        yield return ConfigInvalidVariableName;
+        yield return ConfigInvalidMemoryLimit;
+        yield return ConfigInvalidCpuLimit;
+        yield return ConfigInvalidLogLevel;
+        yield return ConfigInvalidRetentionDays;
+
+        yield return VariableCircularReference;
+        yield return VariableRecursionLimit;
+        yield return VariableRequired;
+        yield return VariableInvalidSyntax;
+        yield return VariableFileNotFound;
+
+        yield return SecretEncryptionFailed;
+        yield return SecretDecryptionFailed;
+        yield return SecretNotFound;
+        yield return SecretStorageFailed;
+        yield return SecretInvalidName;
 
         yield return MissingOptionalConfig;
         yield return DeprecatedConfig;

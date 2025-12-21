@@ -2,7 +2,9 @@ namespace PDK.Tests.Integration;
 
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
+using PDK.Core.Logging;
 using PDK.Core.Models;
+using PDK.Core.Variables;
 using PDK.Providers.AzureDevOps;
 using PDK.Runners;
 using PDK.Runners.Docker;
@@ -58,11 +60,19 @@ public class EndToEndExecutionTests : IDisposable
 
         var executorFactory = new StepExecutorFactory(executors);
 
+        // Create variable resolver and expander for integration tests
+        var variableResolver = new VariableResolver();
+        var variableExpander = new VariableExpander();
+        var secretMasker = new SecretMasker();
+
         return new DockerJobRunner(
             _containerManager,
             imageMapper,
             executorFactory,
-            loggerFactory.CreateLogger<DockerJobRunner>());
+            loggerFactory.CreateLogger<DockerJobRunner>(),
+            variableResolver,
+            variableExpander,
+            secretMasker);
     }
 
     /// <summary>
