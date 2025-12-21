@@ -400,16 +400,16 @@ public partial class ArtifactManager : IArtifactManager
         }
     }
 
-    private static void HandleNoFilesFound(string artifactName, IEnumerable<string> patterns, string basePath, string behavior)
+    private static void HandleNoFilesFound(string artifactName, IEnumerable<string> patterns, string basePath, IfNoFilesFound behavior)
     {
-        switch (behavior.ToLowerInvariant())
+        switch (behavior)
         {
-            case "error":
+            case IfNoFilesFound.Error:
                 throw ArtifactException.NoFilesMatched(patterns, basePath);
-            case "warn":
+            case IfNoFilesFound.Warn:
                 // In a real implementation, this would log a warning
                 break;
-            case "ignore":
+            case IfNoFilesFound.Ignore:
                 // Do nothing
                 break;
             default:

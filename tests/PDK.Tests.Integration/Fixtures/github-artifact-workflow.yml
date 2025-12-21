@@ -1,0 +1,73 @@
+name: Build and Publish Artifacts
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  BUILD_CONFIGURATION: Release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        name: Checkout code
+
+      - uses: actions/setup-dotnet@v3
+        name: Setup .NET
+        with:
+          dotnet-version: '8.0'
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --configuration ${{ env.BUILD_CONFIGURATION }} --no-restore
+
+      - uses: actions/upload-artifact@v3
+        name: Upload build output
+        with:
+          name: build-output
+          path: |
+            src/**/bin/Release/**/*.dll
+            src/**/bin/Release/**/*.exe
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Run tests
+        run: dotnet test --configuration ${{ env.BUILD_CONFIGURATION }} --no-build
+
+      - uses: actions/upload-artifact@v4
+        name: Upload test results
+        with:
+          name: test-results
+          path: TestResults/
+          if-no-files-found: warn
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+        name: Checkout code
+
+      - uses: actions/download-artifact@v3
+        name: Download build output
+        with:
+          name: build-output
+          path: ./artifacts
+
+      - uses: actions/download-artifact@v4
+        name: Download test results
+        with:
+          name: test-results
+          path: ./test-results
+
+      - name: Deploy
+        run: |
+          echo "Deploying artifacts from ./artifacts"
+          ls -la ./artifacts

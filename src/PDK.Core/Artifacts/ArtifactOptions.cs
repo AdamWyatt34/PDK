@@ -13,10 +13,9 @@ public record ArtifactOptions
 
     /// <summary>
     /// Gets the behavior when no files match the pattern.
-    /// Options: "error" (throw), "warn" (log warning), "ignore" (silent).
-    /// Default: "error"
+    /// Default: Error (throw exception).
     /// </summary>
-    public string IfNoFilesFound { get; init; } = "error";
+    public IfNoFilesFound IfNoFilesFound { get; init; } = IfNoFilesFound.Error;
 
     /// <summary>
     /// Gets the retention period in days. Null uses default from configuration.

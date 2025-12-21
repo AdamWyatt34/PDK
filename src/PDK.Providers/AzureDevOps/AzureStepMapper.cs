@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using PDK.Core.Artifacts;
 using PDK.Core.Models;
 using PDK.Providers.AzureDevOps.Models;
 
@@ -133,6 +134,16 @@ public static class AzureStepMapper
             case "cmdline":
                 HandleCmdLineTask(azureStep, step);
                 break;
+
+            case "publishbuildartifacts":
+            case "publishpipelineartifact":
+                HandlePublishArtifactTask(azureStep, step);
+                break;
+
+            case "downloadbuildartifacts":
+            case "downloadpipelineartifact":
+                HandleDownloadArtifactTask(azureStep, step);
+                break;
         }
     }
 
@@ -198,8 +209,10 @@ public static class AzureStepMapper
             "bash" => StepType.Bash,
             "docker" => StepType.Docker,
             "cmdline" => StepType.Script,
-            "publishbuildartifacts" => StepType.FileOperation,
-            "downloadbuildartifacts" => StepType.FileOperation,
+            "publishbuildartifacts" => StepType.UploadArtifact,
+            "publishpipelineartifact" => StepType.UploadArtifact,
+            "downloadbuildartifacts" => StepType.DownloadArtifact,
+            "downloadpipelineartifact" => StepType.DownloadArtifact,
             "copyfiles" => StepType.FileOperation,
             "npm" => StepType.Npm,
             "maven" => StepType.Maven,
@@ -486,5 +499,59 @@ public static class AzureStepMapper
         {
             step.Script = ConvertVariableSyntax(scriptContent?.ToString());
         }
+    }
+
+    /// <summary>
+    /// Handles PublishBuildArtifacts@1 and PublishPipelineArtifact@1 task-specific processing.
+    /// Extracts artifact name and path, creates an ArtifactDefinition for upload.
+    /// </summary>
+    private static void HandlePublishArtifactTask(AzureStep azureStep, Step step)
+    {
+        if (azureStep.Inputs == null)
+            return;
+
+        // Support both old (PathtoPublish) and new (targetPath) parameter names
+        var path = azureStep.Inputs.GetValueOrDefault("PathtoPublish")?.ToString()
+                ?? azureStep.Inputs.GetValueOrDefault("targetPath")?.ToString()
+                ?? ".";
+
+        var name = azureStep.Inputs.GetValueOrDefault("ArtifactName")?.ToString()
+                ?? azureStep.Inputs.GetValueOrDefault("artifactName")?.ToString()
+                ?? "drop";
+
+        step.Artifact = new ArtifactDefinition
+        {
+            Name = name,
+            Operation = ArtifactOperation.Upload,
+            Patterns = new[] { ConvertVariableSyntax(path) },
+            Options = new ArtifactOptions
+            {
+                Compression = CompressionType.Zip  // Azure default
+            }
+        };
+    }
+
+    /// <summary>
+    /// Handles DownloadBuildArtifacts@0 and DownloadPipelineArtifact@2 task-specific processing.
+    /// Extracts artifact name and target path, creates an ArtifactDefinition for download.
+    /// </summary>
+    private static void HandleDownloadArtifactTask(AzureStep azureStep, Step step)
+    {
+        if (azureStep.Inputs == null)
+            return;
+
+        var name = azureStep.Inputs.GetValueOrDefault("artifactName")?.ToString() ?? "";
+        var path = azureStep.Inputs.GetValueOrDefault("targetPath")?.ToString()
+                ?? azureStep.Inputs.GetValueOrDefault("downloadPath")?.ToString()
+                ?? "./";
+
+        step.Artifact = new ArtifactDefinition
+        {
+            Name = name,
+            Operation = ArtifactOperation.Download,
+            Patterns = Array.Empty<string>(),
+            TargetPath = ConvertVariableSyntax(path),
+            Options = ArtifactOptions.Default
+        };
     }
 }

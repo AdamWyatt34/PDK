@@ -1,3 +1,4 @@
+using PDK.Core.Artifacts;
 using PDK.Core.Models;
 using PDK.Providers.GitHub.Models;
 using System.Text.RegularExpressions;
@@ -90,6 +91,16 @@ public static class ActionMapper
         // Store original action reference for reference
         step.With["_action"] = actionRef;
         step.With["_version"] = version;
+
+        // Parse artifact definitions for artifact steps
+        if (step.Type == StepType.UploadArtifact)
+        {
+            step.Artifact = ParseUploadArtifact(gitHubStep.With);
+        }
+        else if (step.Type == StepType.DownloadArtifact)
+        {
+            step.Artifact = ParseDownloadArtifact(gitHubStep.With);
+        }
     }
 
     /// <summary>
@@ -114,6 +125,8 @@ public static class ActionMapper
     /// <summary>
     /// Maps a GitHub action reference to a PDK StepType.
     /// </summary>
+    /// <param name="actionKey">The action key in format "owner/repo" or "owner/repo/path".</param>
+    /// <returns>The corresponding StepType.</returns>
     private static StepType MapActionToStepType(string actionKey)
     {
         return actionKey.ToLowerInvariant() switch
@@ -123,6 +136,8 @@ public static class ActionMapper
             "actions/setup-node" => StepType.Npm,
             "actions/setup-python" => StepType.Python,
             "actions/setup-java" => StepType.Maven,
+            "actions/upload-artifact" => StepType.UploadArtifact,
+            "actions/download-artifact" => StepType.DownloadArtifact,
             "gradle/gradle-build-action" => StepType.Gradle,
             "docker/build-push-action" => StepType.Docker,
             "docker/login-action" => StepType.Docker,
@@ -198,6 +213,8 @@ public static class ActionMapper
             "setup-node" => "Setup Node.js",
             "setup-python" => "Setup Python",
             "setup-java" => "Setup Java",
+            "upload-artifact" => "Upload Artifact",
+            "download-artifact" => "Download Artifact",
             _ => actionName
         };
 
@@ -283,4 +300,88 @@ public static class ActionMapper
 
         return merged;
     }
+
+    #region Artifact Parsing
+
+    /// <summary>
+    /// Parses GitHub upload-artifact action parameters into an ArtifactDefinition.
+    /// </summary>
+    /// <param name="with">The action's with parameters.</param>
+    /// <returns>An ArtifactDefinition for the upload operation.</returns>
+    private static ArtifactDefinition ParseUploadArtifact(Dictionary<string, string>? with)
+    {
+        var name = with?.GetValueOrDefault("name") ?? "artifact";
+        var path = with?.GetValueOrDefault("path") ?? "";
+        var retentionDays = with?.GetValueOrDefault("retention-days");
+        var ifNoFilesFound = with?.GetValueOrDefault("if-no-files-found");
+
+        return new ArtifactDefinition
+        {
+            Name = name,
+            Operation = ArtifactOperation.Upload,
+            Patterns = ParsePathPatterns(path),
+            Options = new ArtifactOptions
+            {
+                RetentionDays = int.TryParse(retentionDays, out var days) ? days : null,
+                IfNoFilesFound = ParseIfNoFilesFound(ifNoFilesFound),
+                Compression = CompressionType.Gzip
+            }
+        };
+    }
+
+    /// <summary>
+    /// Parses GitHub download-artifact action parameters into an ArtifactDefinition.
+    /// </summary>
+    /// <param name="with">The action's with parameters.</param>
+    /// <returns>An ArtifactDefinition for the download operation.</returns>
+    private static ArtifactDefinition ParseDownloadArtifact(Dictionary<string, string>? with)
+    {
+        var name = with?.GetValueOrDefault("name") ?? "";
+        var path = with?.GetValueOrDefault("path") ?? "./";
+
+        return new ArtifactDefinition
+        {
+            Name = name,
+            Operation = ArtifactOperation.Download,
+            Patterns = Array.Empty<string>(),
+            TargetPath = path,
+            Options = ArtifactOptions.Default
+        };
+    }
+
+    /// <summary>
+    /// Parses path patterns from the 'path' input which can be a single path or multi-line string.
+    /// </summary>
+    /// <param name="pathValue">The path value which may contain newline-separated patterns.</param>
+    /// <returns>An array of path patterns.</returns>
+    private static string[] ParsePathPatterns(string pathValue)
+    {
+        if (string.IsNullOrWhiteSpace(pathValue))
+            return Array.Empty<string>();
+
+        // Handle multi-line literal blocks or newline-separated paths
+        return pathValue
+            .Split('\n')
+            .Select(s => s.Trim())
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .ToArray();
+    }
+
+    /// <summary>
+    /// Parses the if-no-files-found parameter to the corresponding enum value.
+    /// </summary>
+    /// <param name="value">The string value from the action input.</param>
+    /// <returns>The IfNoFilesFound enum value. Defaults to Warn for GitHub Actions.</returns>
+    private static IfNoFilesFound ParseIfNoFilesFound(string? value)
+    {
+        return value?.ToLowerInvariant() switch
+        {
+            "error" => IfNoFilesFound.Error,
+            "warn" => IfNoFilesFound.Warn,
+            "ignore" => IfNoFilesFound.Ignore,
+            _ => IfNoFilesFound.Warn  // GitHub default
+        };
+    }
+
+    #endregion
 }

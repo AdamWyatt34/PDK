@@ -142,7 +142,7 @@ public class ArtifactManagerTests : IDisposable
         _mockFileSelector.Setup(s => s.SelectFiles(It.IsAny<string>(), It.IsAny<IEnumerable<string>>()))
             .Returns(Array.Empty<string>());
 
-        var options = new ArtifactOptions { IfNoFilesFound = "error" };
+        var options = new ArtifactOptions { IfNoFilesFound = IfNoFilesFound.Error };
 
         // Act
         var act = async () => await _manager.UploadAsync("test", new[] { "*.dll" }, context, options);
@@ -160,7 +160,7 @@ public class ArtifactManagerTests : IDisposable
         _mockFileSelector.Setup(s => s.SelectFiles(It.IsAny<string>(), It.IsAny<IEnumerable<string>>()))
             .Returns(Array.Empty<string>());
 
-        var options = new ArtifactOptions { IfNoFilesFound = "ignore" };
+        var options = new ArtifactOptions { IfNoFilesFound = IfNoFilesFound.Ignore };
 
         // Act
         var result = await _manager.UploadAsync("test", new[] { "*.dll" }, context, options);
