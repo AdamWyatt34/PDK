@@ -1,5 +1,7 @@
 # PDK (Pipeline Development Kit)
 
+![CI](https://github.com/AdamWyatt34/pdk/workflows/CI/badge.svg)
+
 A unified CLI tool for running CI/CD pipelines locally across GitHub Actions, Azure DevOps, and GitLab CI.
 
 ## Features
