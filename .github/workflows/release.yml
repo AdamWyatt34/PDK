@@ -1,0 +1,156 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 1.0.0)'
+        required: true
+        type: string
+
+env:
+  DOTNET_VERSION: '8.0.x'
+  CONFIGURATION: 'Release'
+
+jobs:
+  release:
+    name: Release PDK v${{ github.event.inputs.version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Validate version format
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Invalid version format. Use MAJOR.MINOR.PATCH (e.g., 1.0.0)"
+            exit 1
+          fi
+          echo "Version format valid: $VERSION"
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Update version
+        run: |
+          chmod +x scripts/set-version.sh
+          ./scripts/set-version.sh ${{ github.event.inputs.version }}
+
+      - name: Generate changelog
+        run: |
+          chmod +x scripts/generate-changelog.sh
+          ./scripts/generate-changelog.sh ${{ github.event.inputs.version }}
+
+      - name: Commit version and changelog
+        run: |
+          git add Directory.Build.props CHANGELOG.md
+          git commit -m "chore: release v${{ github.event.inputs.version }}"
+          git push
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration ${{ env.CONFIGURATION }}
+
+      - name: Run tests with coverage
+        run: dotnet test --no-build --configuration ${{ env.CONFIGURATION }} --collect:"XPlat Code Coverage" --settings coverlet.runsettings --logger "trx;LogFileName=test-results.trx"
+
+      - name: Check coverage threshold
+        run: |
+          # Find coverage file
+          COVERAGE_FILE=$(find . -name "coverage.cobertura.xml" -type f | head -1)
+          if [ -z "$COVERAGE_FILE" ]; then
+            echo "Warning: Coverage file not found, skipping threshold check"
+            exit 0
+          fi
+
+          # Extract line coverage rate
+          COVERAGE=$(grep -oP 'line-rate="\K[0-9.]+' "$COVERAGE_FILE" | head -1)
+          if [ -z "$COVERAGE" ]; then
+            echo "Warning: Could not parse coverage rate"
+            exit 0
+          fi
+
+          COVERAGE_PERCENT=$(echo "$COVERAGE * 100" | bc)
+          echo "Coverage: $COVERAGE_PERCENT%"
+
+          # Check threshold (80%)
+          if (( $(echo "$COVERAGE_PERCENT < 80" | bc -l) )); then
+            echo "Warning: Coverage $COVERAGE_PERCENT% is below 80% threshold"
+            echo "Proceeding with release anyway..."
+          else
+            echo "Coverage meets threshold"
+          fi
+
+      - name: Pack
+        run: dotnet pack src/PDK.CLI/PDK.CLI.csproj --no-build --configuration ${{ env.CONFIGURATION }} --output ./publish
+
+      - name: List package contents
+        run: |
+          echo "Package created:"
+          ls -lh ./publish/
+
+      - name: Publish to NuGet
+        if: ${{ secrets.NUGET_API_KEY != '' }}
+        run: dotnet nuget push ./publish/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+        continue-on-error: true
+
+      - name: Create Git tag
+        run: |
+          git tag v${{ github.event.inputs.version }}
+          git push origin v${{ github.event.inputs.version }}
+
+      - name: Extract changelog for release
+        id: changelog
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          # Extract section for this version from CHANGELOG.md
+          CHANGELOG=$(sed -n "/## \[$VERSION\]/,/## \[/p" CHANGELOG.md | sed '$ d' || cat CHANGELOG.md)
+
+          # Handle multiline output for GitHub Actions
+          echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.event.inputs.version }}
+          name: PDK v${{ github.event.inputs.version }}
+          body: ${{ steps.changelog.outputs.CHANGELOG }}
+          draft: false
+          prerelease: ${{ startsWith(github.event.inputs.version, '0.') }}
+          files: ./publish/*.nupkg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Release summary
+        run: |
+          echo "## Release Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: v${{ github.event.inputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: v${{ github.event.inputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **GitHub Release**: Created" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Installation" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "dotnet tool install -g pdk --version ${{ github.event.inputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

@@ -7,6 +7,16 @@
     <Nullable>enable</Nullable>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <SourceRevisionId Condition="'$(GIT_COMMIT)' != ''">$(GIT_COMMIT)</SourceRevisionId>
+
+    <!-- Tool packaging -->
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>pdk</ToolCommandName>
+    <PackageId>pdk</PackageId>
+
+    <!-- Package metadata (version inherited from Directory.Build.props) -->
+    <Description>Pipeline Development Kit - Run CI/CD pipelines locally</Description>
+    <PackageTags>ci;cd;pipeline;devops;docker</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <!-- Assembly metadata for version command (REQ-06-040) -->
@@ -33,6 +43,10 @@
     <ProjectReference Include="..\PDK.Core\PDK.Core.csproj" />
     <ProjectReference Include="..\PDK.Providers\PDK.Providers.csproj" />
     <ProjectReference Include="..\PDK.Runners\PDK.Runners.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
   </ItemGroup>
 
 </Project>

@@ -1,0 +1,23 @@
+<Project>
+  <PropertyGroup>
+    <!-- Version Information -->
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionSuffix></VersionSuffix>
+
+    <!-- Assembly Information -->
+    <Company>PDK Development Team</Company>
+    <Authors>PDK Contributors</Authors>
+    <Copyright>Copyright 2024</Copyright>
+
+    <!-- Common Build Properties -->
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- Repository Information -->
+    <PackageProjectUrl>https://github.com/AdamWyatt34/pdk</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/AdamWyatt34/pdk</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+</Project>

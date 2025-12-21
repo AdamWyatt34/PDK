@@ -28,4 +28,13 @@ bld/
 
 # PDK specific
 .pdk/
+.pdk-dogfood/
 *.log
+
+# Coverage
+**/TestResults/
+coverage.cobertura.xml
+coverage.json
+coverage.info
+coveragereport/
+*.coverage

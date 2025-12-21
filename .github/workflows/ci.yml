@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build and Test (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Run tests with coverage
+        run: dotnet test --no-build --configuration Release --collect:"XPlat Code Coverage" --settings coverlet.runsettings --logger "trx;LogFileName=test-results.trx"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-results-${{ matrix.os }}
+          path: '**/test-results.trx'
+          retention-days: 7
+
+      # Coverage steps - only on Ubuntu to avoid duplicates
+      - name: Generate coverage report
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          dotnet tool install -g dotnet-reportgenerator-globaltool
+          reportgenerator -reports:**/coverage.cobertura.xml -targetdir:coveragereport -reporttypes:Html
+
+      - name: Upload coverage report
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage-report
+          path: coveragereport
+          retention-days: 30
+
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@v4
+        with:
+          files: '**/coverage.cobertura.xml'
+          flags: unittests
+          name: codecov-pdk
+          fail_ci_if_error: false
+          verbose: true
+
+      - name: Pack as dotnet tool
+        if: matrix.os == 'ubuntu-latest'
+        run: dotnet pack src/PDK.CLI/PDK.CLI.csproj --no-build --configuration Release --output ./artifacts
+
+      - name: List package contents
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          if [ -f ./artifacts/*.nupkg ]; then
+            echo "Package created successfully"
+            ls -lh ./artifacts/
+          else
+            echo "Error: Package not found"
+            exit 1
+          fi
+
+      - name: Upload package
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v3
+        with:
+          name: nuget-package
+          path: ./artifacts/*.nupkg
+          retention-days: 7

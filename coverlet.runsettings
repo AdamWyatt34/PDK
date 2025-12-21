@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="XPlat code coverage">
+        <Configuration>
+          <!-- Output formats -->
+          <Format>cobertura,json,lcov,opencover</Format>
+
+          <!-- Exclude test projects -->
+          <Exclude>[PDK.Tests]*,[PDK.Tests.Unit]*,[PDK.Tests.Integration]*</Exclude>
+
+          <!-- Exclude by attribute -->
+          <ExcludeByAttribute>Obsolete,GeneratedCodeAttribute,CompilerGeneratedAttribute,ExcludeFromCodeCoverageAttribute</ExcludeByAttribute>
+
+          <!-- Exclude files -->
+          <ExcludeByFile>**/Migrations/*.cs</ExcludeByFile>
+
+          <!-- Settings -->
+          <SingleHit>false</SingleHit>
+          <UseSourceLink>true</UseSourceLink>
+          <IncludeTestAssembly>false</IncludeTestAssembly>
+          <SkipAutoProps>true</SkipAutoProps>
+
+          <!-- Thresholds -->
+          <Threshold>80</Threshold>
+          <ThresholdType>line,branch</ThresholdType>
+          <ThresholdStat>total</ThresholdStat>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+
+  <RunConfiguration>
+    <CollectSourceInformation>true</CollectSourceInformation>
+  </RunConfiguration>
+</RunSettings>

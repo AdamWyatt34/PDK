@@ -1,0 +1,147 @@
+name: Dogfood
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      compare_with_ci:
+        description: 'Compare with latest CI run'
+        type: boolean
+        default: false
+  schedule:
+    # Weekly on Sundays at midnight UTC - catch environmental drift
+    - cron: '0 0 * * 0'
+
+jobs:
+  dogfood-ubuntu:
+    name: PDK Self-Test (Ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Make scripts executable
+        run: chmod +x scripts/*.sh
+
+      - name: Run Environment Check
+        run: ./scripts/check-environment.sh
+
+      - name: Build PDK
+        run: dotnet build --configuration Release
+
+      - name: Run PDK Self-Test
+        run: ./scripts/self-test.sh
+
+      - name: Upload Dogfood Results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: dogfood-results-ubuntu
+          path: .pdk-dogfood/
+          retention-days: 7
+
+      - name: Compare with CI (optional)
+        if: github.event.inputs.compare_with_ci == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/compare-outputs.sh
+
+  dogfood-windows:
+    name: PDK Self-Test (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Run Environment Check
+        run: ./scripts/check-environment.ps1
+        shell: pwsh
+
+      - name: Build PDK
+        run: dotnet build --configuration Release
+
+      - name: Run PDK Self-Test
+        run: ./scripts/self-test.ps1
+        shell: pwsh
+
+      - name: Upload Dogfood Results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: dogfood-results-windows
+          path: .pdk-dogfood/
+          retention-days: 7
+
+  dogfood-macos:
+    name: PDK Self-Test (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install Docker
+        run: |
+          brew install docker
+          # Note: Docker Desktop required for full Docker support on macOS
+          # This step installs docker CLI only
+
+      - name: Make scripts executable
+        run: chmod +x scripts/*.sh
+
+      - name: Run Environment Check
+        run: ./scripts/check-environment.sh
+        continue-on-error: true  # Docker may not be fully available
+
+      - name: Build PDK
+        run: dotnet build --configuration Release
+
+      - name: Run PDK Self-Test (Host Mode)
+        run: |
+          # On macOS CI, Docker is not available by default
+          # Run with --host flag if Docker check fails
+          if docker info &> /dev/null; then
+            ./scripts/self-test.sh
+          else
+            echo "Docker not available, skipping container-based self-test"
+            echo "Building and testing directly..."
+            dotnet test --configuration Release --verbosity normal
+          fi
+
+      - name: Upload Dogfood Results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: dogfood-results-macos
+          path: .pdk-dogfood/
+          retention-days: 7
+          if-no-files-found: ignore
