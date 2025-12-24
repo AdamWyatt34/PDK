@@ -78,4 +78,38 @@ public class ExecutionOptions
     /// These values are automatically registered for masking in output.
     /// </summary>
     public Dictionary<string, string> CliSecrets { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets whether to disable container reuse within a job.
+    /// When true, a new container is created for each step.
+    /// Default is false (containers are reused).
+    /// </summary>
+    public bool NoReuseContainers { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets whether to disable Docker image caching.
+    /// When true, images are always pulled from the registry.
+    /// Default is false (images are cached).
+    /// </summary>
+    public bool NoCacheImages { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets whether to enable parallel step execution.
+    /// When true, steps without dependencies can run concurrently.
+    /// Default is false (sequential execution).
+    /// </summary>
+    public bool ParallelSteps { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets the maximum number of steps to run in parallel.
+    /// Only applies when ParallelSteps is true.
+    /// Default is 4.
+    /// </summary>
+    public int MaxParallelism { get; set; } = 4;
+
+    /// <summary>
+    /// Gets or sets whether to show performance metrics after execution.
+    /// Also enabled when Verbose is true.
+    /// </summary>
+    public bool ShowMetrics { get; set; } = false;
 }

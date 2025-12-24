@@ -128,6 +128,40 @@ var secretOption = new Option<string[]>(
     AllowMultipleArgumentsPerToken = true
 };
 
+// Performance optimization options (Sprint 10 Phase 3)
+var noReuseOption = new Option<bool>(
+    aliases: ["--no-reuse"],
+    description: "Disable container reuse (create new container per step)",
+    getDefaultValue: () => false);
+
+var noCacheOption = new Option<bool>(
+    aliases: ["--no-cache"],
+    description: "Disable Docker image caching (always pull images)",
+    getDefaultValue: () => false);
+
+var parallelOption = new Option<bool>(
+    aliases: ["--parallel"],
+    description: "Enable parallel step execution for independent steps",
+    getDefaultValue: () => false);
+
+var maxParallelOption = new Option<int>(
+    aliases: ["--max-parallel"],
+    description: "Maximum number of steps to run in parallel (default: 4)",
+    getDefaultValue: () => 4);
+maxParallelOption.AddValidator(result =>
+{
+    var value = result.GetValueForOption(maxParallelOption);
+    if (value < 1 || value > 16)
+    {
+        result.ErrorMessage = "Max parallel must be between 1 and 16";
+    }
+});
+
+var metricsOption = new Option<bool>(
+    aliases: ["--metrics"],
+    description: "Show performance metrics after execution",
+    getDefaultValue: () => false);
+
 runCommand.AddOption(fileOption);
 runCommand.AddOption(jobOption);
 runCommand.AddOption(stepOption);
@@ -142,6 +176,11 @@ runCommand.AddOption(configOption);
 runCommand.AddOption(varOption);
 runCommand.AddOption(varFileOption);
 runCommand.AddOption(secretOption);
+runCommand.AddOption(noReuseOption);
+runCommand.AddOption(noCacheOption);
+runCommand.AddOption(parallelOption);
+runCommand.AddOption(maxParallelOption);
+runCommand.AddOption(metricsOption);
 
 runCommand.SetHandler(async context =>
 {
@@ -159,6 +198,11 @@ runCommand.SetHandler(async context =>
     var vars = context.ParseResult.GetValueForOption(varOption) ?? [];
     var varFile = context.ParseResult.GetValueForOption(varFileOption);
     var secrets = context.ParseResult.GetValueForOption(secretOption) ?? [];
+    var noReuse = context.ParseResult.GetValueForOption(noReuseOption);
+    var noCache = context.ParseResult.GetValueForOption(noCacheOption);
+    var parallel = context.ParseResult.GetValueForOption(parallelOption);
+    var maxParallel = context.ParseResult.GetValueForOption(maxParallelOption);
+    var showMetrics = context.ParseResult.GetValueForOption(metricsOption);
 
     try
     {
@@ -206,7 +250,12 @@ runCommand.SetHandler(async context =>
             ConfigPath = configPath,
             CliVariables = cliVariables,
             VarFilePath = varFile?.FullName,
-            CliSecrets = cliSecrets
+            CliSecrets = cliSecrets,
+            NoReuseContainers = noReuse,
+            NoCacheImages = noCache,
+            ParallelSteps = parallel,
+            MaxParallelism = maxParallel,
+            ShowMetrics = showMetrics || verbose  // Show metrics when verbose is enabled
         });
     }
     catch (Exception ex)

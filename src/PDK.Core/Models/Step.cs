@@ -62,4 +62,11 @@ public class Step
     /// This property is populated when the step type is UploadArtifact or DownloadArtifact.
     /// </summary>
     public ArtifactDefinition? Artifact { get; set; }
+
+    /// <summary>
+    /// Gets or sets the list of step IDs or names that this step depends on.
+    /// Used for parallel execution - steps with unmet dependencies wait for those steps to complete.
+    /// When null or empty, the step has no explicit dependencies (but may still be ordered sequentially).
+    /// </summary>
+    public List<string>? Needs { get; set; }
 }
