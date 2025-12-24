@@ -1,4 +1,5 @@
 using FluentAssertions;
+using PDK.Core.Docker;
 using PDK.Runners.Docker;
 using PDK.Runners.Models;
 

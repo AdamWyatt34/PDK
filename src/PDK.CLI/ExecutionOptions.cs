@@ -1,4 +1,6 @@
-﻿/// <summary>
+using PDK.Core.Runners;
+
+/// <summary>
 /// Options for pipeline execution.
 /// </summary>
 public class ExecutionOptions
@@ -19,9 +21,22 @@ public class ExecutionOptions
     public string? StepName { get; set; }
 
     /// <summary>
-    /// Gets or sets whether to use Docker for execution. Default is true.
+    /// Gets or sets the requested runner type for execution.
+    /// Default is Auto, which prefers Docker but falls back to Host if unavailable.
     /// </summary>
-    public bool UseDocker { get; set; } = true;
+    public RunnerType RunnerType { get; set; } = RunnerType.Auto;
+
+    /// <summary>
+    /// Gets or sets whether to use Docker for execution.
+    /// This property is maintained for backward compatibility.
+    /// Use RunnerType for explicit runner control.
+    /// </summary>
+    [Obsolete("Use RunnerType instead. This property is maintained for backward compatibility.")]
+    public bool UseDocker
+    {
+        get => RunnerType != RunnerType.Host;
+        set => RunnerType = value ? RunnerType.Auto : RunnerType.Host;
+    }
 
     /// <summary>
     /// Gets or sets whether to only validate the pipeline without executing.

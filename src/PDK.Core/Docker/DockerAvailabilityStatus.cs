@@ -1,4 +1,4 @@
-namespace PDK.Runners.Models;
+namespace PDK.Core.Docker;
 
 /// <summary>
 /// Represents the availability status of Docker on the system.

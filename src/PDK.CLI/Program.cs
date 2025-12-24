@@ -16,7 +16,10 @@ using PDK.Providers.GitHub;
 using PDK.Runners;
 using PDK.Runners.Docker;
 using PDK.Runners.StepExecutors;
+using PDK.CLI.Runners;
 using PDK.Core.Configuration;
+using PDK.Core.Docker;
+using PDK.Core.Runners;
 using PDK.Core.Variables;
 using PDK.Core.Secrets;
 using Spectre.Console;
@@ -57,6 +60,23 @@ var hostOption = new Option<bool>(
     aliases: ["--host"],
     description: "Run directly on host machine instead of Docker",
     getDefaultValue: () => false);
+
+var dockerOption = new Option<bool>(
+    aliases: ["--docker"],
+    description: "Force Docker execution mode (fail if Docker unavailable)",
+    getDefaultValue: () => false);
+
+var runnerOption = new Option<string?>(
+    aliases: ["--runner"],
+    description: "Runner type: 'docker', 'host', or 'auto' (default)");
+runnerOption.AddValidator(result =>
+{
+    var value = result.GetValueForOption(runnerOption);
+    if (value != null && value != "docker" && value != "host" && value != "auto")
+    {
+        result.ErrorMessage = "Runner must be 'docker', 'host', or 'auto'";
+    }
+});
 
 var validateOption = new Option<bool>(
     aliases: ["--validate"],
@@ -112,6 +132,8 @@ runCommand.AddOption(fileOption);
 runCommand.AddOption(jobOption);
 runCommand.AddOption(stepOption);
 runCommand.AddOption(hostOption);
+runCommand.AddOption(dockerOption);
+runCommand.AddOption(runnerOption);
 runCommand.AddOption(validateOption);
 runCommand.AddOption(verboseOption);
 runCommand.AddOption(quietOption);
@@ -127,6 +149,8 @@ runCommand.SetHandler(async context =>
     var job = context.ParseResult.GetValueForOption(jobOption);
     var step = context.ParseResult.GetValueForOption(stepOption);
     var host = context.ParseResult.GetValueForOption(hostOption);
+    var docker = context.ParseResult.GetValueForOption(dockerOption);
+    var runner = context.ParseResult.GetValueForOption(runnerOption);
     var validate = context.ParseResult.GetValueForOption(validateOption);
     var verbose = context.ParseResult.GetValueForOption(verboseOption);
     var quiet = context.ParseResult.GetValueForOption(quietOption);
@@ -138,6 +162,17 @@ runCommand.SetHandler(async context =>
 
     try
     {
+        // Validate conflicting runner options
+        if (host && docker)
+        {
+            AnsiConsole.MarkupLine("[red]Error:[/] Cannot specify both --host and --docker flags. Choose one.");
+            Environment.Exit(1);
+            return;
+        }
+
+        // Determine runner type from CLI options
+        var runnerType = DetermineRunnerType(host, docker, runner);
+
         // Interactive mode takes precedence (REQ-06-020)
         if (interactive)
         {
@@ -164,7 +199,7 @@ runCommand.SetHandler(async context =>
             FilePath = file.FullName,
             JobName = job,
             StepName = step,
-            UseDocker = !host,
+            RunnerType = runnerType,
             ValidateOnly = validate,
             Verbose = verbose,
             Quiet = quiet,
@@ -526,12 +561,30 @@ static void ConfigureServices(ServiceCollection services)
     services.AddSingleton<IStepExecutor, UploadArtifactExecutor>();
     services.AddSingleton<IStepExecutor, DownloadArtifactExecutor>();
 
-    // Register step executor factory
+    // Register step executor factory (Docker)
     services.AddSingleton<StepExecutorFactory>();
 
-    // Register job runner
-    services.AddSingleton<PDK.Runners.IJobRunner, DockerJobRunner>();
+    // Register host step executors (Sprint 10 - Host Mode)
+    services.AddSingleton<IHostStepExecutor, HostScriptExecutor>();
+    services.AddSingleton<IHostStepExecutor, HostCheckoutExecutor>();
+    services.AddSingleton<IHostStepExecutor, HostDotnetExecutor>();
+    services.AddSingleton<IHostStepExecutor, HostNpmExecutor>();
+    services.AddSingleton<HostStepExecutorFactory>();
+
+    // Register process executor for host mode
+    services.AddSingleton<IProcessExecutor, ProcessExecutor>();
+
+    // Register both job runners as concrete types (Sprint 10)
+    services.AddSingleton<DockerJobRunner>();
+    services.AddSingleton<HostJobRunner>();
     services.AddSingleton<IImageMapper, ImageMapper>();
+
+    // Register Docker detection with caching (Sprint 10)
+    services.AddSingleton<IDockerDetector, DockerDetector>();
+
+    // Register runner selection services (Sprint 10)
+    services.AddSingleton<IRunnerSelector, RunnerSelector>();
+    services.AddSingleton<IRunnerFactory, RunnerFactory>();
 
     // Register version command services (REQ-06-040 through REQ-06-043)
     // Registered after parsers, executors, and container manager as SystemInfo depends on them
@@ -557,6 +610,31 @@ static Dictionary<string, string> ParseKeyValuePairs(string[]? pairs)
         }
     }
     return result;
+}
+
+/// <summary>
+/// Determines the runner type from CLI options.
+/// </summary>
+static RunnerType DetermineRunnerType(bool host, bool docker, string? runner)
+{
+    // Explicit flags take precedence
+    if (host) return RunnerType.Host;
+    if (docker) return RunnerType.Docker;
+
+    // --runner option
+    if (!string.IsNullOrEmpty(runner))
+    {
+        return runner.ToLowerInvariant() switch
+        {
+            "host" => RunnerType.Host,
+            "docker" => RunnerType.Docker,
+            "auto" => RunnerType.Auto,
+            _ => RunnerType.Auto
+        };
+    }
+
+    // Default to auto
+    return RunnerType.Auto;
 }
 
 /// <summary>
