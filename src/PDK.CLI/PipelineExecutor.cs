@@ -2,8 +2,10 @@ using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using PDK.CLI.Diagnostics;
+using PDK.Cli.Filtering;
 using PDK.CLI.UI;
 using PDK.Core.Configuration;
+using PDK.Core.Filtering;
 using PDK.Core.Logging;
 using PDK.Core.Models;
 using PDK.Core.Progress;
@@ -36,6 +38,14 @@ public class PipelineExecutor
     private readonly ISecretDetector _secretDetector;
     private readonly ILogger<PipelineExecutor> _logger;
 
+    // Step filtering services (Sprint 11 - REQ-11-007, REQ-11-008)
+    private readonly IStepFilterBuilder _filterBuilder;
+    private readonly FilterPreviewGenerator _previewGenerator;
+    private readonly FilterPreviewUI _previewUI;
+    private readonly FilterConfirmationPrompt _confirmationPrompt;
+    private readonly FilterOptionsBuilder _filterOptionsBuilder;
+    private readonly ILoggerFactory _loggerFactory;
+
     /// <summary>
     /// Initializes a new instance of <see cref="PipelineExecutor"/>.
     /// </summary>
@@ -53,6 +63,12 @@ public class PipelineExecutor
     /// <param name="secretMasker">Secret masker for hiding sensitive data in output.</param>
     /// <param name="secretDetector">Secret detector for warning about potential secrets.</param>
     /// <param name="logger">Logger for structured logging.</param>
+    /// <param name="filterBuilder">Step filter builder for creating filters.</param>
+    /// <param name="previewGenerator">Filter preview generator.</param>
+    /// <param name="previewUI">Filter preview UI for displaying previews.</param>
+    /// <param name="confirmationPrompt">Filter confirmation prompt for user confirmation.</param>
+    /// <param name="filterOptionsBuilder">Builder for converting ExecutionOptions to FilterOptions.</param>
+    /// <param name="loggerFactory">Logger factory for creating loggers.</param>
     public PipelineExecutor(
         PipelineParserFactory parserFactory,
         PDK.Runners.IContainerManager containerManager,
@@ -67,7 +83,13 @@ public class PipelineExecutor
         ISecretManager secretManager,
         ISecretMasker secretMasker,
         ISecretDetector secretDetector,
-        ILogger<PipelineExecutor> logger)
+        ILogger<PipelineExecutor> logger,
+        IStepFilterBuilder filterBuilder,
+        FilterPreviewGenerator previewGenerator,
+        FilterPreviewUI previewUI,
+        FilterConfirmationPrompt confirmationPrompt,
+        FilterOptionsBuilder filterOptionsBuilder,
+        ILoggerFactory loggerFactory)
     {
         _parserFactory = parserFactory ?? throw new ArgumentNullException(nameof(parserFactory));
         _containerManager = containerManager ?? throw new ArgumentNullException(nameof(containerManager));
@@ -83,6 +105,12 @@ public class PipelineExecutor
         _secretMasker = secretMasker ?? throw new ArgumentNullException(nameof(secretMasker));
         _secretDetector = secretDetector ?? throw new ArgumentNullException(nameof(secretDetector));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _filterBuilder = filterBuilder ?? throw new ArgumentNullException(nameof(filterBuilder));
+        _previewGenerator = previewGenerator ?? throw new ArgumentNullException(nameof(previewGenerator));
+        _previewUI = previewUI ?? throw new ArgumentNullException(nameof(previewUI));
+        _confirmationPrompt = confirmationPrompt ?? throw new ArgumentNullException(nameof(confirmationPrompt));
+        _filterOptionsBuilder = filterOptionsBuilder ?? throw new ArgumentNullException(nameof(filterOptionsBuilder));
+        _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
     }
 
     /// <summary>
@@ -115,12 +143,68 @@ public class PipelineExecutor
 
         // Initialize configuration, variables, and secrets (Sprint 7)
         var workspacePath = Directory.GetCurrentDirectory();
-        await InitializeVariablesAndSecretsAsync(options, workspacePath);
+        var config = await InitializeVariablesAndSecretsAsync(options, workspacePath);
 
         // Determine which jobs to run
         var jobsToRun = string.IsNullOrEmpty(options.JobName)
             ? pipeline.Jobs.Values.ToList()
             : [pipeline.Jobs[options.JobName]];
+
+        // Step filtering (Sprint 11 - REQ-11-007, REQ-11-008)
+        IStepFilter? stepFilter = null;
+        var filterOptions = _filterOptionsBuilder.Build(options, config);
+
+        if (filterOptions.HasFilters)
+        {
+            _logger.LogInformation("Step filtering active. Validating filter options...");
+
+            // Validate filter options
+            var validationResult = _filterBuilder.Validate(filterOptions, pipeline);
+            if (!validationResult.IsValid)
+            {
+                _output.WriteError("Filter validation failed:");
+                foreach (var error in validationResult.Errors)
+                {
+                    _output.WriteError($"  [{error.Code}] {error.Message}");
+                    if (error.Suggestions.Count > 0)
+                    {
+                        _output.WriteInfo($"    Did you mean: {string.Join(", ", error.Suggestions)}?");
+                    }
+                }
+                Environment.Exit(1);
+                return;
+            }
+
+            // Display any warnings
+            foreach (var warning in validationResult.Warnings)
+            {
+                _output.WriteWarning($"  [{warning.Code}] {warning.Message}");
+            }
+
+            // Build the filter
+            stepFilter = _filterBuilder.Build(filterOptions, pipeline);
+
+            // Generate and display preview
+            var preview = _previewGenerator.Generate(pipeline, stepFilter);
+            _previewUI.Display(preview);
+
+            // If preview-only mode, exit
+            if (filterOptions.PreviewOnly)
+            {
+                _output.WriteInfo("Preview-only mode. Exiting without execution.");
+                return;
+            }
+
+            // If confirmation required, prompt user
+            if (filterOptions.Confirm)
+            {
+                if (!_confirmationPrompt.Confirm(preview))
+                {
+                    _output.WriteInfo("Execution cancelled by user.");
+                    return;
+                }
+            }
+        }
 
         // Select runner (Sprint 10 - REQ-10-012)
         // Note: We select once for the first job's capabilities check
@@ -129,7 +213,16 @@ public class PipelineExecutor
         DisplayRunnerSelection(selection, options.Verbose);
 
         // Create the runner
-        var jobRunner = _runnerFactory.CreateRunner(selection.SelectedRunner);
+        var baseRunner = _runnerFactory.CreateRunner(selection.SelectedRunner);
+
+        // Wrap with filtering decorator if filtering is active (Sprint 11 - REQ-11-007)
+        PDK.Runners.IJobRunner jobRunner = stepFilter != null
+            ? FilteringJobRunner.Wrap(
+                baseRunner,
+                stepFilter,
+                _loggerFactory.CreateLogger<FilteringJobRunner>(),
+                _progressReporter)
+            : baseRunner;
 
         // Execute jobs and collect results for summary
         var allJobsSucceeded = true;
@@ -308,7 +401,8 @@ public class PipelineExecutor
     /// </summary>
     /// <param name="options">Execution options containing CLI-provided values.</param>
     /// <param name="workspacePath">The workspace path for the pipeline.</param>
-    private async Task InitializeVariablesAndSecretsAsync(ExecutionOptions options, string workspacePath)
+    /// <returns>The loaded configuration, or null if no configuration was found.</returns>
+    private async Task<PdkConfig?> InitializeVariablesAndSecretsAsync(ExecutionOptions options, string workspacePath)
     {
         // 1. Load configuration (auto-discover or explicit path)
         var config = await _configLoader.LoadAsync(options.ConfigPath);
@@ -380,6 +474,7 @@ public class PipelineExecutor
         });
 
         _logger.LogDebug("Variable and secret initialization complete");
+        return config;
     }
 
     /// <summary>

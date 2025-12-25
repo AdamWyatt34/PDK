@@ -9,6 +9,7 @@ using PDK.CLI.ErrorHandling;
 using PDK.CLI.UI;
 using PDK.CLI.WatchMode;
 using PDK.CLI.Logging;
+using PDK.Cli.Filtering;
 using PDK.Core.Diagnostics;
 using PDK.Core.Logging;
 using PDK.Core.Progress;
@@ -222,6 +223,55 @@ var dryRunJsonOption = new Option<string?>(
     aliases: ["--dry-run-json"],
     description: "Output dry-run results to JSON file (implies --dry-run)");
 
+// Step filtering options (Sprint 11 - REQ-11-007)
+var filterStepOption = new Option<string[]>(
+    aliases: ["--step-filter"],
+    description: "Run specific step(s) by name (can be repeated, case-insensitive)")
+{
+    AllowMultipleArgumentsPerToken = true
+};
+
+var filterStepIndexOption = new Option<string[]>(
+    aliases: ["--step-index"],
+    description: "Run specific step(s) by index (e.g., '3', '1,3,5', '2-5', '1,3-5,7')")
+{
+    AllowMultipleArgumentsPerToken = true
+};
+
+var filterStepRangeOption = new Option<string[]>(
+    aliases: ["--step-range"],
+    description: "Run range of steps (e.g., '1-5' or 'Build-Test')")
+{
+    AllowMultipleArgumentsPerToken = true
+};
+
+var skipStepOption = new Option<string[]>(
+    aliases: ["--skip-step"],
+    description: "Skip specific step(s) by name (takes precedence over include filters)")
+{
+    AllowMultipleArgumentsPerToken = true
+};
+
+var includeDepsOption = new Option<bool>(
+    aliases: ["--include-dependencies"],
+    description: "Automatically include dependencies of selected steps",
+    getDefaultValue: () => false);
+
+// Filter preview options (Sprint 11 - REQ-11-008)
+var previewFilterOption = new Option<bool>(
+    aliases: ["--preview-filter"],
+    description: "Preview which steps will run and exit without execution",
+    getDefaultValue: () => false);
+
+var confirmFilterOption = new Option<bool>(
+    aliases: ["--confirm"],
+    description: "Show filter preview and confirm before execution",
+    getDefaultValue: () => false);
+
+var filterPresetOption = new Option<string?>(
+    aliases: ["--preset"],
+    description: "Load filter preset from configuration file");
+
 runCommand.AddOption(fileOption);
 runCommand.AddOption(jobOption);
 runCommand.AddOption(stepOption);
@@ -251,6 +301,14 @@ runCommand.AddOption(watchDebounceOption);
 runCommand.AddOption(watchClearOption);
 runCommand.AddOption(dryRunOption);
 runCommand.AddOption(dryRunJsonOption);
+runCommand.AddOption(filterStepOption);
+runCommand.AddOption(filterStepIndexOption);
+runCommand.AddOption(filterStepRangeOption);
+runCommand.AddOption(skipStepOption);
+runCommand.AddOption(includeDepsOption);
+runCommand.AddOption(previewFilterOption);
+runCommand.AddOption(confirmFilterOption);
+runCommand.AddOption(filterPresetOption);
 
 runCommand.SetHandler(async context =>
 {
@@ -283,6 +341,14 @@ runCommand.SetHandler(async context =>
     var watchClear = context.ParseResult.GetValueForOption(watchClearOption);
     var dryRun = context.ParseResult.GetValueForOption(dryRunOption);
     var dryRunJson = context.ParseResult.GetValueForOption(dryRunJsonOption);
+    var filterSteps = context.ParseResult.GetValueForOption(filterStepOption) ?? [];
+    var filterStepIndices = context.ParseResult.GetValueForOption(filterStepIndexOption) ?? [];
+    var filterStepRanges = context.ParseResult.GetValueForOption(filterStepRangeOption) ?? [];
+    var skipSteps = context.ParseResult.GetValueForOption(skipStepOption) ?? [];
+    var includeDeps = context.ParseResult.GetValueForOption(includeDepsOption);
+    var previewFilter = context.ParseResult.GetValueForOption(previewFilterOption);
+    var confirmFilter = context.ParseResult.GetValueForOption(confirmFilterOption);
+    var filterPreset = context.ParseResult.GetValueForOption(filterPresetOption);
 
     // --dry-run-json implies --dry-run
     if (!string.IsNullOrEmpty(dryRunJson))
@@ -438,7 +504,16 @@ runCommand.SetHandler(async context =>
                 ShowMetrics = showMetrics || verbose,
                 WatchMode = true,
                 WatchDebounceMs = watchDebounce,
-                WatchClear = watchClear
+                WatchClear = watchClear,
+                // Step filtering (REQ-11-007)
+                FilterStepNames = [.. filterSteps],
+                FilterStepIndices = [.. filterStepIndices],
+                FilterStepRanges = [.. filterStepRanges],
+                SkipStepNames = [.. skipSteps],
+                IncludeDependencies = includeDeps,
+                PreviewFilter = previewFilter,
+                ConfirmFilter = confirmFilter,
+                FilterPreset = filterPreset
             };
 
             var watchModeOptions = new WatchModeOptions
@@ -480,7 +555,16 @@ runCommand.SetHandler(async context =>
             NoCacheImages = noCache,
             ParallelSteps = parallel,
             MaxParallelism = maxParallel,
-            ShowMetrics = showMetrics || verbose  // Show metrics when verbose is enabled
+            ShowMetrics = showMetrics || verbose,  // Show metrics when verbose is enabled
+            // Step filtering (REQ-11-007)
+            FilterStepNames = [.. filterSteps],
+            FilterStepIndices = [.. filterStepIndices],
+            FilterStepRanges = [.. filterStepRanges],
+            SkipStepNames = [.. skipSteps],
+            IncludeDependencies = includeDeps,
+            PreviewFilter = previewFilter,
+            ConfirmFilter = confirmFilter,
+            FilterPreset = filterPreset
         });
     }
     catch (Exception ex)
@@ -878,6 +962,9 @@ static void ConfigureServices(ServiceCollection services)
     services.AddTransient<PDK.CLI.DryRun.DryRunUI>();
     services.AddTransient<PDK.CLI.DryRun.JsonOutputFormatter>();
     services.AddTransient<PDK.CLI.DryRun.DryRunService>();
+
+    // Register step filtering services (Sprint 11 - REQ-11-007, REQ-11-008)
+    services.AddStepFiltering();
 }
 
 /// <summary>

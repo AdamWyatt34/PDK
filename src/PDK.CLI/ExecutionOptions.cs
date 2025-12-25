@@ -142,4 +142,65 @@ public class ExecutionOptions
     /// If set, implies DryRun = true and outputs results to the specified file.
     /// </summary>
     public string? DryRunJsonPath { get; set; }
+
+    // Step Filtering (Sprint 11 - REQ-11-007)
+
+    /// <summary>
+    /// Gets or sets the step names to filter by (from --step flags).
+    /// Multiple step names can be specified. Matching is case-insensitive with fuzzy support.
+    /// </summary>
+    public List<string> FilterStepNames { get; set; } = [];
+
+    /// <summary>
+    /// Gets or sets the step indices to filter by (from --step-index flags).
+    /// Supports single indices, comma-separated lists, and ranges (e.g., "1,3,5" or "2-5").
+    /// </summary>
+    public List<string> FilterStepIndices { get; set; } = [];
+
+    /// <summary>
+    /// Gets or sets the step ranges to filter by (from --step-range flags).
+    /// Supports numeric ranges (e.g., "1-5") and named ranges (e.g., "Build-Test").
+    /// </summary>
+    public List<string> FilterStepRanges { get; set; } = [];
+
+    /// <summary>
+    /// Gets or sets the step names to skip (from --skip-step flags).
+    /// Skip takes precedence over include filters.
+    /// </summary>
+    public List<string> SkipStepNames { get; set; } = [];
+
+    /// <summary>
+    /// Gets or sets whether to automatically include dependencies of selected steps.
+    /// When true, steps that selected steps depend on will also be executed.
+    /// </summary>
+    public bool IncludeDependencies { get; set; } = false;
+
+    // Filter Preview (Sprint 11 - REQ-11-008)
+
+    /// <summary>
+    /// Gets or sets whether to preview the filter and exit without execution.
+    /// Shows what steps would be executed/skipped and exits with code 0 if valid.
+    /// </summary>
+    public bool PreviewFilter { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets whether to show filter preview and confirm before execution.
+    /// Prompts "Proceed? (y/n)" after showing the preview.
+    /// </summary>
+    public bool ConfirmFilter { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets the filter preset name to load from configuration.
+    /// </summary>
+    public string? FilterPreset { get; set; }
+
+    /// <summary>
+    /// Gets whether any step filtering is active.
+    /// </summary>
+    public bool HasStepFiltering =>
+        FilterStepNames.Count > 0 ||
+        FilterStepIndices.Count > 0 ||
+        FilterStepRanges.Count > 0 ||
+        SkipStepNames.Count > 0 ||
+        !string.IsNullOrEmpty(FilterPreset);
 }

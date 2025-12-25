@@ -51,6 +51,11 @@ public record PdkConfig
     /// Gets the performance optimization settings.
     /// </summary>
     public PerformanceConfig? Performance { get; init; }
+
+    /// <summary>
+    /// Gets the step filtering configuration (Sprint 11 - REQ-11-007).
+    /// </summary>
+    public StepFilteringConfig? StepFiltering { get; init; }
 }
 
 /// <summary>
@@ -172,4 +177,87 @@ public record FeaturesConfig
     /// Gets whether telemetry collection is enabled.
     /// </summary>
     public bool? Telemetry { get; init; }
+}
+
+/// <summary>
+/// Step filtering configuration (Sprint 11 - REQ-11-007).
+/// </summary>
+public record StepFilteringConfig
+{
+    /// <summary>
+    /// Gets whether to include dependencies by default when filtering.
+    /// </summary>
+    public bool? DefaultIncludeDependencies { get; init; }
+
+    /// <summary>
+    /// Gets whether to prompt for confirmation before running with filters.
+    /// </summary>
+    public bool? ConfirmBeforeRun { get; init; }
+
+    /// <summary>
+    /// Gets the maximum Levenshtein distance for fuzzy matching.
+    /// </summary>
+    public int? FuzzyMatchThreshold { get; init; }
+
+    /// <summary>
+    /// Gets the suggestion settings for validation errors.
+    /// </summary>
+    public SuggestionsConfigSection? Suggestions { get; init; }
+
+    /// <summary>
+    /// Gets the named filter presets.
+    /// </summary>
+    public Dictionary<string, FilterPresetConfig>? Presets { get; init; }
+}
+
+/// <summary>
+/// Suggestions configuration for filter validation.
+/// </summary>
+public record SuggestionsConfigSection
+{
+    /// <summary>
+    /// Gets whether to show suggestions.
+    /// </summary>
+    public bool? Enabled { get; init; }
+
+    /// <summary>
+    /// Gets the maximum number of suggestions.
+    /// </summary>
+    public int? MaxSuggestions { get; init; }
+}
+
+/// <summary>
+/// A filter preset configuration.
+/// </summary>
+public record FilterPresetConfig
+{
+    /// <summary>
+    /// Gets the step names to include.
+    /// </summary>
+    public List<string>? StepNames { get; init; }
+
+    /// <summary>
+    /// Gets the step indices to include.
+    /// </summary>
+    public List<string>? StepIndices { get; init; }
+
+    /// <summary>
+    /// Gets the step ranges to include.
+    /// </summary>
+    public List<string>? StepRanges { get; init; }
+
+    /// <summary>
+    /// Gets the steps to skip.
+    /// </summary>
+    public List<string>? SkipSteps { get; init; }
+
+    /// <summary>
+    /// Gets the jobs to filter by.
+    /// </summary>
+    public List<string>? Jobs { get; init; }
+
+    /// <summary>
+    /// Gets whether to include dependencies.
+    /// </summary>
+    public bool? IncludeDependencies { get; init; }
 }
