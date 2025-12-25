@@ -1,3 +1,4 @@
+using PDK.Core.Docker;
 using PDK.Runners.Models;
 
 namespace PDK.Runners;
@@ -6,7 +7,7 @@ namespace PDK.Runners;
 /// Manages Docker container lifecycle and execution.
 /// Provides functionality to create, start, execute commands in, and remove Docker containers.
 /// </summary>
-public interface IContainerManager : IAsyncDisposable
+public interface IContainerManager : IAsyncDisposable, IDockerStatusProvider
 {
     /// <summary>
     /// Creates and starts a container from the specified Docker image.
@@ -48,30 +49,8 @@ public interface IContainerManager : IAsyncDisposable
         string containerId,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Checks if Docker is available and accessible on the system.
-    /// </summary>
-    /// <param name="cancellationToken">Token to cancel the operation.</param>
-    /// <returns>True if Docker is available, false otherwise.</returns>
-    Task<bool> IsDockerAvailableAsync(
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Gets the Docker version information if Docker is available.
-    /// </summary>
-    /// <param name="cancellationToken">Token to cancel the operation.</param>
-    /// <returns>The Docker version string if available, null otherwise.</returns>
-    Task<string?> GetDockerVersionAsync(
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Gets detailed Docker availability status including version, platform, and error information.
-    /// This method performs comprehensive diagnostics and categorizes errors (REQ-DK-007).
-    /// </summary>
-    /// <param name="cancellationToken">Token to cancel the operation.</param>
-    /// <returns>A detailed status object containing availability, version, and error information.</returns>
-    Task<DockerAvailabilityStatus> GetDockerStatusAsync(
-        CancellationToken cancellationToken = default);
+    // Note: IsDockerAvailableAsync, GetDockerVersionAsync, and GetDockerStatusAsync
+    // are inherited from IDockerStatusProvider
 
     /// <summary>
     /// Pulls a Docker image if it's not available locally.

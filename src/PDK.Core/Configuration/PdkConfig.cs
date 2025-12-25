@@ -41,6 +41,16 @@ public record PdkConfig
     /// Gets the feature flags configuration.
     /// </summary>
     public FeaturesConfig? Features { get; init; }
+
+    /// <summary>
+    /// Gets the runner configuration settings.
+    /// </summary>
+    public RunnerConfig? Runner { get; init; }
+
+    /// <summary>
+    /// Gets the performance optimization settings.
+    /// </summary>
+    public PerformanceConfig? Performance { get; init; }
 }
 
 /// <summary>

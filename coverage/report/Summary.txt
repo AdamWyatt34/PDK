@@ -1,0 +1,170 @@
+Summary
+  Generated on: 12/24/2025 - 1:34:24 PM
+  Coverage date: 12/21/2025 - 6:33:54 PM - 12/21/2025 - 6:38:16 PM
+  Parser: MultiReport (2x Cobertura)
+  Assemblies: 4
+  Classes: 142
+  Files: 119
+  Line coverage: 75.1%
+  Covered lines: 9850
+  Uncovered lines: 3262
+  Coverable lines: 13112
+  Total lines: 23139
+  Branch coverage: 69.9% (3283 of 4691)
+  Covered branches: 3283
+  Total branches: 4691
+  Method coverage: 83.7% (1005 of 1200)
+  Full method coverage: 66.7% (801 of 1200)
+  Covered methods: 1005
+  Fully covered methods: 801
+  Total methods: 1200
+
+PDK.CLI                                                                                                                                                  45.3%
+  ExecutionOptions                                                                                                                                          0%
+  PDK.CLI.Commands.InteractiveCommand                                                                                                                    32.6%
+  PDK.CLI.Commands.ListCommand                                                                                                                           80.4%
+  PDK.CLI.Commands.VersionCommand                                                                                                                         100%
+  PDK.CLI.Diagnostics.DockerDiagnostics                                                                                                                     0%
+  PDK.CLI.Diagnostics.SystemInfo                                                                                                                         98.9%
+  PDK.CLI.ErrorHandling.ErrorFormatter                                                                                                                   74.2%
+  PDK.CLI.ErrorHandling.ErrorSuggestionEngine                                                                                                            59.3%
+  PDK.CLI.PipelineExecutor                                                                                                                                  0%
+  PDK.CLI.PipelineParserFactory                                                                                                                           100%
+  PDK.CLI.UI.ConsoleOutput                                                                                                                               79.1%
+  PDK.CLI.UI.ConsoleProgressReporter                                                                                                                     86.6%
+  PDK.CLI.UI.ExecutionSummaryData                                                                                                                        91.6%
+  PDK.CLI.UI.ExecutionSummaryDisplay                                                                                                                     92.6%
+  PDK.CLI.UI.InteractiveContext                                                                                                                           100%
+  PDK.CLI.UI.InteractiveMenu                                                                                                                              4.5%
+  PDK.CLI.UI.JobSummary                                                                                                                                    80%
+  PDK.CLI.UI.StepStatusDisplay                                                                                                                           94.8%
+  PDK.CLI.UI.StepSummary                                                                                                                                 88.8%
+  Program                                                                                                                                                   0%
+
+PDK.Core                                                                                                                                                 83.2%
+  PDK.Core.Artifacts.ArtifactCompressor                                                                                                                  92.2%
+  PDK.Core.Artifacts.ArtifactContext                                                                                                                     95.2%
+  PDK.Core.Artifacts.ArtifactDefinition                                                                                                                  83.3%
+  PDK.Core.Artifacts.ArtifactException                                                                                                                   87.2%
+  PDK.Core.Artifacts.ArtifactFileInfo                                                                                                                      80%
+  PDK.Core.Artifacts.ArtifactInfo                                                                                                                        83.3%
+  PDK.Core.Artifacts.ArtifactListItem                                                                                                                    88.8%
+  PDK.Core.Artifacts.ArtifactManager                                                                                                                     85.7%
+  PDK.Core.Artifacts.ArtifactMetadata                                                                                                                    92.3%
+  PDK.Core.Artifacts.ArtifactOptions                                                                                                                     87.5%
+  PDK.Core.Artifacts.ArtifactProgress                                                                                                                    45.4%
+  PDK.Core.Artifacts.ArtifactSummary                                                                                                                       75%
+  PDK.Core.Artifacts.DownloadResult                                                                                                                        75%
+  PDK.Core.Artifacts.FileSelector                                                                                                                          93%
+  PDK.Core.Artifacts.UploadResult                                                                                                                        83.3%
+  PDK.Core.Configuration.ArtifactsConfig                                                                                                                   75%
+  PDK.Core.Configuration.ConfigurationException                                                                                                          41.1%
+  PDK.Core.Configuration.ConfigurationLoader                                                                                                             92.9%
+  PDK.Core.Configuration.ConfigurationMerger                                                                                                              100%
+  PDK.Core.Configuration.ConfigurationValidator                                                                                                          93.9%
+  PDK.Core.Configuration.DefaultConfiguration                                                                                                             100%
+  PDK.Core.Configuration.DockerConfig                                                                                                                      80%
+  PDK.Core.Configuration.FeaturesConfig                                                                                                                  66.6%
+  PDK.Core.Configuration.LoggingConfig                                                                                                                     75%
+  PDK.Core.Configuration.PdkConfig                                                                                                                       87.5%
+  PDK.Core.Configuration.PdkConfiguration                                                                                                                85.5%
+  PDK.Core.Configuration.ValidationError                                                                                                                 66.6%
+  PDK.Core.Configuration.ValidationResult                                                                                                                66.6%
+  PDK.Core.Diagnostics.CiDetector                                                                                                                         100%
+  PDK.Core.Diagnostics.DockerInfo                                                                                                                        84.6%
+  PDK.Core.Diagnostics.ExecutorInfo                                                                                                                      66.6%
+  PDK.Core.Diagnostics.ProviderInfo                                                                                                                        75%
+  PDK.Core.Diagnostics.SystemResources                                                                                                                     75%
+  PDK.Core.Diagnostics.UpdateChecker                                                                                                                     66.6%
+  PDK.Core.Diagnostics.UpdateInfo                                                                                                                          80%
+  PDK.Core.ErrorHandling.ErrorCodes                                                                                                                      99.3%
+  PDK.Core.ErrorHandling.ErrorContext                                                                                                                    80.2%
+  PDK.Core.Logging.PdkLogger                                                                                                                                0%
+  PDK.Core.Logging.SecretMasker                                                                                                                          96.1%
+  PDK.Core.Models.Condition                                                                                                                               100%
+  PDK.Core.Models.Job                                                                                                                                     100%
+  PDK.Core.Models.JobResult                                                                                                                                 0%
+  PDK.Core.Models.PdkException                                                                                                                           79.3%
+  PDK.Core.Models.Pipeline                                                                                                                                 80%
+  PDK.Core.Models.PipelineExecutionException                                                                                                             62.9%
+  PDK.Core.Models.PipelineParseException                                                                                                                   67%
+  PDK.Core.Models.RunContext                                                                                                                                0%
+  PDK.Core.Models.Step                                                                                                                                    100%
+  PDK.Core.Models.StepResult                                                                                                                                0%
+  PDK.Core.Progress.NullProgressReporter                                                                                                                   50%
+  PDK.Core.Secrets.SecretDetector                                                                                                                         100%
+  PDK.Core.Secrets.SecretEncryption                                                                                                                      39.7%
+  PDK.Core.Secrets.SecretEntry                                                                                                                             80%
+  PDK.Core.Secrets.SecretException                                                                                                                       61.4%
+  PDK.Core.Secrets.SecretManager                                                                                                                         91.4%
+  PDK.Core.Secrets.SecretStorage                                                                                                                         75.3%
+  PDK.Core.Variables.BuiltInVariables                                                                                                                    89.7%
+  PDK.Core.Variables.VariableContext                                                                                                                      100%
+  PDK.Core.Variables.VariableException                                                                                                                   64.1%
+  PDK.Core.Variables.VariableExpander                                                                                                                    96.3%
+  PDK.Core.Variables.VariableResolver                                                                                                                    95.4%
+  System.Text.RegularExpressions.Generated                                                                                                               89.6%
+  System.Text.RegularExpressions.Generated.<RegexGenerator_g>F06A5AC1878F521A63B201349A8A4A7538CFAAA353F7E34A265E71D99B6C8018F__MemoryLimitRegex_2       91.8%
+  System.Text.RegularExpressions.Generated.<RegexGenerator_g>F06A5AC1878F521A63B201349A8A4A7538CFAAA353F7E34A265E71D99B6C8018F__SecretKeywordPattern_3   91.4%
+  System.Text.RegularExpressions.Generated.<RegexGenerator_g>F06A5AC1878F521A63B201349A8A4A7538CFAAA353F7E34A265E71D99B6C8018F__ValidNamePattern_0         87%
+  System.Text.RegularExpressions.Generated.<RegexGenerator_g>F06A5AC1878F521A63B201349A8A4A7538CFAAA353F7E34A265E71D99B6C8018F__ValidNamePattern_4       90.9%
+  System.Text.RegularExpressions.Generated.<RegexGenerator_g>F06A5AC1878F521A63B201349A8A4A7538CFAAA353F7E34A265E71D99B6C8018F__VariableNamePattern_5    80.6%
+  System.Text.RegularExpressions.Generated.<RegexGenerator_g>F06A5AC1878F521A63B201349A8A4A7538CFAAA353F7E34A265E71D99B6C8018F__VariableNameRegex_1      90.9%
+
+PDK.Providers                                                                                                                                            86.2%
+  PDK.Providers.AzureDevOps.AzureDevOpsParser                                                                                                            88.5%
+  PDK.Providers.AzureDevOps.AzureStepMapper                                                                                                              91.2%
+  PDK.Providers.AzureDevOps.Models.AzureJob                                                                                                              65.2%
+  PDK.Providers.AzureDevOps.Models.AzurePipeline                                                                                                         68.3%
+  PDK.Providers.AzureDevOps.Models.AzurePool                                                                                                              100%
+  PDK.Providers.AzureDevOps.Models.AzureStage                                                                                                            82.3%
+  PDK.Providers.AzureDevOps.Models.AzureStep                                                                                                             92.5%
+  PDK.Providers.AzureDevOps.Models.AzureTask                                                                                                                0%
+  PDK.Providers.AzureDevOps.Models.AzureTrigger                                                                                                          66.6%
+  PDK.Providers.AzureDevOps.Models.AzureVariable                                                                                                          100%
+  PDK.Providers.AzureDevOps.Models.AzureVariables                                                                                                           0%
+  PDK.Providers.AzureDevOps.Models.BranchFilter                                                                                                           100%
+  PDK.Providers.AzureDevOps.Models.PathFilter                                                                                                             100%
+  PDK.Providers.AzureDevOps.Models.TagFilter                                                                                                                0%
+  PDK.Providers.GitHub.ActionMapper                                                                                                                      91.4%
+  PDK.Providers.GitHub.GitHubActionsParser                                                                                                               93.8%
+  PDK.Providers.GitHub.Models.GitHubJob                                                                                                                  63.6%
+  PDK.Providers.GitHub.Models.GitHubStep                                                                                                                 90.9%
+  PDK.Providers.GitHub.Models.GitHubWorkflow                                                                                                               80%
+
+PDK.Runners                                                                                                                                              82.5%
+  PDK.Runners.ContainerException                                                                                                                         61.3%
+  PDK.Runners.Docker.ContainerNameGenerator                                                                                                              82.3%
+  PDK.Runners.Docker.DockerConfig                                                                                                                        78.5%
+  PDK.Runners.Docker.DockerContainerManager                                                                                                              73.3%
+  PDK.Runners.Docker.ImageMapper                                                                                                                         81.2%
+  PDK.Runners.Docker.ResourceValidator                                                                                                                    100%
+  PDK.Runners.DockerJobRunner                                                                                                                            87.5%
+  PDK.Runners.ExecutionContext                                                                                                                            100%
+  PDK.Runners.HostExecutionContext                                                                                                                       77.2%
+  PDK.Runners.HostJobRunner                                                                                                                              80.8%
+  PDK.Runners.JobExecutionResult                                                                                                                         87.5%
+  PDK.Runners.JobMetadata                                                                                                                                  75%
+  PDK.Runners.Models.ContainerOptions                                                                                                                    77.7%
+  PDK.Runners.Models.DockerAvailabilityStatus                                                                                                            95.4%
+  PDK.Runners.Models.ExecutionResult                                                                                                                     83.3%
+  PDK.Runners.ProcessExecutor                                                                                                                              79%
+  PDK.Runners.StepExecutionResult                                                                                                                        88.8%
+  PDK.Runners.StepExecutors.CheckoutStepExecutor                                                                                                         69.8%
+  PDK.Runners.StepExecutors.DockerStepExecutor                                                                                                           99.4%
+  PDK.Runners.StepExecutors.DotnetStepExecutor                                                                                                            100%
+  PDK.Runners.StepExecutors.DownloadArtifactExecutor                                                                                                     95.5%
+  PDK.Runners.StepExecutors.HostCheckoutExecutor                                                                                                         93.1%
+  PDK.Runners.StepExecutors.HostDotnetExecutor                                                                                                           83.5%
+  PDK.Runners.StepExecutors.HostNpmExecutor                                                                                                              92.9%
+  PDK.Runners.StepExecutors.HostScriptExecutor                                                                                                             85%
+  PDK.Runners.StepExecutors.HostStepExecutorFactory                                                                                                      32.2%
+  PDK.Runners.StepExecutors.NpmStepExecutor                                                                                                              95.4%
+  PDK.Runners.StepExecutors.PathResolver                                                                                                                   88%
+  PDK.Runners.StepExecutors.PowerShellStepExecutor                                                                                                       82.2%
+  PDK.Runners.StepExecutors.ScriptStepExecutor                                                                                                           76.3%
+  PDK.Runners.StepExecutors.StepExecutorFactory                                                                                                          67.3%
+  PDK.Runners.StepExecutors.ToolNotFoundException                                                                                                        50.6%
+  PDK.Runners.StepExecutors.ToolValidator                                                                                                                86.9%
+  PDK.Runners.StepExecutors.UploadArtifactExecutor                                                                                                       91.5%
+  PDK.Runners.Utilities.TarArchiveHelper                                                                                                                 67.1%

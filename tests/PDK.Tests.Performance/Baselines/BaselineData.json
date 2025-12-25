@@ -1,0 +1,108 @@
+{
+  "Version": "1.0.0",
+  "LastUpdated": "2024-12-24T00:00:00Z",
+  "Metrics": {
+    "ParseSimpleWorkflow": {
+      "Mean": 0.5,
+      "StdDev": 0.1,
+      "Unit": "ms",
+      "RegressionThresholdPercent": 20
+    },
+    "ParseDotnetBuildWorkflow": {
+      "Mean": 1.0,
+      "StdDev": 0.2,
+      "Unit": "ms",
+      "RegressionThresholdPercent": 20
+    },
+    "ParseNpmBuildWorkflow": {
+      "Mean": 0.8,
+      "StdDev": 0.15,
+      "Unit": "ms",
+      "RegressionThresholdPercent": 20
+    },
+    "ParseMultiJobWorkflow": {
+      "Mean": 2.0,
+      "StdDev": 0.3,
+      "Unit": "ms",
+      "RegressionThresholdPercent": 20
+    },
+    "ParseLargeWorkflow": {
+      "Mean": 5.0,
+      "StdDev": 0.5,
+      "Unit": "ms",
+      "RegressionThresholdPercent": 25
+    },
+    "Docker_SimpleJob": {
+      "Mean": 100,
+      "StdDev": 20,
+      "Unit": "ms",
+      "RegressionThresholdPercent": 25
+    },
+    "Host_SimpleJob": {
+      "Mean": 50,
+      "StdDev": 10,
+      "Unit": "ms",
+      "RegressionThresholdPercent": 25
+    },
+    "Docker_MultiStepJob": {
+      "Mean": 300,
+      "StdDev": 50,
+      "Unit": "ms",
+      "RegressionThresholdPercent": 25
+    },
+    "Host_MultiStepJob": {
+      "Mean": 150,
+      "StdDev": 30,
+      "Unit": "ms",
+      "RegressionThresholdPercent": 25
+    },
+    "NoOptimizations": {
+      "Mean": 500,
+      "StdDev": 50,
+      "Unit": "ms",
+      "RegressionThresholdPercent": 25
+    },
+    "WithImageCaching": {
+      "Mean": 350,
+      "StdDev": 40,
+      "Unit": "ms",
+      "RegressionThresholdPercent": 25
+    },
+    "WithContainerReuse": {
+      "Mean": 300,
+      "StdDev": 35,
+      "Unit": "ms",
+      "RegressionThresholdPercent": 25
+    },
+    "AllOptimizations": {
+      "Mean": 200,
+      "StdDev": 30,
+      "Unit": "ms",
+      "RegressionThresholdPercent": 25
+    },
+    "DotNetBuildPipeline_Docker": {
+      "Mean": 400,
+      "StdDev": 50,
+      "Unit": "ms",
+      "RegressionThresholdPercent": 25
+    },
+    "DotNetBuildPipeline_Host": {
+      "Mean": 200,
+      "StdDev": 30,
+      "Unit": "ms",
+      "RegressionThresholdPercent": 25
+    },
+    "NpmBuildPipeline_Docker": {
+      "Mean": 350,
+      "StdDev": 45,
+      "Unit": "ms",
+      "RegressionThresholdPercent": 25
+    },
+    "NpmBuildPipeline_Host": {
+      "Mean": 175,
+      "StdDev": 25,
+      "Unit": "ms",
+      "RegressionThresholdPercent": 25
+    }
+  }
+}

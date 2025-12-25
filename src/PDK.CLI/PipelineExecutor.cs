@@ -7,6 +7,8 @@ using PDK.Core.Configuration;
 using PDK.Core.Logging;
 using PDK.Core.Models;
 using PDK.Core.Progress;
+using PDK.CLI.Runners;
+using PDK.Core.Runners;
 using PDK.Core.Secrets;
 using PDK.Core.Variables;
 using PDK.Runners;
@@ -21,7 +23,8 @@ public class PipelineExecutor
 {
     private readonly PipelineParserFactory _parserFactory;
     private readonly PDK.Runners.IContainerManager _containerManager;
-    private readonly PDK.Runners.IJobRunner _jobRunner;
+    private readonly IRunnerSelector _runnerSelector;
+    private readonly IRunnerFactory _runnerFactory;
     private readonly IConsoleOutput _output;
     private readonly IProgressReporter _progressReporter;
     private readonly IAnsiConsole _console;
@@ -38,7 +41,8 @@ public class PipelineExecutor
     /// </summary>
     /// <param name="parserFactory">Factory for getting pipeline parsers.</param>
     /// <param name="containerManager">Container manager for Docker operations.</param>
-    /// <param name="jobRunner">Job runner for executing jobs.</param>
+    /// <param name="runnerSelector">Runner selector for choosing execution mode.</param>
+    /// <param name="runnerFactory">Factory for creating job runners.</param>
     /// <param name="output">Console output service.</param>
     /// <param name="progressReporter">Progress reporter for UI feedback.</param>
     /// <param name="console">Spectre.Console instance for rich output.</param>
@@ -52,7 +56,8 @@ public class PipelineExecutor
     public PipelineExecutor(
         PipelineParserFactory parserFactory,
         PDK.Runners.IContainerManager containerManager,
-        PDK.Runners.IJobRunner jobRunner,
+        IRunnerSelector runnerSelector,
+        IRunnerFactory runnerFactory,
         IConsoleOutput output,
         IProgressReporter progressReporter,
         IAnsiConsole console,
@@ -66,7 +71,8 @@ public class PipelineExecutor
     {
         _parserFactory = parserFactory ?? throw new ArgumentNullException(nameof(parserFactory));
         _containerManager = containerManager ?? throw new ArgumentNullException(nameof(containerManager));
-        _jobRunner = jobRunner ?? throw new ArgumentNullException(nameof(jobRunner));
+        _runnerSelector = runnerSelector ?? throw new ArgumentNullException(nameof(runnerSelector));
+        _runnerFactory = runnerFactory ?? throw new ArgumentNullException(nameof(runnerFactory));
         _output = output ?? throw new ArgumentNullException(nameof(output));
         _progressReporter = progressReporter ?? throw new ArgumentNullException(nameof(progressReporter));
         _console = console ?? throw new ArgumentNullException(nameof(console));
@@ -104,28 +110,19 @@ public class PipelineExecutor
         var workspacePath = Directory.GetCurrentDirectory();
         await InitializeVariablesAndSecretsAsync(options, workspacePath);
 
-        // Check Docker availability if Docker mode is enabled (REQ-DK-007)
-        if (options.UseDocker)
-        {
-            var dockerStatus = await _containerManager.GetDockerStatusAsync();
-
-            if (!dockerStatus.IsAvailable)
-            {
-                _output.WriteLine();
-                DockerDiagnostics.DisplayQuickError(dockerStatus);
-                Environment.Exit(1);
-            }
-
-            if (options.Verbose)
-            {
-                _output.WriteDebug($"Using Docker version {dockerStatus.Version}");
-            }
-        }
-
         // Determine which jobs to run
         var jobsToRun = string.IsNullOrEmpty(options.JobName)
             ? pipeline.Jobs.Values.ToList()
             : [pipeline.Jobs[options.JobName]];
+
+        // Select runner (Sprint 10 - REQ-10-012)
+        // Note: We select once for the first job's capabilities check
+        var firstJob = jobsToRun.FirstOrDefault();
+        var selection = await _runnerSelector.SelectRunnerAsync(options.RunnerType, firstJob);
+        DisplayRunnerSelection(selection, options.Verbose);
+
+        // Create the runner
+        var jobRunner = _runnerFactory.CreateRunner(selection.SelectedRunner);
 
         // Execute jobs and collect results for summary
         var allJobsSucceeded = true;
@@ -143,7 +140,7 @@ public class PipelineExecutor
             var stopwatch = Stopwatch.StartNew();
 
             // Execute the job
-            var result = await _jobRunner.RunJobAsync(job, workspacePath);
+            var result = await jobRunner.RunJobAsync(job, workspacePath);
             jobResults.Add(result);
 
             stopwatch.Stop();
@@ -359,13 +356,46 @@ public class PipelineExecutor
         }
 
         // 9. Update variable context with workspace
+        // Runner will be set later when runner selection is made
         _variableResolver.UpdateContext(new VariableContext
         {
             Workspace = workspacePath,
-            Runner = "docker"
+            Runner = "auto"  // Will be updated after runner selection
         });
 
         _logger.LogDebug("Variable and secret initialization complete");
+    }
+
+    /// <summary>
+    /// Displays information about the selected runner.
+    /// </summary>
+    private void DisplayRunnerSelection(RunnerSelectionResult selection, bool verbose)
+    {
+        // Display runner selection info
+        _output.WriteInfo($"Using {selection.SelectedRunner} runner: {selection.Reason}");
+
+        // Update variable context with actual runner
+        _variableResolver.UpdateContext(new VariableContext
+        {
+            Runner = selection.SelectedRunner.ToString().ToLowerInvariant()
+        });
+
+        // Display Docker version if verbose and available
+        if (verbose && selection.DockerVersion != null)
+        {
+            _output.WriteDebug($"Docker version: {selection.DockerVersion}");
+        }
+
+        // Display warning if present
+        if (!string.IsNullOrEmpty(selection.Warning))
+        {
+            foreach (var line in selection.Warning.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                _output.WriteWarning(line);
+            }
+        }
+
+        _output.WriteLine();
     }
 
     /// <summary>

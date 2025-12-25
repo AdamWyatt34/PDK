@@ -1,4 +1,6 @@
-﻿/// <summary>
+using PDK.Core.Runners;
+
+/// <summary>
 /// Options for pipeline execution.
 /// </summary>
 public class ExecutionOptions
@@ -19,9 +21,22 @@ public class ExecutionOptions
     public string? StepName { get; set; }
 
     /// <summary>
-    /// Gets or sets whether to use Docker for execution. Default is true.
+    /// Gets or sets the requested runner type for execution.
+    /// Default is Auto, which prefers Docker but falls back to Host if unavailable.
     /// </summary>
-    public bool UseDocker { get; set; } = true;
+    public RunnerType RunnerType { get; set; } = RunnerType.Auto;
+
+    /// <summary>
+    /// Gets or sets whether to use Docker for execution.
+    /// This property is maintained for backward compatibility.
+    /// Use RunnerType for explicit runner control.
+    /// </summary>
+    [Obsolete("Use RunnerType instead. This property is maintained for backward compatibility.")]
+    public bool UseDocker
+    {
+        get => RunnerType != RunnerType.Host;
+        set => RunnerType = value ? RunnerType.Auto : RunnerType.Host;
+    }
 
     /// <summary>
     /// Gets or sets whether to only validate the pipeline without executing.
@@ -63,4 +78,38 @@ public class ExecutionOptions
     /// These values are automatically registered for masking in output.
     /// </summary>
     public Dictionary<string, string> CliSecrets { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets whether to disable container reuse within a job.
+    /// When true, a new container is created for each step.
+    /// Default is false (containers are reused).
+    /// </summary>
+    public bool NoReuseContainers { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets whether to disable Docker image caching.
+    /// When true, images are always pulled from the registry.
+    /// Default is false (images are cached).
+    /// </summary>
+    public bool NoCacheImages { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets whether to enable parallel step execution.
+    /// When true, steps without dependencies can run concurrently.
+    /// Default is false (sequential execution).
+    /// </summary>
+    public bool ParallelSteps { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets the maximum number of steps to run in parallel.
+    /// Only applies when ParallelSteps is true.
+    /// Default is 4.
+    /// </summary>
+    public int MaxParallelism { get; set; } = 4;
+
+    /// <summary>
+    /// Gets or sets whether to show performance metrics after execution.
+    /// Also enabled when Verbose is true.
+    /// </summary>
+    public bool ShowMetrics { get; set; } = false;
 }

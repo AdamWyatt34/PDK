@@ -71,6 +71,12 @@ public static class ErrorCodes
     /// <summary>Step executor not supported.</summary>
     public const string UnsupportedExecutor = "PDK-E-RUNNER-006";
 
+    /// <summary>Docker was explicitly requested but is unavailable.</summary>
+    public const string DockerUnavailable = "PDK-E-RUNNER-007";
+
+    /// <summary>Job requires features not supported by the selected runner.</summary>
+    public const string RunnerCapabilityMismatch = "PDK-E-RUNNER-008";
+
     #endregion
 
     #region File Errors (PDK-E-FILE-XXX)
@@ -251,6 +257,8 @@ public static class ErrorCodes
             ToolNotFound => "Required tool is not available",
             JobExecutionFailed => "Job execution failed",
             UnsupportedExecutor => "Step executor not supported",
+            DockerUnavailable => "Docker was explicitly requested but is unavailable",
+            RunnerCapabilityMismatch => "Job requires features not supported by the selected runner",
 
             // File errors
             FileNotFound => "Specified file was not found",
@@ -348,6 +356,8 @@ public static class ErrorCodes
         yield return ToolNotFound;
         yield return JobExecutionFailed;
         yield return UnsupportedExecutor;
+        yield return DockerUnavailable;
+        yield return RunnerCapabilityMismatch;
 
         yield return FileNotFound;
         yield return FileAccessDenied;

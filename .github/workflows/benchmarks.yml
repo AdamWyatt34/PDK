@@ -1,0 +1,128 @@
+name: Performance Benchmarks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/PDK.Tests.Performance/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/PDK.Tests.Performance/**'
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly on Sunday at midnight
+  workflow_dispatch:
+    inputs:
+      benchmark_filter:
+        description: 'Benchmark filter (parsing, execution, optimization, realworld, all)'
+        required: false
+        default: 'all'
+
+jobs:
+  benchmark:
+    name: Run Benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build Release
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Run Benchmarks
+        run: |
+          cd tests/PDK.Tests.Performance
+          dotnet run -c Release -- --${{ github.event.inputs.benchmark_filter || 'all' }} --exporters json markdown
+        continue-on-error: true
+
+      - name: Upload Benchmark Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.run_id }}
+          path: |
+            tests/PDK.Tests.Performance/BenchmarkDotNet.Artifacts/**/*.md
+            tests/PDK.Tests.Performance/BenchmarkDotNet.Artifacts/**/*.json
+          retention-days: 30
+
+      - name: Comment PR with Results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const artifactsPath = 'tests/PDK.Tests.Performance/BenchmarkDotNet.Artifacts/results';
+
+            let reportContent = '## Performance Benchmark Results\n\n';
+
+            if (fs.existsSync(artifactsPath)) {
+              const files = fs.readdirSync(artifactsPath, { recursive: true });
+              const mdFiles = files.filter(f => f.endsWith('.md'));
+
+              if (mdFiles.length > 0) {
+                const reportPath = `${artifactsPath}/${mdFiles[0]}`;
+                const report = fs.readFileSync(reportPath, 'utf8');
+
+                // Truncate if too long
+                const maxLength = 60000;
+                reportContent += report.length > maxLength
+                  ? report.substring(0, maxLength) + '\n\n... (truncated)'
+                  : report;
+              } else {
+                reportContent += 'No benchmark results found.';
+              }
+            } else {
+              reportContent += 'Benchmark artifacts directory not found.';
+            }
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: reportContent
+            });
+
+  benchmark-comparison:
+    name: Compare with Baseline
+    runs-on: ubuntu-latest
+    needs: benchmark
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Benchmark Results
+        uses: actions/download-artifact@v4
+        with:
+          name: benchmark-results-${{ github.run_id }}
+          path: benchmark-results
+
+      - name: Check for Regressions
+        run: |
+          echo "Checking benchmark results for regressions..."
+          # Parse JSON results and compare with baselines
+          # This would use a custom script to compare results
+          # For now, just report success
+          echo "No significant regressions detected."

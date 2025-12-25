@@ -5,6 +5,7 @@ using System.Text;
 using Docker.DotNet;
 using Docker.DotNet.Models;
 using Microsoft.Extensions.Logging;
+using PDK.Core.Docker;
 using PDK.Runners.Models;
 
 namespace PDK.Runners.Docker;

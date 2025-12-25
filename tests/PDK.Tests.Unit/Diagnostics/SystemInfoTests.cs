@@ -5,6 +5,7 @@ using FluentAssertions;
 using Moq;
 using PDK.CLI.Diagnostics;
 using PDK.Core.Diagnostics;
+using PDK.Core.Docker;
 using PDK.Core.Models;
 using PDK.Runners;
 using PDK.Runners.Models;

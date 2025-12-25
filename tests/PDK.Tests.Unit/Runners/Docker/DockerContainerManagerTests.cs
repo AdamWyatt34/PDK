@@ -3,6 +3,7 @@ using Docker.DotNet.Models;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
+using PDK.Core.Docker;
 using PDK.Runners;
 using PDK.Runners.Docker;
 using PDK.Runners.Models;
