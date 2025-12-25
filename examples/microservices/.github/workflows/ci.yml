@@ -1,0 +1,113 @@
+name: Microservices CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-api-gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore API Gateway
+        run: dotnet restore services/api-gateway/ApiGateway.csproj
+
+      - name: Build API Gateway
+        run: dotnet build services/api-gateway/ApiGateway.csproj --no-restore -c Release
+
+      - name: Test API Gateway
+        run: dotnet test tests/ApiGateway.Tests/ApiGateway.Tests.csproj -c Release --verbosity normal
+
+  build-user-service:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore User Service
+        run: dotnet restore services/user-service/UserService.csproj
+
+      - name: Build User Service
+        run: dotnet build services/user-service/UserService.csproj --no-restore -c Release
+
+      - name: Test User Service
+        run: dotnet test tests/UserService.Tests/UserService.Tests.csproj -c Release --verbosity normal
+
+  build-order-service:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore Order Service
+        run: dotnet restore services/order-service/OrderService.csproj
+
+      - name: Build Order Service
+        run: dotnet build services/order-service/OrderService.csproj --no-restore -c Release
+
+      - name: Test Order Service
+        run: dotnet test tests/OrderService.Tests/OrderService.Tests.csproj -c Release --verbosity normal
+
+  build-docker-images:
+    runs-on: ubuntu-latest
+    needs: [build-api-gateway, build-user-service, build-order-service]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build API Gateway Image
+        run: docker build -t api-gateway:${{ github.sha }} -f services/api-gateway/Dockerfile .
+
+      - name: Build User Service Image
+        run: docker build -t user-service:${{ github.sha }} -f services/user-service/Dockerfile .
+
+      - name: Build Order Service Image
+        run: docker build -t order-service:${{ github.sha }} -f services/order-service/Dockerfile .
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    needs: [build-docker-images]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Start services with Docker Compose
+        run: docker compose up -d
+
+      - name: Wait for services to be healthy
+        run: sleep 15
+
+      - name: Test API Gateway health
+        run: curl --fail http://localhost:8080/health || exit 1
+
+      - name: Test User Service health
+        run: curl --fail http://localhost:8081/health || exit 1
+
+      - name: Test Order Service health
+        run: curl --fail http://localhost:8082/health || exit 1
+
+      - name: Stop services
+        run: docker compose down
+        if: always()

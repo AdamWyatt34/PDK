@@ -229,13 +229,12 @@ Execute Docker commands for container operations.
 - ✅ Timeout configuration
 - ✅ Continue on error flag
 
-**Known Limitations (Sprint 1):**
-- ❌ Matrix builds (planned for future sprint)
+**Current Limitations:**
+- ❌ Matrix builds (planned)
 - ❌ Reusable workflows
 - ❌ Composite actions
 - ❌ Service containers
-- ❌ Artifacts (planned for Sprint 8)
-- ❌ Outputs
+- ❌ Outputs between jobs
 - ❌ Complex trigger definitions
 
 ## Project Structure
@@ -250,7 +249,14 @@ PDK/
 ├── tests/
 │   ├── PDK.Tests.Unit/
 │   └── PDK.Tests.Integration/
-└── samples/               # Example pipeline files
+├── examples/              # Example projects
+│   ├── dotnet-console/
+│   ├── dotnet-webapi/
+│   ├── nodejs-app/
+│   ├── docker-app/
+│   └── microservices/
+├── samples/               # Sample pipeline files
+└── docs/                  # Documentation
 ```
 
 ## Development
@@ -287,6 +293,20 @@ Or use the convenience script:
 ./scripts/coverage.sh
 ```
 
+## Examples
+
+PDK includes complete, working example projects:
+
+| Example | Description |
+|---------|-------------|
+| [dotnet-console](examples/dotnet-console) | Simple .NET console application with tests |
+| [dotnet-webapi](examples/dotnet-webapi) | ASP.NET Core Web API with Swagger |
+| [nodejs-app](examples/nodejs-app) | Node.js application with npm |
+| [docker-app](examples/docker-app) | Docker multi-stage build example |
+| [microservices](examples/microservices) | Multi-service architecture with parallel builds |
+
+Each example includes a complete CI workflow that you can run with PDK.
+
 ## Roadmap
 
 ### Completed
@@ -319,19 +339,39 @@ Or use the convenience script:
   - Path resolution and wildcards
   - Full CLI integration and sample pipelines
 
+- [x] **Sprint 6:** Logging infrastructure
+  - Serilog integration
+  - CI environment detection
+  - Enhanced checkout functionality
+- [x] **Sprint 7:** Configuration file support
+  - pdk.json configuration
+  - Secret management with encryption
+  - Variable expansion
+- [x] **Sprint 8:** Artifact handling
+  - Artifact upload/download
+  - Compression and metadata
+- [x] **Sprint 9:** Release automation
+  - CI/CD pipeline
+  - Code coverage support
+- [x] **Sprint 10:** Performance optimizations
+  - Benchmarks
+  - Runner selection and Docker detection
+  - Host step executors
 - [x] **Sprint 11:** Polish & Integration
-  - Watch Mode for automatic re-execution on file changes
+  - Watch Mode for automatic re-execution
   - Dry-Run Mode for pipeline validation
-  - Structured Logging with correlation IDs and secret masking
+  - Structured Logging with correlation IDs
   - Step Filtering for focused development
-  - Comprehensive integration tests
+- [x] **Sprint 12:** Final Polish & Examples
+  - Complete sample projects
+  - Documentation improvements
+  - Error message quality
 
 ### Planned
-- [ ] **Sprint 6:** GitLab CI support
-- [ ] **Sprint 7:** Configuration file support
-- [ ] **Sprint 8:** Advanced features (matrix builds)
-- [ ] **Sprint 9:** Artifact handling
-- [ ] **Sprint 12:** Performance optimizations and caching
+- [ ] **GitLab CI support**
+- [ ] **Matrix builds**
+- [ ] **Service containers**
+- [ ] **Reusable workflows**
 
 ## Contributing
 
