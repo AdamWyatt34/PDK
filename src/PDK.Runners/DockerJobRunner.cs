@@ -215,7 +215,8 @@ public class DockerJobRunner : IJobRunner
                         stepResult.Duration,
                         cancellationToken);
 
-                    // Log step completion
+                    // Log step completion with correlation ID (REQ-11-005)
+                    var correlationId = PDK.Core.Logging.CorrelationContext.CurrentIdOrNull;
                     if (stepResult.Success)
                     {
                         _logger.LogInformation(
@@ -223,6 +224,15 @@ public class DockerJobRunner : IJobRunner
                             job.Name,
                             step.Name,
                             stepResult.Duration.TotalSeconds);
+
+                        // Debug-level performance logging (REQ-11-005.7)
+                        _logger.LogDebug(
+                            "Step timing - Job: {JobName}, Step: {StepName}, DurationMs: {DurationMs}, ContainerId: {ContainerId}, CorrelationId: {CorrelationId}",
+                            job.Name,
+                            step.Name,
+                            stepResult.Duration.TotalMilliseconds,
+                            containerId?[..12],
+                            correlationId);
                     }
                     else
                     {
@@ -232,6 +242,16 @@ public class DockerJobRunner : IJobRunner
                             step.Name,
                             stepResult.ExitCode,
                             stepResult.Duration.TotalSeconds);
+
+                        // Debug-level failure details
+                        _logger.LogDebug(
+                            "Step failure details - Job: {JobName}, Step: {StepName}, ExitCode: {ExitCode}, DurationMs: {DurationMs}, ContainerId: {ContainerId}, CorrelationId: {CorrelationId}",
+                            job.Name,
+                            step.Name,
+                            stepResult.ExitCode,
+                            stepResult.Duration.TotalMilliseconds,
+                            containerId?[..12],
+                            correlationId);
 
                         // Check if we should continue on error
                         if (!step.ContinueOnError)

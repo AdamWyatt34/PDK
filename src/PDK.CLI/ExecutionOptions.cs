@@ -112,4 +112,95 @@ public class ExecutionOptions
     /// Also enabled when Verbose is true.
     /// </summary>
     public bool ShowMetrics { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets whether watch mode is enabled (REQ-11-001.1).
+    /// When true, the pipeline will be re-executed automatically when files change.
+    /// </summary>
+    public bool WatchMode { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets the watch mode debounce period in milliseconds.
+    /// Default is 500ms (REQ-11-001.4).
+    /// </summary>
+    public int WatchDebounceMs { get; set; } = 500;
+
+    /// <summary>
+    /// Gets or sets whether to clear the terminal between watch mode runs.
+    /// Default is false (REQ-11-002.4).
+    /// </summary>
+    public bool WatchClear { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets whether to run in dry-run mode (REQ-11-003).
+    /// When true, validates the pipeline and shows execution plan without executing.
+    /// </summary>
+    public bool DryRun { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets the path for JSON output of dry-run results.
+    /// If set, implies DryRun = true and outputs results to the specified file.
+    /// </summary>
+    public string? DryRunJsonPath { get; set; }
+
+    // Step Filtering (Sprint 11 - REQ-11-007)
+
+    /// <summary>
+    /// Gets or sets the step names to filter by (from --step flags).
+    /// Multiple step names can be specified. Matching is case-insensitive with fuzzy support.
+    /// </summary>
+    public List<string> FilterStepNames { get; set; } = [];
+
+    /// <summary>
+    /// Gets or sets the step indices to filter by (from --step-index flags).
+    /// Supports single indices, comma-separated lists, and ranges (e.g., "1,3,5" or "2-5").
+    /// </summary>
+    public List<string> FilterStepIndices { get; set; } = [];
+
+    /// <summary>
+    /// Gets or sets the step ranges to filter by (from --step-range flags).
+    /// Supports numeric ranges (e.g., "1-5") and named ranges (e.g., "Build-Test").
+    /// </summary>
+    public List<string> FilterStepRanges { get; set; } = [];
+
+    /// <summary>
+    /// Gets or sets the step names to skip (from --skip-step flags).
+    /// Skip takes precedence over include filters.
+    /// </summary>
+    public List<string> SkipStepNames { get; set; } = [];
+
+    /// <summary>
+    /// Gets or sets whether to automatically include dependencies of selected steps.
+    /// When true, steps that selected steps depend on will also be executed.
+    /// </summary>
+    public bool IncludeDependencies { get; set; } = false;
+
+    // Filter Preview (Sprint 11 - REQ-11-008)
+
+    /// <summary>
+    /// Gets or sets whether to preview the filter and exit without execution.
+    /// Shows what steps would be executed/skipped and exits with code 0 if valid.
+    /// </summary>
+    public bool PreviewFilter { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets whether to show filter preview and confirm before execution.
+    /// Prompts "Proceed? (y/n)" after showing the preview.
+    /// </summary>
+    public bool ConfirmFilter { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets the filter preset name to load from configuration.
+    /// </summary>
+    public string? FilterPreset { get; set; }
+
+    /// <summary>
+    /// Gets whether any step filtering is active.
+    /// </summary>
+    public bool HasStepFiltering =>
+        FilterStepNames.Count > 0 ||
+        FilterStepIndices.Count > 0 ||
+        FilterStepRanges.Count > 0 ||
+        SkipStepNames.Count > 0 ||
+        !string.IsNullOrEmpty(FilterPreset);
 }

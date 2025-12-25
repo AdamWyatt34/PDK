@@ -30,6 +30,140 @@ public static class PdkLogger
     public const int MaxRotatedFiles = 5;
 
     /// <summary>
+    /// Configures structured logging for PDK with multiple sinks and secret masking.
+    /// </summary>
+    /// <param name="builder">The logging builder to configure.</param>
+    /// <param name="options">Logging configuration options.</param>
+    /// <param name="secretMasker">Secret masker for redacting sensitive data.</param>
+    /// <returns>The configured logging builder.</returns>
+    public static ILoggingBuilder ConfigurePdkStructuredLogging(
+        this ILoggingBuilder builder,
+        LoggingOptions options,
+        ISecretMasker? secretMasker = null)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        // Map Microsoft.Extensions.Logging level to Serilog level
+        var serilogLevel = MapToSerilogLevel(options.MinimumLevel);
+
+        // Configure secret masker
+        if (secretMasker != null)
+        {
+            secretMasker.RedactionEnabled = options.MaskSecrets;
+        }
+
+        // Build Serilog configuration
+        var loggerConfiguration = new LoggerConfiguration()
+            .MinimumLevel.Is(serilogLevel)
+            .Enrich.FromLogContext()
+            .Enrich.With(new CorrelationIdEnricher());
+
+        // Add secret masking destructuring policy if masker provided
+        if (secretMasker != null && options.MaskSecrets)
+        {
+            loggerConfiguration.Destructure.With(new SecretMaskingDestructuringPolicy(secretMasker));
+        }
+
+        // Console sink
+        if (options.EnableConsole)
+        {
+            var consoleTemplate = options.ShowTimestampInConsole || options.ShowCorrelationIdInConsole
+                ? LogOutputTemplates.ConsoleVerbose
+                : LogOutputTemplates.ConsoleNormal;
+
+            if (secretMasker != null && options.MaskSecrets)
+            {
+                // Use masking formatter for console
+                loggerConfiguration.WriteTo.Console(
+                    new MaskingTextFormatter(
+                        new Serilog.Formatting.Display.MessageTemplateTextFormatter(consoleTemplate),
+                        secretMasker),
+                    serilogLevel);
+            }
+            else
+            {
+                loggerConfiguration.WriteTo.Console(outputTemplate: consoleTemplate);
+            }
+        }
+
+        // Text file sink
+        if (!string.IsNullOrEmpty(options.LogFilePath))
+        {
+            EnsureDirectoryExists(options.LogFilePath);
+
+            if (secretMasker != null && options.MaskSecrets)
+            {
+                loggerConfiguration.WriteTo.File(
+                    new MaskingTextFormatter(
+                        new Serilog.Formatting.Display.MessageTemplateTextFormatter(LogOutputTemplates.File),
+                        secretMasker),
+                    options.LogFilePath,
+                    rollingInterval: RollingInterval.Infinite,
+                    fileSizeLimitBytes: options.MaxFileSizeBytes,
+                    retainedFileCountLimit: options.RetainedFileCount,
+                    rollOnFileSizeLimit: true,
+                    shared: true,
+                    buffered: true,
+                    flushToDiskInterval: TimeSpan.FromSeconds(1));
+            }
+            else
+            {
+                loggerConfiguration.WriteTo.File(
+                    options.LogFilePath,
+                    outputTemplate: LogOutputTemplates.File,
+                    rollingInterval: RollingInterval.Infinite,
+                    fileSizeLimitBytes: options.MaxFileSizeBytes,
+                    retainedFileCountLimit: options.RetainedFileCount,
+                    rollOnFileSizeLimit: true,
+                    shared: true,
+                    buffered: true,
+                    flushToDiskInterval: TimeSpan.FromSeconds(1));
+            }
+        }
+
+        // JSON file sink
+        if (!string.IsNullOrEmpty(options.JsonLogFilePath))
+        {
+            EnsureDirectoryExists(options.JsonLogFilePath);
+
+            if (secretMasker != null && options.MaskSecrets)
+            {
+                loggerConfiguration.WriteTo.File(
+                    new MaskingTextFormatter(new CompactJsonFormatter(), secretMasker),
+                    options.JsonLogFilePath,
+                    rollingInterval: RollingInterval.Infinite,
+                    fileSizeLimitBytes: options.MaxFileSizeBytes,
+                    retainedFileCountLimit: options.RetainedFileCount,
+                    rollOnFileSizeLimit: true,
+                    shared: true,
+                    buffered: true,
+                    flushToDiskInterval: TimeSpan.FromSeconds(1));
+            }
+            else
+            {
+                loggerConfiguration.WriteTo.File(
+                    new CompactJsonFormatter(),
+                    options.JsonLogFilePath,
+                    rollingInterval: RollingInterval.Infinite,
+                    fileSizeLimitBytes: options.MaxFileSizeBytes,
+                    retainedFileCountLimit: options.RetainedFileCount,
+                    rollOnFileSizeLimit: true,
+                    shared: true,
+                    buffered: true,
+                    flushToDiskInterval: TimeSpan.FromSeconds(1));
+            }
+        }
+
+        Log.Logger = loggerConfiguration.CreateLogger();
+
+        // Clear existing providers and add Serilog
+        builder.ClearProviders();
+        builder.AddSerilog(Log.Logger, dispose: true);
+
+        return builder;
+    }
+
+    /// <summary>
     /// Configures logging for PDK with console and file providers using Serilog.
     /// </summary>
     /// <param name="builder">The logging builder to configure.</param>
@@ -44,11 +178,7 @@ public static class PdkLogger
         var effectivePath = logPath ?? DefaultLogPath;
 
         // Ensure log directory exists
-        var logDir = Path.GetDirectoryName(effectivePath);
-        if (!string.IsNullOrEmpty(logDir) && !Directory.Exists(logDir))
-        {
-            Directory.CreateDirectory(logDir);
-        }
+        EnsureDirectoryExists(effectivePath);
 
         // Map Microsoft.Extensions.Logging level to Serilog level
         var serilogLevel = MapToSerilogLevel(minimumLevel);
@@ -57,6 +187,7 @@ public static class PdkLogger
         var loggerConfiguration = new LoggerConfiguration()
             .MinimumLevel.Is(serilogLevel)
             .Enrich.FromLogContext()
+            .Enrich.With(new CorrelationIdEnricher())
             .WriteTo.File(
                 new CompactJsonFormatter(),
                 effectivePath,
@@ -91,6 +222,7 @@ public static class PdkLogger
         var loggerConfiguration = new LoggerConfiguration()
             .MinimumLevel.Is(serilogLevel)
             .Enrich.FromLogContext()
+            .Enrich.With(new CorrelationIdEnricher())
             .WriteTo.Console();
 
         Log.Logger = loggerConfiguration.CreateLogger();
@@ -105,6 +237,7 @@ public static class PdkLogger
     /// Creates a correlation ID for request tracing.
     /// </summary>
     /// <returns>A unique correlation ID string.</returns>
+    [Obsolete("Use CorrelationContext.CreateScope() instead for proper async context propagation.")]
     public static string CreateCorrelationId()
     {
         var timestamp = DateTime.UtcNow.ToString("yyyyMMdd");
@@ -124,7 +257,7 @@ public static class PdkLogger
     /// <summary>
     /// Maps Microsoft.Extensions.Logging LogLevel to Serilog LogEventLevel.
     /// </summary>
-    private static LogEventLevel MapToSerilogLevel(LogLevel level)
+    public static LogEventLevel MapToSerilogLevel(LogLevel level)
     {
         return level switch
         {
@@ -137,5 +270,17 @@ public static class PdkLogger
             LogLevel.None => LogEventLevel.Fatal,
             _ => LogEventLevel.Information
         };
+    }
+
+    /// <summary>
+    /// Ensures the directory for a file path exists.
+    /// </summary>
+    private static void EnsureDirectoryExists(string filePath)
+    {
+        var logDir = Path.GetDirectoryName(filePath);
+        if (!string.IsNullOrEmpty(logDir) && !Directory.Exists(logDir))
+        {
+            Directory.CreateDirectory(logDir);
+        }
     }
 }

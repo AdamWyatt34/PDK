@@ -7,6 +7,9 @@ using PDK.CLI.Commands;
 using PDK.CLI.Diagnostics;
 using PDK.CLI.ErrorHandling;
 using PDK.CLI.UI;
+using PDK.CLI.WatchMode;
+using PDK.CLI.Logging;
+using PDK.Cli.Filtering;
 using PDK.Core.Diagnostics;
 using PDK.Core.Logging;
 using PDK.Core.Progress;
@@ -93,6 +96,30 @@ var quietOption = new Option<bool>(
     description: "Suppress step output (show only job/step status)",
     getDefaultValue: () => false);
 
+// Structured logging options (Sprint 11 - REQ-11-005)
+var traceOption = new Option<bool>(
+    aliases: ["--trace"],
+    description: "Enable trace-level logging (most verbose)",
+    getDefaultValue: () => false);
+
+var silentOption = new Option<bool>(
+    aliases: ["--silent"],
+    description: "Show only errors (suppress all other output)",
+    getDefaultValue: () => false);
+
+var logFileOption = new Option<string?>(
+    aliases: ["--log-file"],
+    description: "Path to write text log file");
+
+var logJsonOption = new Option<string?>(
+    aliases: ["--log-json"],
+    description: "Path to write JSON-formatted log file");
+
+var noRedactOption = new Option<bool>(
+    aliases: ["--no-redact"],
+    description: "Disable secret redaction in logs (WARNING: may expose secrets)",
+    getDefaultValue: () => false);
+
 var interactiveOption = new Option<bool>(
     aliases: ["--interactive", "-i"],
     description: "Run in interactive mode for guided pipeline exploration",
@@ -162,6 +189,89 @@ var metricsOption = new Option<bool>(
     description: "Show performance metrics after execution",
     getDefaultValue: () => false);
 
+// Watch mode options (Sprint 11 - REQ-11-001)
+var watchOption = new Option<bool>(
+    aliases: ["--watch", "-w"],
+    description: "Watch for file changes and re-execute pipeline automatically",
+    getDefaultValue: () => false);
+
+var watchDebounceOption = new Option<int>(
+    aliases: ["--watch-debounce"],
+    description: "Debounce period in milliseconds (default: 500)",
+    getDefaultValue: () => 500);
+watchDebounceOption.AddValidator(result =>
+{
+    var value = result.GetValueForOption(watchDebounceOption);
+    if (value < 100 || value > 10000)
+    {
+        result.ErrorMessage = "Watch debounce must be between 100 and 10000 milliseconds";
+    }
+});
+
+var watchClearOption = new Option<bool>(
+    aliases: ["--watch-clear"],
+    description: "Clear terminal between watch mode runs",
+    getDefaultValue: () => false);
+
+// Dry-run options (Sprint 11 - REQ-11-003)
+var dryRunOption = new Option<bool>(
+    aliases: ["--dry-run"],
+    description: "Validate pipeline and show execution plan without executing",
+    getDefaultValue: () => false);
+
+var dryRunJsonOption = new Option<string?>(
+    aliases: ["--dry-run-json"],
+    description: "Output dry-run results to JSON file (implies --dry-run)");
+
+// Step filtering options (Sprint 11 - REQ-11-007)
+var filterStepOption = new Option<string[]>(
+    aliases: ["--step-filter"],
+    description: "Run specific step(s) by name (can be repeated, case-insensitive)")
+{
+    AllowMultipleArgumentsPerToken = true
+};
+
+var filterStepIndexOption = new Option<string[]>(
+    aliases: ["--step-index"],
+    description: "Run specific step(s) by index (e.g., '3', '1,3,5', '2-5', '1,3-5,7')")
+{
+    AllowMultipleArgumentsPerToken = true
+};
+
+var filterStepRangeOption = new Option<string[]>(
+    aliases: ["--step-range"],
+    description: "Run range of steps (e.g., '1-5' or 'Build-Test')")
+{
+    AllowMultipleArgumentsPerToken = true
+};
+
+var skipStepOption = new Option<string[]>(
+    aliases: ["--skip-step"],
+    description: "Skip specific step(s) by name (takes precedence over include filters)")
+{
+    AllowMultipleArgumentsPerToken = true
+};
+
+var includeDepsOption = new Option<bool>(
+    aliases: ["--include-dependencies"],
+    description: "Automatically include dependencies of selected steps",
+    getDefaultValue: () => false);
+
+// Filter preview options (Sprint 11 - REQ-11-008)
+var previewFilterOption = new Option<bool>(
+    aliases: ["--preview-filter"],
+    description: "Preview which steps will run and exit without execution",
+    getDefaultValue: () => false);
+
+var confirmFilterOption = new Option<bool>(
+    aliases: ["--confirm"],
+    description: "Show filter preview and confirm before execution",
+    getDefaultValue: () => false);
+
+var filterPresetOption = new Option<string?>(
+    aliases: ["--preset"],
+    description: "Load filter preset from configuration file");
+
 runCommand.AddOption(fileOption);
 runCommand.AddOption(jobOption);
 runCommand.AddOption(stepOption);
@@ -171,6 +281,11 @@ runCommand.AddOption(runnerOption);
 runCommand.AddOption(validateOption);
 runCommand.AddOption(verboseOption);
 runCommand.AddOption(quietOption);
+runCommand.AddOption(traceOption);
+runCommand.AddOption(silentOption);
+runCommand.AddOption(logFileOption);
+runCommand.AddOption(logJsonOption);
+runCommand.AddOption(noRedactOption);
 runCommand.AddOption(interactiveOption);
 runCommand.AddOption(configOption);
 runCommand.AddOption(varOption);
@@ -181,6 +296,19 @@ runCommand.AddOption(noCacheOption);
 runCommand.AddOption(parallelOption);
 runCommand.AddOption(maxParallelOption);
 runCommand.AddOption(metricsOption);
+runCommand.AddOption(watchOption);
+runCommand.AddOption(watchDebounceOption);
+runCommand.AddOption(watchClearOption);
+runCommand.AddOption(dryRunOption);
+runCommand.AddOption(dryRunJsonOption);
+runCommand.AddOption(filterStepOption);
+runCommand.AddOption(filterStepIndexOption);
+runCommand.AddOption(filterStepRangeOption);
+runCommand.AddOption(skipStepOption);
+runCommand.AddOption(includeDepsOption);
+runCommand.AddOption(previewFilterOption);
+runCommand.AddOption(confirmFilterOption);
+runCommand.AddOption(filterPresetOption);
 
 runCommand.SetHandler(async context =>
 {
@@ -193,6 +321,11 @@ runCommand.SetHandler(async context =>
     var validate = context.ParseResult.GetValueForOption(validateOption);
     var verbose = context.ParseResult.GetValueForOption(verboseOption);
     var quiet = context.ParseResult.GetValueForOption(quietOption);
+    var trace = context.ParseResult.GetValueForOption(traceOption);
+    var silent = context.ParseResult.GetValueForOption(silentOption);
+    var logFile = context.ParseResult.GetValueForOption(logFileOption);
+    var logJson = context.ParseResult.GetValueForOption(logJsonOption);
+    var noRedact = context.ParseResult.GetValueForOption(noRedactOption);
     var interactive = context.ParseResult.GetValueForOption(interactiveOption);
     var configPath = context.ParseResult.GetValueForOption(configOption);
     var vars = context.ParseResult.GetValueForOption(varOption) ?? [];
@@ -203,6 +336,25 @@ runCommand.SetHandler(async context =>
     var parallel = context.ParseResult.GetValueForOption(parallelOption);
     var maxParallel = context.ParseResult.GetValueForOption(maxParallelOption);
     var showMetrics = context.ParseResult.GetValueForOption(metricsOption);
+    var watch = context.ParseResult.GetValueForOption(watchOption);
+    var watchDebounce = context.ParseResult.GetValueForOption(watchDebounceOption);
+    var watchClear = context.ParseResult.GetValueForOption(watchClearOption);
+    var dryRun = context.ParseResult.GetValueForOption(dryRunOption);
+    var dryRunJson = context.ParseResult.GetValueForOption(dryRunJsonOption);
+    var filterSteps = context.ParseResult.GetValueForOption(filterStepOption) ?? [];
+    var filterStepIndices = context.ParseResult.GetValueForOption(filterStepIndexOption) ?? [];
+    var filterStepRanges = context.ParseResult.GetValueForOption(filterStepRangeOption) ?? [];
+    var skipSteps = context.ParseResult.GetValueForOption(skipStepOption) ?? [];
+    var includeDeps = context.ParseResult.GetValueForOption(includeDepsOption);
+    var previewFilter = context.ParseResult.GetValueForOption(previewFilterOption);
+    var confirmFilter = context.ParseResult.GetValueForOption(confirmFilterOption);
+    var filterPreset = context.ParseResult.GetValueForOption(filterPresetOption);
+
+    // --dry-run-json implies --dry-run
+    if (!string.IsNullOrEmpty(dryRunJson))
+    {
+        dryRun = true;
+    }
 
     try
     {
@@ -213,6 +365,32 @@ runCommand.SetHandler(async context =>
             Environment.Exit(1);
             return;
         }
+
+        // Validate conflicting verbosity options (REQ-11-005)
+        var verbosityCount = (trace ? 1 : 0) + (verbose ? 1 : 0) + (quiet ? 1 : 0) + (silent ? 1 : 0);
+        if (verbosityCount > 1)
+        {
+            AnsiConsole.MarkupLine("[red]Error:[/] Cannot specify multiple verbosity flags. Choose one of: --trace, --verbose, --quiet, --silent.");
+            Environment.Exit(1);
+            return;
+        }
+
+        // Warn about --no-redact security implications
+        if (noRedact)
+        {
+            AnsiConsole.MarkupLine("[yellow]WARNING:[/] Secret redaction is disabled (--no-redact).");
+            AnsiConsole.MarkupLine("[yellow]         [/] Sensitive data may appear in logs and console output.");
+        }
+
+        // Build logging options from CLI flags
+        var loggingOptions = LoggingOptionsBuilder.FromCliFlags(
+            verbose: verbose,
+            trace: trace,
+            quiet: quiet,
+            silent: silent,
+            logFile: logFile,
+            logJson: logJson,
+            noRedact: noRedact);
 
         // Determine runner type from CLI options
         var runnerType = DetermineRunnerType(host, docker, runner);
@@ -226,6 +404,14 @@ runCommand.SetHandler(async context =>
             return;
         }
 
+        // Validate mode conflicts
+        if (dryRun && (watch || interactive))
+        {
+            AnsiConsole.MarkupLine("[red]Error:[/] --dry-run cannot be used with --watch or --interactive.");
+            Environment.Exit(1);
+            return;
+        }
+
         // Parse NAME=VALUE arrays into dictionaries
         var cliVariables = ParseKeyValuePairs(vars);
         var cliSecrets = ParseKeyValuePairs(secrets);
@@ -235,6 +421,120 @@ runCommand.SetHandler(async context =>
         {
             AnsiConsole.MarkupLine("[yellow]Warning:[/] Secrets passed via --secret are visible in process lists.");
             AnsiConsole.MarkupLine("[yellow]Recommendation:[/] Use 'pdk secret set NAME' or PDK_SECRET_* environment variables.");
+        }
+
+        // Dry-run mode (Sprint 11 - REQ-11-003)
+        if (dryRun)
+        {
+            var dryRunService = serviceProvider.GetRequiredService<PDK.CLI.DryRun.DryRunService>();
+            var parserFactory = serviceProvider.GetRequiredService<IPipelineParserFactory>();
+            var variableResolver = serviceProvider.GetRequiredService<IVariableResolver>();
+            var configLoader = serviceProvider.GetRequiredService<IConfigurationLoader>();
+
+            // Load configuration and variables
+            var config = await configLoader.LoadAsync(configPath);
+            if (config != null)
+            {
+                variableResolver.LoadFromConfiguration(config);
+            }
+            variableResolver.LoadFromEnvironment();
+            foreach (var (k, v) in cliVariables)
+            {
+                variableResolver.SetVariable(k, v, PDK.Core.Variables.VariableSource.CliArgument);
+            }
+
+            // Parse pipeline
+            var parser = parserFactory.GetParser(file.FullName);
+            var pipeline = await parser.ParseFile(file.FullName);
+
+            // Run dry-run validation
+            var runnerTypeStr = runnerType switch
+            {
+                RunnerType.Docker => "docker",
+                RunnerType.Host => "host",
+                _ => "auto"
+            };
+
+            var result = await dryRunService.ExecuteAsync(
+                pipeline,
+                file.FullName,
+                runnerTypeStr,
+                dryRunJson);
+
+            Environment.ExitCode = result.IsValid ? 0 : 1;
+            return;
+        }
+
+        // Watch mode (Sprint 11 - REQ-11-001)
+        if (watch)
+        {
+            // Watch mode is incompatible with interactive and validate-only modes
+            if (interactive)
+            {
+                AnsiConsole.MarkupLine("[red]Error:[/] Watch mode cannot be used with interactive mode.");
+                Environment.Exit(1);
+                return;
+            }
+            if (validate)
+            {
+                AnsiConsole.MarkupLine("[red]Error:[/] Watch mode cannot be used with validate-only mode.");
+                Environment.Exit(1);
+                return;
+            }
+
+            var watchService = serviceProvider.GetRequiredService<IWatchModeService>();
+
+            var executionOptions = new ExecutionOptions
+            {
+                FilePath = file.FullName,
+                JobName = job,
+                StepName = step,
+                RunnerType = runnerType,
+                ValidateOnly = validate,
+                Verbose = verbose,
+                Quiet = quiet,
+                ConfigPath = configPath,
+                CliVariables = cliVariables,
+                VarFilePath = varFile?.FullName,
+                CliSecrets = cliSecrets,
+                NoReuseContainers = noReuse,
+                NoCacheImages = noCache,
+                ParallelSteps = parallel,
+                MaxParallelism = maxParallel,
+                ShowMetrics = showMetrics || verbose,
+                WatchMode = true,
+                WatchDebounceMs = watchDebounce,
+                WatchClear = watchClear,
+                // Step filtering (REQ-11-007)
+                FilterStepNames = [.. filterSteps],
+                FilterStepIndices = [.. filterStepIndices],
+                FilterStepRanges = [.. filterStepRanges],
+                SkipStepNames = [.. skipSteps],
+                IncludeDependencies = includeDeps,
+                PreviewFilter = previewFilter,
+                ConfirmFilter = confirmFilter,
+                FilterPreset = filterPreset
+            };
+
+            var watchModeOptions = new WatchModeOptions
+            {
+                DebounceMs = watchDebounce,
+                ClearOnRerun = watchClear
+            };
+
+            // Set up Ctrl+C handler for graceful shutdown
+            using var cts = new CancellationTokenSource();
+            Console.CancelKeyPress += (_, e) =>
+            {
+                e.Cancel = true; // Prevent immediate termination
+                cts.Cancel();
+            };
+
+            await using (watchService)
+            {
+                await watchService.RunAsync(executionOptions, watchModeOptions, cts.Token);
+            }
+            return;
         }
 
         var executor = serviceProvider.GetRequiredService<PipelineExecutor>();
@@ -255,7 +555,16 @@ runCommand.SetHandler(async context =>
             NoCacheImages = noCache,
             ParallelSteps = parallel,
             MaxParallelism = maxParallel,
-            ShowMetrics = showMetrics || verbose  // Show metrics when verbose is enabled
+            ShowMetrics = showMetrics || verbose,  // Show metrics when verbose is enabled
+            // Step filtering (REQ-11-007)
+            FilterStepNames = [.. filterSteps],
+            FilterStepIndices = [.. filterStepIndices],
+            FilterStepRanges = [.. filterStepRanges],
+            SkipStepNames = [.. skipSteps],
+            IncludeDependencies = includeDeps,
+            PreviewFilter = previewFilter,
+            ConfirmFilter = confirmFilter,
+            FilterPreset = filterPreset
         });
     }
     catch (Exception ex)
@@ -640,6 +949,22 @@ static void ConfigureServices(ServiceCollection services)
     services.AddSingleton<ISystemInfo, SystemInfo>();
     services.AddSingleton<IUpdateChecker, UpdateChecker>();
     services.AddTransient<VersionCommand>();
+
+    // Register watch mode services (Sprint 11 - REQ-11-001)
+    services.AddWatchMode();
+
+    // Register dry-run services (Sprint 11 - REQ-11-003)
+    services.AddSingleton<PDK.Core.Validation.IExecutorValidator, PDK.Runners.Validation.ExecutorValidator>();
+    services.AddSingleton<PDK.Core.Validation.IValidationPhase, PDK.Core.Validation.Phases.SchemaValidationPhase>();
+    services.AddSingleton<PDK.Core.Validation.IValidationPhase, PDK.Core.Validation.Phases.ExecutorValidationPhase>();
+    services.AddSingleton<PDK.Core.Validation.IValidationPhase, PDK.Core.Validation.Phases.VariableValidationPhase>();
+    services.AddSingleton<PDK.Core.Validation.IValidationPhase, PDK.Core.Validation.Phases.DependencyValidationPhase>();
+    services.AddTransient<PDK.CLI.DryRun.DryRunUI>();
+    services.AddTransient<PDK.CLI.DryRun.JsonOutputFormatter>();
+    services.AddTransient<PDK.CLI.DryRun.DryRunService>();
+
+    // Register step filtering services (Sprint 11 - REQ-11-007, REQ-11-008)
+    services.AddStepFiltering();
 }
 
 /// <summary>
