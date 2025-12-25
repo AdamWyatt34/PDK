@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\PDK.Core\PDK.Core.csproj" />
+    <ProjectReference Include="..\..\src\PDK.CLI\PDK.CLI.csproj" />
     <ProjectReference Include="..\..\src\PDK.Runners\PDK.Runners.csproj" />
     <ProjectReference Include="..\..\src\PDK.Providers\PDK.Providers.csproj" />
   </ItemGroup>

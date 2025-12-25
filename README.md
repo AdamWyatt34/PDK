@@ -18,6 +18,76 @@ A unified CLI tool for running CI/CD pipelines locally across GitHub Actions, Az
 - 🎯 Run specific jobs or steps
 - ✅ Validate pipeline syntax without execution
 - 🔍 Docker availability detection and diagnostics
+- 👀 **Watch Mode** for automatic re-execution on file changes
+- 🔬 **Dry-Run Mode** for pipeline validation without execution
+- 📝 **Structured Logging** with correlation IDs and secret masking
+- 🎛️ **Step Filtering** to run specific steps or skip slow ones
+
+## Sprint 11 Features
+
+Sprint 11 introduces four powerful new features for local development:
+
+### Watch Mode
+
+Automatically re-run pipelines when files change:
+
+```bash
+# Watch and run on file changes
+pdk run --watch
+
+# Watch with step filtering
+pdk run --watch --step "Build" --step "Test"
+```
+
+See [Watch Mode Documentation](docs/watch-mode.md) for details.
+
+### Dry-Run Mode
+
+Validate pipelines without executing steps:
+
+```bash
+# Validate pipeline
+pdk run --dry-run
+
+# Get JSON output for CI integration
+pdk run --dry-run --output json
+```
+
+See [Dry-Run Documentation](docs/dry-run.md) for details.
+
+### Structured Logging
+
+Comprehensive logging with correlation tracking and secret masking:
+
+```bash
+# Verbose logging
+pdk run --verbose
+
+# Maximum detail
+pdk run --trace
+
+# Log to file
+pdk run --log-file pipeline.log
+```
+
+See [Logging Documentation](docs/logging.md) for details.
+
+### Step Filtering
+
+Run specific steps or skip slow ones:
+
+```bash
+# Run specific step
+pdk run --step "Build"
+
+# Skip a step
+pdk run --skip-step "Deploy"
+
+# Run specific job
+pdk run --job "test"
+```
+
+See [Step Filtering Documentation](docs/step-filtering.md) for details.
 
 ## Getting Started
 
@@ -249,11 +319,19 @@ Or use the convenience script:
   - Path resolution and wildcards
   - Full CLI integration and sample pipelines
 
+- [x] **Sprint 11:** Polish & Integration
+  - Watch Mode for automatic re-execution on file changes
+  - Dry-Run Mode for pipeline validation
+  - Structured Logging with correlation IDs and secret masking
+  - Step Filtering for focused development
+  - Comprehensive integration tests
+
 ### Planned
 - [ ] **Sprint 6:** GitLab CI support
 - [ ] **Sprint 7:** Configuration file support
 - [ ] **Sprint 8:** Advanced features (matrix builds)
 - [ ] **Sprint 9:** Artifact handling
+- [ ] **Sprint 12:** Performance optimizations and caching
 
 ## Contributing
 
