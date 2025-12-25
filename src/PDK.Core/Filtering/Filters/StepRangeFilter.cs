@@ -65,7 +65,7 @@ public sealed class StepRangeFilter : IStepFilter
                     return FilterResult.Execute($"Matched range {range}");
                 }
             }
-            catch (InvalidOperationException ex)
+            catch (InvalidOperationException)
             {
                 // Named range resolution failed - skip this range
                 // Validation should catch this earlier, but be defensive

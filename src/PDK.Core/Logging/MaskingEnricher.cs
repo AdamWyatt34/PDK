@@ -47,7 +47,9 @@ public sealed class SecretMaskingDestructuringPolicy : IDestructuringPolicy
     /// <summary>
     /// Attempts to mask secrets in the provided value if it's a string.
     /// </summary>
+#pragma warning disable CS8767 // Nullability of reference types in type of parameter doesn't match implicitly implemented member
     public bool TryDestructure(object value, ILogEventPropertyValueFactory propertyValueFactory, out LogEventPropertyValue? result)
+#pragma warning restore CS8767
     {
         if (value is string stringValue)
         {
