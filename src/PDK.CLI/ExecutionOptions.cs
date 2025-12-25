@@ -130,4 +130,16 @@ public class ExecutionOptions
     /// Default is false (REQ-11-002.4).
     /// </summary>
     public bool WatchClear { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets whether to run in dry-run mode (REQ-11-003).
+    /// When true, validates the pipeline and shows execution plan without executing.
+    /// </summary>
+    public bool DryRun { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets the path for JSON output of dry-run results.
+    /// If set, implies DryRun = true and outputs results to the specified file.
+    /// </summary>
+    public string? DryRunJsonPath { get; set; }
 }

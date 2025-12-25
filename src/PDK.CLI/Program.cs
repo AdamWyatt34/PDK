@@ -187,6 +187,16 @@ var watchClearOption = new Option<bool>(
     description: "Clear terminal between watch mode runs",
     getDefaultValue: () => false);
 
+// Dry-run options (Sprint 11 - REQ-11-003)
+var dryRunOption = new Option<bool>(
+    aliases: ["--dry-run"],
+    description: "Validate pipeline and show execution plan without executing",
+    getDefaultValue: () => false);
+
+var dryRunJsonOption = new Option<string?>(
+    aliases: ["--dry-run-json"],
+    description: "Output dry-run results to JSON file (implies --dry-run)");
+
 runCommand.AddOption(fileOption);
 runCommand.AddOption(jobOption);
 runCommand.AddOption(stepOption);
@@ -209,6 +219,8 @@ runCommand.AddOption(metricsOption);
 runCommand.AddOption(watchOption);
 runCommand.AddOption(watchDebounceOption);
 runCommand.AddOption(watchClearOption);
+runCommand.AddOption(dryRunOption);
+runCommand.AddOption(dryRunJsonOption);
 
 runCommand.SetHandler(async context =>
 {
@@ -234,6 +246,14 @@ runCommand.SetHandler(async context =>
     var watch = context.ParseResult.GetValueForOption(watchOption);
     var watchDebounce = context.ParseResult.GetValueForOption(watchDebounceOption);
     var watchClear = context.ParseResult.GetValueForOption(watchClearOption);
+    var dryRun = context.ParseResult.GetValueForOption(dryRunOption);
+    var dryRunJson = context.ParseResult.GetValueForOption(dryRunJsonOption);
+
+    // --dry-run-json implies --dry-run
+    if (!string.IsNullOrEmpty(dryRunJson))
+    {
+        dryRun = true;
+    }
 
     try
     {
@@ -257,6 +277,14 @@ runCommand.SetHandler(async context =>
             return;
         }
 
+        // Validate mode conflicts
+        if (dryRun && (watch || interactive))
+        {
+            AnsiConsole.MarkupLine("[red]Error:[/] --dry-run cannot be used with --watch or --interactive.");
+            Environment.Exit(1);
+            return;
+        }
+
         // Parse NAME=VALUE arrays into dictionaries
         var cliVariables = ParseKeyValuePairs(vars);
         var cliSecrets = ParseKeyValuePairs(secrets);
@@ -266,6 +294,48 @@ runCommand.SetHandler(async context =>
         {
             AnsiConsole.MarkupLine("[yellow]Warning:[/] Secrets passed via --secret are visible in process lists.");
             AnsiConsole.MarkupLine("[yellow]Recommendation:[/] Use 'pdk secret set NAME' or PDK_SECRET_* environment variables.");
+        }
+
+        // Dry-run mode (Sprint 11 - REQ-11-003)
+        if (dryRun)
+        {
+            var dryRunService = serviceProvider.GetRequiredService<PDK.CLI.DryRun.DryRunService>();
+            var parserFactory = serviceProvider.GetRequiredService<IPipelineParserFactory>();
+            var variableResolver = serviceProvider.GetRequiredService<IVariableResolver>();
+            var configLoader = serviceProvider.GetRequiredService<IConfigurationLoader>();
+
+            // Load configuration and variables
+            var config = await configLoader.LoadAsync(configPath);
+            if (config != null)
+            {
+                variableResolver.LoadFromConfiguration(config);
+            }
+            variableResolver.LoadFromEnvironment();
+            foreach (var (k, v) in cliVariables)
+            {
+                variableResolver.SetVariable(k, v, PDK.Core.Variables.VariableSource.CliArgument);
+            }
+
+            // Parse pipeline
+            var parser = parserFactory.GetParser(file.FullName);
+            var pipeline = await parser.ParseFile(file.FullName);
+
+            // Run dry-run validation
+            var runnerTypeStr = runnerType switch
+            {
+                RunnerType.Docker => "docker",
+                RunnerType.Host => "host",
+                _ => "auto"
+            };
+
+            var result = await dryRunService.ExecuteAsync(
+                pipeline,
+                file.FullName,
+                runnerTypeStr,
+                dryRunJson);
+
+            Environment.ExitCode = result.IsValid ? 0 : 1;
+            return;
         }
 
         // Watch mode (Sprint 11 - REQ-11-001)
@@ -737,6 +807,16 @@ static void ConfigureServices(ServiceCollection services)
 
     // Register watch mode services (Sprint 11 - REQ-11-001)
     services.AddWatchMode();
+
+    // Register dry-run services (Sprint 11 - REQ-11-003)
+    services.AddSingleton<PDK.Core.Validation.IExecutorValidator, PDK.Runners.Validation.ExecutorValidator>();
+    services.AddSingleton<PDK.Core.Validation.IValidationPhase, PDK.Core.Validation.Phases.SchemaValidationPhase>();
+    services.AddSingleton<PDK.Core.Validation.IValidationPhase, PDK.Core.Validation.Phases.ExecutorValidationPhase>();
+    services.AddSingleton<PDK.Core.Validation.IValidationPhase, PDK.Core.Validation.Phases.VariableValidationPhase>();
+    services.AddSingleton<PDK.Core.Validation.IValidationPhase, PDK.Core.Validation.Phases.DependencyValidationPhase>();
+    services.AddTransient<PDK.CLI.DryRun.DryRunUI>();
+    services.AddTransient<PDK.CLI.DryRun.JsonOutputFormatter>();
+    services.AddTransient<PDK.CLI.DryRun.DryRunService>();
 }
 
 /// <summary>
