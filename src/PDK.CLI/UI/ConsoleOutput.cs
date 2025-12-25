@@ -1,5 +1,6 @@
 namespace PDK.CLI.UI;
 
+using Microsoft.Extensions.Logging;
 using Spectre.Console;
 using Spectre.Console.Rendering;
 
@@ -38,6 +39,12 @@ public interface IConsoleOutput
     /// </summary>
     /// <param name="message">The message to write.</param>
     void WriteDebug(string message);
+
+    /// <summary>
+    /// Writes a trace message. Only visible when trace mode is enabled.
+    /// </summary>
+    /// <param name="message">The message to write.</param>
+    void WriteTrace(string message);
 
     /// <summary>
     /// Writes a line of text without special formatting.
@@ -82,6 +89,16 @@ public interface IConsoleOutput
     /// Gets the terminal width in characters.
     /// </summary>
     int TerminalWidth { get; }
+
+    /// <summary>
+    /// Gets the minimum log level for output.
+    /// </summary>
+    LogLevel MinimumLevel { get; }
+
+    /// <summary>
+    /// Gets the visual hierarchy helper for structured output.
+    /// </summary>
+    VisualHierarchy Hierarchy { get; }
 }
 
 /// <summary>
@@ -92,18 +109,29 @@ public sealed class ConsoleOutput : IConsoleOutput
 {
     private readonly IAnsiConsole _console;
     private readonly bool _noColor;
-    private readonly bool _verbose;
+    private readonly VisualHierarchy _hierarchy;
 
     /// <summary>
     /// Initializes a new instance of <see cref="ConsoleOutput"/>.
     /// </summary>
     /// <param name="console">The Spectre.Console IAnsiConsole instance.</param>
-    /// <param name="verbose">Whether verbose/debug output is enabled.</param>
-    public ConsoleOutput(IAnsiConsole console, bool verbose = false)
+    /// <param name="minimumLevel">The minimum log level for output.</param>
+    public ConsoleOutput(IAnsiConsole console, LogLevel minimumLevel = LogLevel.Information)
     {
         _console = console ?? throw new ArgumentNullException(nameof(console));
         _noColor = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NO_COLOR"));
-        _verbose = verbose;
+        MinimumLevel = minimumLevel;
+        _hierarchy = new VisualHierarchy(console);
+    }
+
+    /// <summary>
+    /// Initializes a new instance of <see cref="ConsoleOutput"/> with backward-compatible verbose flag.
+    /// </summary>
+    /// <param name="console">The Spectre.Console IAnsiConsole instance.</param>
+    /// <param name="verbose">Whether verbose/debug output is enabled.</param>
+    public ConsoleOutput(IAnsiConsole console, bool verbose)
+        : this(console, verbose ? LogLevel.Debug : LogLevel.Information)
+    {
     }
 
     /// <inheritdoc/>
@@ -116,8 +144,24 @@ public sealed class ConsoleOutput : IConsoleOutput
     public int TerminalWidth => _console.Profile.Width;
 
     /// <inheritdoc/>
+    public LogLevel MinimumLevel { get; }
+
+    /// <inheritdoc/>
+    public VisualHierarchy Hierarchy => _hierarchy;
+
+    /// <summary>
+    /// Checks if a given log level should be written based on the minimum level.
+    /// </summary>
+    private bool ShouldWrite(LogLevel level) => level >= MinimumLevel;
+
+    /// <inheritdoc/>
     public void WriteInfo(string message)
     {
+        if (!ShouldWrite(LogLevel.Information))
+        {
+            return;
+        }
+
         if (_noColor)
         {
             _console.WriteLine($"i {message}");
@@ -131,6 +175,11 @@ public sealed class ConsoleOutput : IConsoleOutput
     /// <inheritdoc/>
     public void WriteSuccess(string message)
     {
+        if (!ShouldWrite(LogLevel.Information))
+        {
+            return;
+        }
+
         if (_noColor)
         {
             _console.WriteLine($"+ {message}");
@@ -144,6 +193,12 @@ public sealed class ConsoleOutput : IConsoleOutput
     /// <inheritdoc/>
     public void WriteError(string message)
     {
+        // Errors always shown (unless None)
+        if (!ShouldWrite(LogLevel.Error))
+        {
+            return;
+        }
+
         if (_noColor)
         {
             _console.WriteLine($"x Error: {message}");
@@ -157,6 +212,11 @@ public sealed class ConsoleOutput : IConsoleOutput
     /// <inheritdoc/>
     public void WriteWarning(string message)
     {
+        if (!ShouldWrite(LogLevel.Warning))
+        {
+            return;
+        }
+
         if (_noColor)
         {
             _console.WriteLine($"! Warning: {message}");
@@ -170,7 +230,7 @@ public sealed class ConsoleOutput : IConsoleOutput
     /// <inheritdoc/>
     public void WriteDebug(string message)
     {
-        if (!_verbose)
+        if (!ShouldWrite(LogLevel.Debug))
         {
             return;
         }
@@ -181,8 +241,25 @@ public sealed class ConsoleOutput : IConsoleOutput
         }
         else
         {
-            // Escape brackets in [DEBUG] to prevent markup interpretation
             _console.MarkupLine($"[dim][[DEBUG]][/] {Markup.Escape(message)}");
+        }
+    }
+
+    /// <inheritdoc/>
+    public void WriteTrace(string message)
+    {
+        if (!ShouldWrite(LogLevel.Trace))
+        {
+            return;
+        }
+
+        if (_noColor)
+        {
+            _console.WriteLine($"[TRACE] {message}");
+        }
+        else
+        {
+            _console.MarkupLine($"[grey][[TRACE]][/] {Markup.Escape(message)}");
         }
     }
 

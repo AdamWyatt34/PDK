@@ -8,6 +8,7 @@ using PDK.CLI.Diagnostics;
 using PDK.CLI.ErrorHandling;
 using PDK.CLI.UI;
 using PDK.CLI.WatchMode;
+using PDK.CLI.Logging;
 using PDK.Core.Diagnostics;
 using PDK.Core.Logging;
 using PDK.Core.Progress;
@@ -92,6 +93,30 @@ var verboseOption = new Option<bool>(
 var quietOption = new Option<bool>(
     aliases: ["--quiet", "-q"],
     description: "Suppress step output (show only job/step status)",
+    getDefaultValue: () => false);
+
+// Structured logging options (Sprint 11 - REQ-11-005)
+var traceOption = new Option<bool>(
+    aliases: ["--trace"],
+    description: "Enable trace-level logging (most verbose)",
+    getDefaultValue: () => false);
+
+var silentOption = new Option<bool>(
+    aliases: ["--silent"],
+    description: "Show only errors (suppress all other output)",
+    getDefaultValue: () => false);
+
+var logFileOption = new Option<string?>(
+    aliases: ["--log-file"],
+    description: "Path to write text log file");
+
+var logJsonOption = new Option<string?>(
+    aliases: ["--log-json"],
+    description: "Path to write JSON-formatted log file");
+
+var noRedactOption = new Option<bool>(
+    aliases: ["--no-redact"],
+    description: "Disable secret redaction in logs (WARNING: may expose secrets)",
     getDefaultValue: () => false);
 
 var interactiveOption = new Option<bool>(
@@ -206,6 +231,11 @@ runCommand.AddOption(runnerOption);
 runCommand.AddOption(validateOption);
 runCommand.AddOption(verboseOption);
 runCommand.AddOption(quietOption);
+runCommand.AddOption(traceOption);
+runCommand.AddOption(silentOption);
+runCommand.AddOption(logFileOption);
+runCommand.AddOption(logJsonOption);
+runCommand.AddOption(noRedactOption);
 runCommand.AddOption(interactiveOption);
 runCommand.AddOption(configOption);
 runCommand.AddOption(varOption);
@@ -233,6 +263,11 @@ runCommand.SetHandler(async context =>
     var validate = context.ParseResult.GetValueForOption(validateOption);
     var verbose = context.ParseResult.GetValueForOption(verboseOption);
     var quiet = context.ParseResult.GetValueForOption(quietOption);
+    var trace = context.ParseResult.GetValueForOption(traceOption);
+    var silent = context.ParseResult.GetValueForOption(silentOption);
+    var logFile = context.ParseResult.GetValueForOption(logFileOption);
+    var logJson = context.ParseResult.GetValueForOption(logJsonOption);
+    var noRedact = context.ParseResult.GetValueForOption(noRedactOption);
     var interactive = context.ParseResult.GetValueForOption(interactiveOption);
     var configPath = context.ParseResult.GetValueForOption(configOption);
     var vars = context.ParseResult.GetValueForOption(varOption) ?? [];
@@ -264,6 +299,32 @@ runCommand.SetHandler(async context =>
             Environment.Exit(1);
             return;
         }
+
+        // Validate conflicting verbosity options (REQ-11-005)
+        var verbosityCount = (trace ? 1 : 0) + (verbose ? 1 : 0) + (quiet ? 1 : 0) + (silent ? 1 : 0);
+        if (verbosityCount > 1)
+        {
+            AnsiConsole.MarkupLine("[red]Error:[/] Cannot specify multiple verbosity flags. Choose one of: --trace, --verbose, --quiet, --silent.");
+            Environment.Exit(1);
+            return;
+        }
+
+        // Warn about --no-redact security implications
+        if (noRedact)
+        {
+            AnsiConsole.MarkupLine("[yellow]WARNING:[/] Secret redaction is disabled (--no-redact).");
+            AnsiConsole.MarkupLine("[yellow]         [/] Sensitive data may appear in logs and console output.");
+        }
+
+        // Build logging options from CLI flags
+        var loggingOptions = LoggingOptionsBuilder.FromCliFlags(
+            verbose: verbose,
+            trace: trace,
+            quiet: quiet,
+            silent: silent,
+            logFile: logFile,
+            logJson: logJson,
+            noRedact: noRedact);
 
         // Determine runner type from CLI options
         var runnerType = DetermineRunnerType(host, docker, runner);

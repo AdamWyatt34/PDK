@@ -107,7 +107,7 @@ public record ArtifactsConfig
 public record LoggingConfig
 {
     /// <summary>
-    /// Gets the minimum log level. Valid values: Info, Debug, Warning, Error.
+    /// Gets the minimum log level. Valid values: Trace, Debug, Information, Warning, Error.
     /// </summary>
     public string? Level { get; init; }
 
@@ -117,9 +117,45 @@ public record LoggingConfig
     public string? File { get; init; }
 
     /// <summary>
+    /// Gets the JSON log file path for structured logging output.
+    /// </summary>
+    public string? JsonFile { get; init; }
+
+    /// <summary>
     /// Gets the maximum log file size in megabytes before rotation.
     /// </summary>
     public int? MaxSizeMb { get; init; }
+
+    /// <summary>
+    /// Gets the number of rotated log files to retain.
+    /// </summary>
+    public int? RetainedFileCount { get; init; }
+
+    /// <summary>
+    /// Gets whether to disable secret redaction. WARNING: Use with caution.
+    /// </summary>
+    public bool? NoRedact { get; init; }
+
+    /// <summary>
+    /// Gets console output configuration.
+    /// </summary>
+    public ConsoleLoggingConfig? Console { get; init; }
+}
+
+/// <summary>
+/// Console-specific logging configuration.
+/// </summary>
+public record ConsoleLoggingConfig
+{
+    /// <summary>
+    /// Gets whether to show timestamps in console output.
+    /// </summary>
+    public bool? ShowTimestamp { get; init; }
+
+    /// <summary>
+    /// Gets whether to show correlation IDs in console output.
+    /// </summary>
+    public bool? ShowCorrelationId { get; init; }
 }
 
 /// <summary>

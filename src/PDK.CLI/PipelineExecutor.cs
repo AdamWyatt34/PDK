@@ -91,6 +91,13 @@ public class PipelineExecutor
     /// <param name="options">Execution options including file path, job selection, etc.</param>
     public async Task Execute(ExecutionOptions options)
     {
+        // Create correlation scope for this pipeline execution (REQ-11-005.5)
+        using var correlationScope = CorrelationContext.CreateScope();
+        var correlationId = CorrelationContext.CurrentId;
+
+        _logger.LogInformation("Pipeline execution started. CorrelationId: {CorrelationId}, File: {FilePath}",
+            correlationId, options.FilePath);
+
         var pipelineStartTime = Stopwatch.StartNew();
 
         // Configure progress reporter output mode based on options
@@ -155,6 +162,15 @@ public class PipelineExecutor
         }
 
         pipelineStartTime.Stop();
+
+        // Log completion with performance data (REQ-11-005.7)
+        _logger.LogInformation(
+            "Pipeline execution completed. CorrelationId: {CorrelationId}, Success: {Success}, Duration: {DurationMs}ms",
+            CorrelationContext.CurrentId, allJobsSucceeded, pipelineStartTime.ElapsedMilliseconds);
+
+        _logger.LogDebug(
+            "Pipeline timing - Total: {TotalMs}ms, Jobs: {JobCount}, File: {FilePath}",
+            pipelineStartTime.ElapsedMilliseconds, jobResults.Count, options.FilePath);
 
         // Display execution summary (REQ-06-013)
         var summaryData = BuildExecutionSummary(pipeline, jobResults, pipelineStartTime.Elapsed, allJobsSucceeded);

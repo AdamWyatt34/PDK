@@ -138,7 +138,24 @@ public class ConfigurationMerger : IConfigurationMerger
         {
             Level = second.Level ?? first.Level,
             File = second.File ?? first.File,
-            MaxSizeMb = second.MaxSizeMb ?? first.MaxSizeMb
+            JsonFile = second.JsonFile ?? first.JsonFile,
+            MaxSizeMb = second.MaxSizeMb ?? first.MaxSizeMb,
+            RetainedFileCount = second.RetainedFileCount ?? first.RetainedFileCount,
+            NoRedact = second.NoRedact ?? first.NoRedact,
+            Console = MergeConsoleLoggingConfig(first.Console, second.Console)
+        };
+    }
+
+    private static ConsoleLoggingConfig? MergeConsoleLoggingConfig(ConsoleLoggingConfig? first, ConsoleLoggingConfig? second)
+    {
+        if (first == null && second == null) return null;
+        if (first == null) return second;
+        if (second == null) return first;
+
+        return new ConsoleLoggingConfig
+        {
+            ShowTimestamp = second.ShowTimestamp ?? first.ShowTimestamp,
+            ShowCorrelationId = second.ShowCorrelationId ?? first.ShowCorrelationId
         };
     }
 

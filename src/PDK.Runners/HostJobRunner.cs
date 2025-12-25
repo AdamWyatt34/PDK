@@ -372,6 +372,9 @@ public class HostJobRunner : IJobRunner
     /// </summary>
     private void LogStepCompletion(string jobName, string stepName, StepExecutionResult result)
     {
+        // Get correlation ID for structured logging (REQ-11-005.5)
+        var correlationId = CorrelationContext.CurrentIdOrNull;
+
         if (result.Success)
         {
             _logger.LogInformation(
@@ -379,6 +382,14 @@ public class HostJobRunner : IJobRunner
                 jobName,
                 stepName,
                 result.Duration.TotalSeconds);
+
+            // Debug-level performance logging (REQ-11-005.7)
+            _logger.LogDebug(
+                "Step timing - Job: {JobName}, Step: {StepName}, DurationMs: {DurationMs}, CorrelationId: {CorrelationId}",
+                jobName,
+                stepName,
+                result.Duration.TotalMilliseconds,
+                correlationId);
         }
         else
         {
@@ -388,6 +399,15 @@ public class HostJobRunner : IJobRunner
                 stepName,
                 result.ExitCode,
                 result.Duration.TotalSeconds);
+
+            // Debug-level failure details
+            _logger.LogDebug(
+                "Step failure details - Job: {JobName}, Step: {StepName}, ExitCode: {ExitCode}, DurationMs: {DurationMs}, CorrelationId: {CorrelationId}",
+                jobName,
+                stepName,
+                result.ExitCode,
+                result.Duration.TotalMilliseconds,
+                correlationId);
         }
     }
 
