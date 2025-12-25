@@ -112,4 +112,22 @@ public class ExecutionOptions
     /// Also enabled when Verbose is true.
     /// </summary>
     public bool ShowMetrics { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets whether watch mode is enabled (REQ-11-001.1).
+    /// When true, the pipeline will be re-executed automatically when files change.
+    /// </summary>
+    public bool WatchMode { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets the watch mode debounce period in milliseconds.
+    /// Default is 500ms (REQ-11-001.4).
+    /// </summary>
+    public int WatchDebounceMs { get; set; } = 500;
+
+    /// <summary>
+    /// Gets or sets whether to clear the terminal between watch mode runs.
+    /// Default is false (REQ-11-002.4).
+    /// </summary>
+    public bool WatchClear { get; set; } = false;
 }

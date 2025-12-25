@@ -7,6 +7,7 @@ using PDK.CLI.Commands;
 using PDK.CLI.Diagnostics;
 using PDK.CLI.ErrorHandling;
 using PDK.CLI.UI;
+using PDK.CLI.WatchMode;
 using PDK.Core.Diagnostics;
 using PDK.Core.Logging;
 using PDK.Core.Progress;
@@ -162,6 +163,30 @@ var metricsOption = new Option<bool>(
     description: "Show performance metrics after execution",
     getDefaultValue: () => false);
 
+// Watch mode options (Sprint 11 - REQ-11-001)
+var watchOption = new Option<bool>(
+    aliases: ["--watch", "-w"],
+    description: "Watch for file changes and re-execute pipeline automatically",
+    getDefaultValue: () => false);
+
+var watchDebounceOption = new Option<int>(
+    aliases: ["--watch-debounce"],
+    description: "Debounce period in milliseconds (default: 500)",
+    getDefaultValue: () => 500);
+watchDebounceOption.AddValidator(result =>
+{
+    var value = result.GetValueForOption(watchDebounceOption);
+    if (value < 100 || value > 10000)
+    {
+        result.ErrorMessage = "Watch debounce must be between 100 and 10000 milliseconds";
+    }
+});
+
+var watchClearOption = new Option<bool>(
+    aliases: ["--watch-clear"],
+    description: "Clear terminal between watch mode runs",
+    getDefaultValue: () => false);
+
 runCommand.AddOption(fileOption);
 runCommand.AddOption(jobOption);
 runCommand.AddOption(stepOption);
@@ -181,6 +206,9 @@ runCommand.AddOption(noCacheOption);
 runCommand.AddOption(parallelOption);
 runCommand.AddOption(maxParallelOption);
 runCommand.AddOption(metricsOption);
+runCommand.AddOption(watchOption);
+runCommand.AddOption(watchDebounceOption);
+runCommand.AddOption(watchClearOption);
 
 runCommand.SetHandler(async context =>
 {
@@ -203,6 +231,9 @@ runCommand.SetHandler(async context =>
     var parallel = context.ParseResult.GetValueForOption(parallelOption);
     var maxParallel = context.ParseResult.GetValueForOption(maxParallelOption);
     var showMetrics = context.ParseResult.GetValueForOption(metricsOption);
+    var watch = context.ParseResult.GetValueForOption(watchOption);
+    var watchDebounce = context.ParseResult.GetValueForOption(watchDebounceOption);
+    var watchClear = context.ParseResult.GetValueForOption(watchClearOption);
 
     try
     {
@@ -235,6 +266,69 @@ runCommand.SetHandler(async context =>
         {
             AnsiConsole.MarkupLine("[yellow]Warning:[/] Secrets passed via --secret are visible in process lists.");
             AnsiConsole.MarkupLine("[yellow]Recommendation:[/] Use 'pdk secret set NAME' or PDK_SECRET_* environment variables.");
+        }
+
+        // Watch mode (Sprint 11 - REQ-11-001)
+        if (watch)
+        {
+            // Watch mode is incompatible with interactive and validate-only modes
+            if (interactive)
+            {
+                AnsiConsole.MarkupLine("[red]Error:[/] Watch mode cannot be used with interactive mode.");
+                Environment.Exit(1);
+                return;
+            }
+            if (validate)
+            {
+                AnsiConsole.MarkupLine("[red]Error:[/] Watch mode cannot be used with validate-only mode.");
+                Environment.Exit(1);
+                return;
+            }
+
+            var watchService = serviceProvider.GetRequiredService<IWatchModeService>();
+
+            var executionOptions = new ExecutionOptions
+            {
+                FilePath = file.FullName,
+                JobName = job,
+                StepName = step,
+                RunnerType = runnerType,
+                ValidateOnly = validate,
+                Verbose = verbose,
+                Quiet = quiet,
+                ConfigPath = configPath,
+                CliVariables = cliVariables,
+                VarFilePath = varFile?.FullName,
+                CliSecrets = cliSecrets,
+                NoReuseContainers = noReuse,
+                NoCacheImages = noCache,
+                ParallelSteps = parallel,
+                MaxParallelism = maxParallel,
+                ShowMetrics = showMetrics || verbose,
+                WatchMode = true,
+                WatchDebounceMs = watchDebounce,
+                WatchClear = watchClear
+            };
+
+            var watchModeOptions = new WatchModeOptions
+            {
+                DebounceMs = watchDebounce,
+                ClearOnRerun = watchClear
+            };
+
+            // Set up Ctrl+C handler for graceful shutdown
+            using var cts = new CancellationTokenSource();
+            Console.CancelKeyPress += (_, e) =>
+            {
+                e.Cancel = true; // Prevent immediate termination
+                cts.Cancel();
+            };
+
+            await using (watchService)
+            {
+                await watchService.RunAsync(executionOptions, watchModeOptions, cts.Token);
+            }
+            return;
         }
 
         var executor = serviceProvider.GetRequiredService<PipelineExecutor>();
@@ -640,6 +734,9 @@ static void ConfigureServices(ServiceCollection services)
     services.AddSingleton<ISystemInfo, SystemInfo>();
     services.AddSingleton<IUpdateChecker, UpdateChecker>();
     services.AddTransient<VersionCommand>();
+
+    // Register watch mode services (Sprint 11 - REQ-11-001)
+    services.AddWatchMode();
 }
 
 /// <summary>
