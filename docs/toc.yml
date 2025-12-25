@@ -1,18 +1,74 @@
-- name: User Guide
+- name: Getting Started
   items:
-    - name: Configuration
-      href: configuration.md
-    - name: Variables
-      href: variables.md
-    - name: Secrets
-      href: secrets.md
-    - name: Logging
-      href: logging.md
+    - name: Introduction
+      href: index.md
+    - name: Quick Start
+      href: getting-started.md
+    - name: Installation
+      href: installation.md
+- name: Commands
+  items:
+    - name: Overview
+      href: commands/README.md
+    - name: pdk run
+      href: commands/run.md
+    - name: pdk validate
+      href: commands/validate.md
+    - name: pdk list
+      href: commands/list.md
+    - name: pdk version
+      href: commands/version.md
+    - name: pdk doctor
+      href: commands/doctor.md
+    - name: pdk interactive
+      href: commands/interactive.md
+    - name: pdk secret
+      href: commands/secret.md
+- name: Configuration
+  items:
+    - name: Overview
+      href: configuration/README.md
     - name: Watch Mode
-      href: watch-mode.md
-    - name: Dry Run
-      href: dry-run.md
+      href: configuration/watch-mode.md
+    - name: Logging
+      href: configuration/logging.md
     - name: Step Filtering
-      href: step-filtering.md
+      href: configuration/filtering.md
+    - name: Variables
+      href: configuration/variables.md
+    - name: Secrets
+      href: configuration/secrets.md
+- name: Guides
+  items:
+    - name: Troubleshooting
+      href: guides/troubleshooting.md
+    - name: Best Practices
+      href: guides/best-practices.md
+    - name: CI/CD Integration
+      href: guides/cicd-integration.md
+    - name: Performance Tuning
+      href: guides/performance.md
+    - name: Dry Run Mode
+      href: guides/dry-run.md
+- name: Examples
+  items:
+    - name: Overview
+      href: examples/README.md
+    - name: .NET Build
+      href: examples/dotnet-build.md
+    - name: .NET Publish
+      href: examples/dotnet-publish.md
+    - name: Node.js App
+      href: examples/nodejs-app.md
+    - name: Docker Build
+      href: examples/docker-build.md
+    - name: Multi-Stage Pipeline
+      href: examples/multi-stage.md
+    - name: Artifacts
+      href: examples/artifacts.md
+- name: Architecture
+  items:
+    - name: Sprint 11
+      href: architecture/sprint-11.md
 - name: API Reference
   href: api/
