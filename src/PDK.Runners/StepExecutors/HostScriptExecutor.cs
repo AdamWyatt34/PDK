@@ -271,15 +271,18 @@ public class HostScriptExecutor : IHostStepExecutor
         // Escape path for the shell
         var escapedPath = scriptPath.Contains(' ') ? $"\"{scriptPath}\"" : scriptPath;
 
+        // Note: ProcessExecutor wraps commands in cmd.exe /c "..." on Windows,
+        // so for cmd shell, we just return the script path directly.
+        // For other shells (pwsh, bash), we need the explicit shell prefix.
         return shell.ToLowerInvariant() switch
         {
             "pwsh" => $"pwsh -NoProfile -ExecutionPolicy Bypass -File {escapedPath}",
             "powershell" => $"powershell -NoProfile -ExecutionPolicy Bypass -File {escapedPath}",
             "bash" => $"bash {escapedPath}",
             "sh" => $"sh {escapedPath}",
-            "cmd" => $"cmd /c {escapedPath}",
+            "cmd" => escapedPath,  // ProcessExecutor will wrap in cmd.exe /c
             _ => platform == OperatingSystemPlatform.Windows
-                ? $"cmd /c {escapedPath}"
+                ? escapedPath  // ProcessExecutor will wrap in cmd.exe /c
                 : $"bash {escapedPath}"
         };
     }

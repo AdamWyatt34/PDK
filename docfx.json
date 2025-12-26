@@ -23,8 +23,8 @@
         "files": ["api/**.yml", "api/index.md"]
       },
       {
-        "files": ["docs/**/*.md", "docs/**/toc.yml", "*.md", "toc.yml"],
-        "exclude": ["docs/Sprints/**"]
+        "files": ["index.md", "docs/**/*.md", "docs/**/toc.yml", "*.md", "toc.yml"],
+        "exclude": ["docs/Sprints/**", "BenchmarkDotNet.Artifacts/**"]
       }
     ],
     "resource": [

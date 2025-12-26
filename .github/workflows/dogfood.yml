@@ -38,6 +38,12 @@ jobs:
       - name: Run Environment Check
         run: ./scripts/check-environment.sh
 
+      - name: Pre-pull Docker images
+        run: |
+          docker pull mcr.microsoft.com/dotnet/sdk:8.0
+          docker pull alpine:latest
+        continue-on-error: true
+
       - name: Build PDK
         run: dotnet build --configuration Release
 
@@ -77,6 +83,12 @@ jobs:
       - name: Run Environment Check
         run: ./scripts/check-environment.ps1
         shell: pwsh
+
+      - name: Pre-pull Docker images
+        run: |
+          docker pull mcr.microsoft.com/dotnet/sdk:8.0
+          docker pull alpine:latest
+        continue-on-error: true
 
       - name: Build PDK
         run: dotnet build --configuration Release

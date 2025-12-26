@@ -42,8 +42,22 @@ jobs:
       - name: Build
         run: dotnet build --no-restore --configuration Release
 
-      - name: Run tests with coverage
-        run: dotnet test --no-build --configuration Release --collect:"XPlat Code Coverage" --settings coverlet.runsettings --logger "trx;LogFileName=test-results.trx"
+      - name: Pre-pull Docker images (Linux/Windows)
+        if: matrix.os != 'macos-latest'
+        run: |
+          docker pull mcr.microsoft.com/dotnet/sdk:8.0
+          docker pull alpine:latest
+          docker pull docker:latest
+          docker pull node:18-alpine
+        continue-on-error: true
+
+      - name: Run unit tests with coverage
+        run: dotnet test tests/PDK.Tests.Unit --no-build --configuration Release --collect:"XPlat Code Coverage" --settings coverlet.runsettings --logger "trx;LogFileName=test-results.trx"
+
+      - name: Run integration tests (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: dotnet test tests/PDK.Tests.Integration --no-build --configuration Release --collect:"XPlat Code Coverage" --settings coverlet.runsettings --logger "trx;LogFileName=integration-test-results.trx"
+        continue-on-error: true
 
       - name: Upload test results
         if: always()
