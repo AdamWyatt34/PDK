@@ -46,7 +46,7 @@ jobs:
 
       - name: Upload Dogfood Results
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: dogfood-results-ubuntu
           path: .pdk-dogfood/
@@ -87,7 +87,7 @@ jobs:
 
       - name: Upload Dogfood Results
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: dogfood-results-windows
           path: .pdk-dogfood/
@@ -139,7 +139,7 @@ jobs:
 
       - name: Upload Dogfood Results
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: dogfood-results-macos
           path: .pdk-dogfood/
