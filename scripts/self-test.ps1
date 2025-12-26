@@ -93,7 +93,8 @@ $ExitCode = 0
 # Run PDK and capture output
 # Use --host mode to run on local machine (where .NET is already installed)
 # Skip steps that use GitHub Actions (setup-dotnet, cache, upload-artifact, codecov)
-# Only run steps PDK can execute: checkout, restore, build, test, pack
+# Skip Build step - PDK is already built and running, can't rebuild itself (file locks)
+# Run: checkout, restore, unit tests (validates PDK can execute a real workflow)
 try {
     & dotnet run --project src/PDK.CLI/PDK.CLI.csproj `
         --no-build --configuration Release -- `
@@ -102,9 +103,7 @@ try {
         --host `
         --step-filter "Checkout code" `
         --step-filter "Restore dependencies" `
-        --step-filter "Build" `
         --step-filter "Run unit tests" `
-        --step-filter "Pack as dotnet tool" `
         --verbose 2>&1 | Tee-Object -FilePath "$OutputDir/output.log"
     $ExitCode = $LASTEXITCODE
 } catch {
