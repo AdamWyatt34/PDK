@@ -115,6 +115,13 @@ public static class RunnerCapabilities
     /// </summary>
     private static bool IsStandardRunner(string runsOn)
     {
+        // Handle unexpanded GitHub Actions expressions (e.g., ${{ matrix.os }})
+        // Assume they resolve to standard runners since matrix typically uses them
+        if (runsOn.Contains("${{") || runsOn.Contains("}}"))
+        {
+            return true;
+        }
+
         // Standard runners that can work on host (local machine equivalents)
         var standardRunners = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
