@@ -35,7 +35,7 @@ A unified CLI tool for running CI/CD pipelines locally across GitHub Actions, Az
 ```bash
 dotnet build
 dotnet pack src/PDK.CLI
-dotnet tool install --global --add-source ./src/PDK.CLI/nupkg PDK.CLI
+dotnet tool install --global pdk
 ```
 
 ### Usage

@@ -48,19 +48,19 @@ docker info
 Install PDK as a global .NET tool:
 
 ```bash
-dotnet tool install --global PDK.CLI
+dotnet tool install --global pdk
 ```
 
 **Update to the latest version:**
 
 ```bash
-dotnet tool update --global PDK.CLI
+dotnet tool update --global pdk
 ```
 
 **Uninstall:**
 
 ```bash
-dotnet tool uninstall --global PDK.CLI
+dotnet tool uninstall --global pdk
 ```
 
 ### Method 2: Local Tool
@@ -72,7 +72,7 @@ Install PDK as a local tool in your project:
 dotnet new tool-manifest
 
 # Install PDK locally
-dotnet tool install PDK.CLI
+dotnet tool install pdk
 ```
 
 Run local tools with `dotnet pdk`:
@@ -92,7 +92,7 @@ dotnet build
 dotnet pack
 
 # Install the local package
-dotnet tool install --global --add-source ./src/PDK.CLI/bin/Debug PDK.CLI
+dotnet tool install --global --add-source ./src/PDK.CLI/bin/Release pdk
 ```
 
 ## Verify Installation
@@ -238,7 +238,7 @@ dotnet tool list --global
 2. Restart your terminal
 3. Verify: `dotnet --version`
 
-### "Package 'PDK.CLI' is not found"
+### "Package 'pdk' is not found"
 
 The NuGet source may not be configured.
 
@@ -246,7 +246,7 @@ The NuGet source may not be configured.
 
 ```bash
 dotnet nuget add source https://api.nuget.org/v3/index.json --name nuget.org
-dotnet tool install --global PDK.CLI
+dotnet tool install --global pdk
 ```
 
 ### Docker Permission Denied (Linux)
@@ -286,13 +286,13 @@ pdk --version
 ### Upgrade to Latest
 
 ```bash
-dotnet tool update --global PDK.CLI
+dotnet tool update --global pdk
 ```
 
 ### Upgrade to Specific Version
 
 ```bash
-dotnet tool update --global PDK.CLI --version 1.2.0
+dotnet tool update --global pdk --version 1.2.0
 ```
 
 ### Check for Updates

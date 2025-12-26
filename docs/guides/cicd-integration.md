@@ -35,7 +35,7 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Install PDK
-        run: dotnet tool install --global PDK.CLI
+        run: dotnet tool install --global pdk
 
       - name: Validate Workflows
         run: |
@@ -98,7 +98,7 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Install PDK
-        run: dotnet tool install --global PDK.CLI
+        run: dotnet tool install --global pdk
 
       - name: Check PDK Version
         run: pdk version --full
@@ -150,7 +150,7 @@ steps:
     inputs:
       version: '8.0.x'
 
-  - script: dotnet tool install --global PDK.CLI
+  - script: dotnet tool install --global pdk
     displayName: 'Install PDK'
 
   - script: pdk validate --file azure-pipelines.yml
@@ -177,7 +177,7 @@ validate-pipeline:
   image: mcr.microsoft.com/dotnet/sdk:8.0
   stage: validate
   script:
-    - dotnet tool install --global PDK.CLI
+    - dotnet tool install --global pdk
     - export PATH="$PATH:$HOME/.dotnet/tools"
     - pdk validate --file .gitlab-ci.yml
     - pdk run --dry-run --verbose
@@ -275,7 +275,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: dotnet tool install --global PDK.CLI
+      - run: dotnet tool install --global pdk
       - run: pdk run --dry-run --file .github/workflows/ci.yml
 ```
 
@@ -289,7 +289,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: dotnet tool install --global PDK.CLI
+      - run: dotnet tool install --global pdk
       - run: pdk validate --file .github/workflows/ci.yml
 
   build:
@@ -358,7 +358,7 @@ fi
 - name: Install PDK
   run: |
     if ! command -v pdk &> /dev/null; then
-      dotnet tool install --global PDK.CLI
+      dotnet tool install --global pdk
     fi
 ```
 
