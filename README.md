@@ -1,7 +1,7 @@
 # PDK (Pipeline Development Kit)
 
 ![CI](https://github.com/AdamWyatt34/pdk/workflows/CI/badge.svg)
-[![codecov](https://codecov.io/gh/AdamWyatt34/pdk/graph/badge.svg)](https://codecov.io/gh/AdamWyatt34/pdk)
+[![codecov](https://codecov.io/github/AdamWyatt34/PDK/branch/main/graph/badge.svg?token=WZSLNIBDNZ)](https://codecov.io/github/AdamWyatt34/PDK)
 
 A unified CLI tool for running CI/CD pipelines locally across GitHub Actions, Azure DevOps, and GitLab CI.
 
@@ -22,72 +22,6 @@ A unified CLI tool for running CI/CD pipelines locally across GitHub Actions, Az
 - 🔬 **Dry-Run Mode** for pipeline validation without execution
 - 📝 **Structured Logging** with correlation IDs and secret masking
 - 🎛️ **Step Filtering** to run specific steps or skip slow ones
-
-## Sprint 11 Features
-
-Sprint 11 introduces four powerful new features for local development:
-
-### Watch Mode
-
-Automatically re-run pipelines when files change:
-
-```bash
-# Watch and run on file changes
-pdk run --watch
-
-# Watch with step filtering
-pdk run --watch --step "Build" --step "Test"
-```
-
-See [Watch Mode Documentation](docs/watch-mode.md) for details.
-
-### Dry-Run Mode
-
-Validate pipelines without executing steps:
-
-```bash
-# Validate pipeline
-pdk run --dry-run
-
-# Get JSON output for CI integration
-pdk run --dry-run --output json
-```
-
-See [Dry-Run Documentation](docs/dry-run.md) for details.
-
-### Structured Logging
-
-Comprehensive logging with correlation tracking and secret masking:
-
-```bash
-# Verbose logging
-pdk run --verbose
-
-# Maximum detail
-pdk run --trace
-
-# Log to file
-pdk run --log-file pipeline.log
-```
-
-See [Logging Documentation](docs/logging.md) for details.
-
-### Step Filtering
-
-Run specific steps or skip slow ones:
-
-```bash
-# Run specific step
-pdk run --step "Build"
-
-# Skip a step
-pdk run --skip-step "Deploy"
-
-# Run specific job
-pdk run --job "test"
-```
-
-See [Step Filtering Documentation](docs/step-filtering.md) for details.
 
 ## Getting Started
 
@@ -309,69 +243,24 @@ Each example includes a complete CI workflow that you can run with PDK.
 
 ## Roadmap
 
-### Completed
-- [x] **Sprint 0:** Project structure and core models
-- [x] **Sprint 1:** GitHub Actions parser
-  - GitHub Actions workflow parsing
-  - Common action type mapping
-  - Validation and error handling
-  - CLI integration (`validate` and `list` commands)
-  - Comprehensive test coverage (51 unit tests, 8 integration tests)
-- [x] **Sprint 2:** Azure DevOps support
-  - Azure Pipelines YAML parsing
-  - Task and script step mapping
-  - Variable and expression support
-- [x] **Sprint 3:** Docker container management
-  - Docker container lifecycle management
-  - Image pulling and caching
-  - Container creation and cleanup
-  - Docker availability detection
-- [x] **Sprint 4:** Docker job runner
-  - Job execution in Docker containers
-  - Step executor architecture
-  - Checkout, script, and PowerShell executors
-  - Container workspace management
-- [x] **Sprint 5:** Tool-specific executors
-  - .NET CLI executor (restore, build, test, publish, run)
-  - npm executor (install, ci, build, test, run)
-  - Docker executor (build, tag, run, push)
-  - Tool availability validation
-  - Path resolution and wildcards
-  - Full CLI integration and sample pipelines
-
-- [x] **Sprint 6:** Logging infrastructure
-  - Serilog integration
-  - CI environment detection
-  - Enhanced checkout functionality
-- [x] **Sprint 7:** Configuration file support
-  - pdk.json configuration
-  - Secret management with encryption
-  - Variable expansion
-- [x] **Sprint 8:** Artifact handling
-  - Artifact upload/download
-  - Compression and metadata
-- [x] **Sprint 9:** Release automation
-  - CI/CD pipeline
-  - Code coverage support
-- [x] **Sprint 10:** Performance optimizations
-  - Benchmarks
-  - Runner selection and Docker detection
-  - Host step executors
-- [x] **Sprint 11:** Polish & Integration
-  - Watch Mode for automatic re-execution
-  - Dry-Run Mode for pipeline validation
-  - Structured Logging with correlation IDs
-  - Step Filtering for focused development
-- [x] **Sprint 12:** Final Polish & Examples
-  - Complete sample projects
-  - Documentation improvements
-  - Error message quality
+### Implemented
+- [x] GitHub Actions workflow parsing
+- [x] Azure DevOps pipeline parsing
+- [x] Docker container execution
+- [x] Host-based execution
+- [x] Tool executors (.NET, npm, Docker)
+- [x] Configuration file support
+- [x] Secret management
+- [x] Artifact handling
+- [x] Watch mode
+- [x] Dry-run mode
+- [x] Structured logging
 
 ### Planned
-- [ ] **GitLab CI support**
-- [ ] **Matrix builds**
-- [ ] **Service containers**
-- [ ] **Reusable workflows**
+- [ ] GitLab CI support
+- [ ] Matrix builds
+- [ ] Service containers
+- [ ] Reusable workflows
 
 ## Contributing
 
