@@ -96,7 +96,7 @@ public class AzureDevOpsParser : IPipelineParser
     public Pipeline Parse(string yamlContent)
     {
         if (string.IsNullOrWhiteSpace(yamlContent))
-            throw new PipelineParseException("YAML content cannot be null or empty.");
+            throw new PipelineParseException("YAML content cannot be null or empty");
 
         _logger?.LogDebug("Starting Azure Pipeline parsing");
 
@@ -120,7 +120,7 @@ public class AzureDevOpsParser : IPipelineParser
         }
 
         if (azurePipeline == null)
-            throw new PipelineParseException("Failed to deserialize YAML content to Azure Pipeline.");
+            throw new PipelineParseException("Failed to deserialize YAML content to Azure Pipeline");
 
         // Validate the pipeline structure
         ValidatePipeline(azurePipeline);
@@ -142,7 +142,7 @@ public class AzureDevOpsParser : IPipelineParser
     public async Task<Pipeline> ParseFile(string filePath)
     {
         if (string.IsNullOrWhiteSpace(filePath))
-            throw new PipelineParseException("File path cannot be null or empty.");
+            throw new PipelineParseException("File path cannot be null or empty");
 
         if (!File.Exists(filePath))
             throw new PipelineParseException($"File not found: {filePath}");

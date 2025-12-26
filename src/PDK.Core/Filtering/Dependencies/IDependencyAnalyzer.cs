@@ -25,6 +25,7 @@ public interface IDependencyAnalyzer
     /// Gets all dependencies of a step (steps that must run before it).
     /// </summary>
     /// <param name="step">The step to analyze.</param>
+    /// <param name="stepIndex">The index of the step within the job.</param>
     /// <param name="graph">The dependency graph.</param>
     /// <returns>The steps this step depends on.</returns>
     IReadOnlyList<DependencyGraph.StepNode> GetDependencies(Step step, int stepIndex, DependencyGraph graph);

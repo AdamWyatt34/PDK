@@ -103,7 +103,6 @@ public static class PdkLogger
                     retainedFileCountLimit: options.RetainedFileCount,
                     rollOnFileSizeLimit: true,
                     shared: true,
-                    buffered: true,
                     flushToDiskInterval: TimeSpan.FromSeconds(1));
             }
             else
@@ -116,7 +115,6 @@ public static class PdkLogger
                     retainedFileCountLimit: options.RetainedFileCount,
                     rollOnFileSizeLimit: true,
                     shared: true,
-                    buffered: true,
                     flushToDiskInterval: TimeSpan.FromSeconds(1));
             }
         }
@@ -136,7 +134,6 @@ public static class PdkLogger
                     retainedFileCountLimit: options.RetainedFileCount,
                     rollOnFileSizeLimit: true,
                     shared: true,
-                    buffered: true,
                     flushToDiskInterval: TimeSpan.FromSeconds(1));
             }
             else
@@ -149,7 +146,6 @@ public static class PdkLogger
                     retainedFileCountLimit: options.RetainedFileCount,
                     rollOnFileSizeLimit: true,
                     shared: true,
-                    buffered: true,
                     flushToDiskInterval: TimeSpan.FromSeconds(1));
             }
         }

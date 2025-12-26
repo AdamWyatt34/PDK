@@ -39,7 +39,7 @@ public class GitHubActionsParser : IPipelineParser
     {
         if (string.IsNullOrWhiteSpace(yamlContent))
         {
-            throw new PipelineParseException("YAML content is empty or null.");
+            throw new PipelineParseException("YAML content is empty or null");
         }
 
         _logger?.LogDebug("Starting GitHub Actions workflow parsing");
@@ -81,7 +81,7 @@ public class GitHubActionsParser : IPipelineParser
     {
         if (string.IsNullOrWhiteSpace(filePath))
         {
-            throw new PipelineParseException("File path is empty or null.");
+            throw new PipelineParseException("File path is empty or null");
         }
 
         if (!File.Exists(filePath))

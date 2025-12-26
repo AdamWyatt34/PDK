@@ -758,6 +758,433 @@ group: myVariableGroup
 
     #endregion
 
+    #region AzureTask Tests
+
+    [Fact]
+    public void AzureTask_GetTaskName_WithVersion_ReturnsNameOnly()
+    {
+        // Arrange
+        var task = new AzureTask { Task = "DotNetCoreCLI@2" };
+
+        // Act
+        var result = task.GetTaskName();
+
+        // Assert
+        result.Should().Be("DotNetCoreCLI");
+    }
+
+    [Fact]
+    public void AzureTask_GetTaskName_WithoutVersion_ReturnsFullName()
+    {
+        // Arrange
+        var task = new AzureTask { Task = "CustomTask" };
+
+        // Act
+        var result = task.GetTaskName();
+
+        // Assert
+        result.Should().Be("CustomTask");
+    }
+
+    [Fact]
+    public void AzureTask_GetTaskName_WithEmptyString_ReturnsEmptyString()
+    {
+        // Arrange
+        var task = new AzureTask { Task = "" };
+
+        // Act
+        var result = task.GetTaskName();
+
+        // Assert
+        result.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AzureTask_GetTaskName_WithOnlyAt_ReturnsEmpty()
+    {
+        // Arrange
+        var task = new AzureTask { Task = "@2" };
+
+        // Act
+        var result = task.GetTaskName();
+
+        // Assert
+        result.Should().Be("@2"); // @ at index 0, so returns full string
+    }
+
+    [Fact]
+    public void AzureTask_GetTaskVersion_WithVersion_ReturnsVersion()
+    {
+        // Arrange
+        var task = new AzureTask { Task = "PowerShell@2" };
+
+        // Act
+        var result = task.GetTaskVersion();
+
+        // Assert
+        result.Should().Be("2");
+    }
+
+    [Fact]
+    public void AzureTask_GetTaskVersion_WithLongVersion_ReturnsFullVersion()
+    {
+        // Arrange
+        var task = new AzureTask { Task = "AzureCLI@2.40.0" };
+
+        // Act
+        var result = task.GetTaskVersion();
+
+        // Assert
+        result.Should().Be("2.40.0");
+    }
+
+    [Fact]
+    public void AzureTask_GetTaskVersion_WithoutVersion_ReturnsNull()
+    {
+        // Arrange
+        var task = new AzureTask { Task = "CustomTask" };
+
+        // Act
+        var result = task.GetTaskVersion();
+
+        // Assert
+        result.Should().BeNull();
+    }
+
+    [Fact]
+    public void AzureTask_GetTaskVersion_WithTrailingAt_ReturnsNull()
+    {
+        // Arrange
+        var task = new AzureTask { Task = "CustomTask@" };
+
+        // Act
+        var result = task.GetTaskVersion();
+
+        // Assert
+        result.Should().BeNull();
+    }
+
+    [Fact]
+    public void AzureTask_GetTaskVersion_WithEmptyString_ReturnsNull()
+    {
+        // Arrange
+        var task = new AzureTask { Task = "" };
+
+        // Act
+        var result = task.GetTaskVersion();
+
+        // Assert
+        result.Should().BeNull();
+    }
+
+    [Fact]
+    public void AzureTask_DeserializesCorrectly()
+    {
+        // Arrange
+        var yaml = @"
+task: DotNetCoreCLI@2
+displayName: 'Build project'
+inputs:
+  command: build
+  projects: '**/*.csproj'
+condition: succeeded()
+enabled: true
+continueOnError: false
+timeoutInMinutes: 30
+env:
+  BUILD_CONFIG: Release
+";
+
+        // Act
+        var result = _deserializer.Deserialize<AzureTask>(yaml);
+
+        // Assert
+        result.Should().NotBeNull();
+        result.Task.Should().Be("DotNetCoreCLI@2");
+        result.DisplayName.Should().Be("Build project");
+        result.Inputs.Should().ContainKey("command");
+        result.Condition.Should().Be("succeeded()");
+        result.Enabled.Should().BeTrue();
+        result.ContinueOnError.Should().BeFalse();
+        result.TimeoutInMinutes.Should().Be(30);
+        result.Env.Should().ContainKey("BUILD_CONFIG");
+    }
+
+    #endregion
+
+    #region AzureVariables Tests
+
+    [Fact]
+    public void AzureVariables_ToDictionary_WithSimpleFormat_ReturnsVariables()
+    {
+        // Arrange
+        var variables = new AzureVariables
+        {
+            Simple = new Dictionary<string, string>
+            {
+                { "var1", "value1" },
+                { "var2", "value2" }
+            }
+        };
+
+        // Act
+        var result = variables.ToDictionary();
+
+        // Assert
+        result.Should().HaveCount(2);
+        result["var1"].Should().Be("value1");
+        result["var2"].Should().Be("value2");
+    }
+
+    [Fact]
+    public void AzureVariables_ToDictionary_WithListFormat_ReturnsVariables()
+    {
+        // Arrange
+        var variables = new AzureVariables
+        {
+            List = new List<AzureVariable>
+            {
+                new AzureVariable { Name = "var1", Value = "value1" },
+                new AzureVariable { Name = "var2", Value = "value2" }
+            }
+        };
+
+        // Act
+        var result = variables.ToDictionary();
+
+        // Assert
+        result.Should().HaveCount(2);
+        result["var1"].Should().Be("value1");
+        result["var2"].Should().Be("value2");
+    }
+
+    [Fact]
+    public void AzureVariables_ToDictionary_WithBothFormats_MergesAll()
+    {
+        // Arrange
+        var variables = new AzureVariables
+        {
+            Simple = new Dictionary<string, string>
+            {
+                { "simpleVar", "simpleValue" }
+            },
+            List = new List<AzureVariable>
+            {
+                new AzureVariable { Name = "listVar", Value = "listValue" }
+            }
+        };
+
+        // Act
+        var result = variables.ToDictionary();
+
+        // Assert
+        result.Should().HaveCount(2);
+        result["simpleVar"].Should().Be("simpleValue");
+        result["listVar"].Should().Be("listValue");
+    }
+
+    [Fact]
+    public void AzureVariables_ToDictionary_WithNullProperties_ReturnsEmpty()
+    {
+        // Arrange
+        var variables = new AzureVariables();
+
+        // Act
+        var result = variables.ToDictionary();
+
+        // Assert
+        result.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AzureVariables_ToDictionary_WithVariableGroup_SkipsGroupReference()
+    {
+        // Arrange
+        var variables = new AzureVariables
+        {
+            List = new List<AzureVariable>
+            {
+                new AzureVariable { Name = "var1", Value = "value1" },
+                new AzureVariable { Group = "myVariableGroup" }, // Group references are skipped
+                new AzureVariable { Name = "var2", Value = "value2" }
+            }
+        };
+
+        // Act
+        var result = variables.ToDictionary();
+
+        // Assert
+        result.Should().HaveCount(2);
+        result.Should().ContainKey("var1");
+        result.Should().ContainKey("var2");
+        result.Should().NotContainKey("myVariableGroup");
+    }
+
+    [Fact]
+    public void AzureVariables_ToDictionary_WithEmptyName_SkipsVariable()
+    {
+        // Arrange
+        var variables = new AzureVariables
+        {
+            List = new List<AzureVariable>
+            {
+                new AzureVariable { Name = "", Value = "value1" },
+                new AzureVariable { Name = "validVar", Value = "validValue" }
+            }
+        };
+
+        // Act
+        var result = variables.ToDictionary();
+
+        // Assert
+        result.Should().HaveCount(1);
+        result["validVar"].Should().Be("validValue");
+    }
+
+    [Fact]
+    public void AzureVariables_ToDictionary_WithEmptyValue_SkipsVariable()
+    {
+        // Arrange
+        var variables = new AzureVariables
+        {
+            List = new List<AzureVariable>
+            {
+                new AzureVariable { Name = "noValue", Value = "" },
+                new AzureVariable { Name = "validVar", Value = "validValue" }
+            }
+        };
+
+        // Act
+        var result = variables.ToDictionary();
+
+        // Assert
+        result.Should().HaveCount(1);
+        result["validVar"].Should().Be("validValue");
+    }
+
+    [Fact]
+    public void AzureVariables_ToDictionary_WithNullValue_SkipsVariable()
+    {
+        // Arrange
+        var variables = new AzureVariables
+        {
+            List = new List<AzureVariable>
+            {
+                new AzureVariable { Name = "noValue", Value = null },
+                new AzureVariable { Name = "validVar", Value = "validValue" }
+            }
+        };
+
+        // Act
+        var result = variables.ToDictionary();
+
+        // Assert
+        result.Should().HaveCount(1);
+        result["validVar"].Should().Be("validValue");
+    }
+
+    #endregion
+
+    #region TagFilter Tests
+
+    [Fact]
+    public void TagFilter_DefaultConstruction_HasEmptyLists()
+    {
+        // Arrange & Act
+        var tagFilter = new TagFilter();
+
+        // Assert
+        tagFilter.Include.Should().NotBeNull();
+        tagFilter.Include.Should().BeEmpty();
+        tagFilter.Exclude.Should().NotBeNull();
+        tagFilter.Exclude.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void TagFilter_DeserializesIncludeCorrectly()
+    {
+        // Arrange
+        var yaml = @"
+include:
+  - v*
+  - release-*
+  - v1.*
+";
+
+        // Act
+        var result = _deserializer.Deserialize<TagFilter>(yaml);
+
+        // Assert
+        result.Should().NotBeNull();
+        result.Include.Should().HaveCount(3);
+        result.Include.Should().Contain("v*");
+        result.Include.Should().Contain("release-*");
+        result.Include.Should().Contain("v1.*");
+    }
+
+    [Fact]
+    public void TagFilter_DeserializesExcludeCorrectly()
+    {
+        // Arrange
+        var yaml = @"
+exclude:
+  - beta-*
+  - alpha-*
+  - rc-*
+";
+
+        // Act
+        var result = _deserializer.Deserialize<TagFilter>(yaml);
+
+        // Assert
+        result.Should().NotBeNull();
+        result.Exclude.Should().HaveCount(3);
+        result.Exclude.Should().Contain("beta-*");
+        result.Exclude.Should().Contain("alpha-*");
+        result.Exclude.Should().Contain("rc-*");
+    }
+
+    [Fact]
+    public void TagFilter_DeserializesBothIncludeAndExclude()
+    {
+        // Arrange
+        var yaml = @"
+include:
+  - v*
+  - release/*
+exclude:
+  - v*-beta
+  - v*-rc
+";
+
+        // Act
+        var result = _deserializer.Deserialize<TagFilter>(yaml);
+
+        // Assert
+        result.Should().NotBeNull();
+        result.Include.Should().HaveCount(2);
+        result.Include.Should().Contain("v*");
+        result.Exclude.Should().HaveCount(2);
+        result.Exclude.Should().Contain("v*-beta");
+    }
+
+    [Fact]
+    public void TagFilter_CanAddAndRemovePatterns()
+    {
+        // Arrange
+        var tagFilter = new TagFilter();
+
+        // Act
+        tagFilter.Include.Add("v*");
+        tagFilter.Exclude.Add("beta-*");
+
+        // Assert
+        tagFilter.Include.Should().Contain("v*");
+        tagFilter.Exclude.Should().Contain("beta-*");
+    }
+
+    #endregion
+
     #region AzureTrigger Tests
 
     [Fact]
