@@ -75,10 +75,10 @@ pdk doctor
    ```
 3. Retry PDK installation:
    ```bash
-   dotnet tool install --global PDK.CLI
+   dotnet tool install --global pdk
    ```
 
-### "Package 'PDK.CLI' is not found"
+### "Package 'pdk' is not found"
 
 **Symptom:** NuGet cannot find the PDK package.
 
@@ -94,7 +94,7 @@ dotnet nuget list source
 dotnet nuget add source https://api.nuget.org/v3/index.json --name nuget.org
 
 # Retry installation
-dotnet tool install --global PDK.CLI
+dotnet tool install --global pdk
 ```
 
 ## Docker Issues

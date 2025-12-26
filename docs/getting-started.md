@@ -30,7 +30,7 @@ You should see version 8.0.0 or higher.
 ### Install via dotnet tool (Recommended)
 
 ```bash
-dotnet tool install --global PDK.CLI
+dotnet tool install --global pdk
 ```
 
 ### Verify Installation
