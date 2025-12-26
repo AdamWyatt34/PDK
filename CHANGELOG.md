@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2024-12-25
+
+### Added
+- **v1.0 Release** - First stable release of Pipeline Development Kit (PDK)
+- Comprehensive test coverage for core components
+- Tests for Azure DevOps models (AzureTask, AzureVariables, TagFilter)
+- Tests for HostStepExecutorFactory factory methods
+- Tests for ConfigurationException factory methods
+- Tests for ToolNotFoundException with tool-specific suggestions
+- Tests for ContainerException factory methods
+- Tests for PdkLogger logging configuration
+
+### Fixed
+- Fixed Serilog configuration bug where `shared:true` and `buffered:true` were used together (incompatible options)
+
+### Changed
+- Version bumped to 1.0.0 indicating production-ready status
+- All critical execution paths tested
+
+### Documentation
+- Complete getting started guide
+- Command reference documentation
+- Configuration guide
+- Troubleshooting guide
+- Architecture documentation
+- Contributing guide
+
 ## [0.12.0] - 2024-12-25
 
 ### Added
@@ -171,7 +198,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic CLI structure
 - Project documentation
 
-[Unreleased]: https://github.com/AdamWyatt34/pdk/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/AdamWyatt34/pdk/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/AdamWyatt34/pdk/compare/v0.12.0...v1.0.0
 [0.12.0]: https://github.com/AdamWyatt34/pdk/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/AdamWyatt34/pdk/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/AdamWyatt34/pdk/compare/v0.9.0...v0.10.0
