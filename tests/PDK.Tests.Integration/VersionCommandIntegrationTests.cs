@@ -61,8 +61,8 @@ public class VersionCommandIntegrationTests
 
         // Assert
         os.Should().NotBeNullOrEmpty();
-        // Should contain something identifiable
-        os.Should().MatchRegex(@"(Windows|Linux|Darwin|macOS)");
+        // Should contain something identifiable - includes distro names like Ubuntu, Debian, etc.
+        os.Should().MatchRegex(@"(Windows|Linux|Darwin|macOS|Ubuntu|Debian|Fedora|CentOS|Alpine|Red Hat)");
     }
 
     [Fact]

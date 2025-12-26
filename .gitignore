@@ -38,3 +38,8 @@ coverage.json
 coverage.info
 coveragereport/
 *.coverage
+
+# DocFX generated files
+api/*.yml
+api/.manifest
+_site/
