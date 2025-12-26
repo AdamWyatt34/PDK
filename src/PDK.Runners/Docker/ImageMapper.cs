@@ -70,6 +70,13 @@ public class ImageMapper : IImageMapper
             return imageName;
         }
 
+        // Handle unexpanded GitHub Actions expressions (e.g., ${{ matrix.os }})
+        // Default to ubuntu-latest since matrix builds aren't fully supported yet
+        if (runnerName.Contains("${{") || runnerName.Contains("}}"))
+        {
+            return RunnerMappings["ubuntu-latest"];
+        }
+
         // Runner not recognized
         throw new ArgumentException(
             $"Runner '{runnerName}' is not recognized. " +

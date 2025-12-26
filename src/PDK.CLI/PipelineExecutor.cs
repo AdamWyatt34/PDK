@@ -251,6 +251,12 @@ public class PipelineExecutor
             if (!result.Success)
             {
                 allJobsSucceeded = false;
+
+                // Display job error message if available
+                if (!string.IsNullOrEmpty(result.ErrorMessage))
+                {
+                    _output.WriteError($"  {result.ErrorMessage}");
+                }
             }
         }
 

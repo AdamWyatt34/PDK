@@ -84,7 +84,7 @@ echo ""
 
 # Run PDK on its own workflow
 echo "${CYAN}Running PDK on .github/workflows/ci.yml...${RESET}"
-echo "Command: dotnet run --project src/PDK.CLI/PDK.CLI.csproj --no-build --configuration Release -- run --file .github/workflows/ci.yml --job build --verbose"
+echo "Using --host mode with step filters (skipping GitHub Actions-only steps)"
 echo ""
 echo "========== PDK Output Begin =========="
 
@@ -92,10 +92,18 @@ START_TIME=$(date +%s)
 EXIT_CODE=0
 
 # Run PDK and capture output
+# Use --host mode to run on local machine (where .NET is already installed)
+# Skip steps that use GitHub Actions (setup-dotnet, cache, upload-artifact, codecov)
+# Skip Build step - PDK is already built and running, can't rebuild itself (file locks)
+# Run: checkout, restore, unit tests (validates PDK can execute a real workflow)
 dotnet run --project src/PDK.CLI/PDK.CLI.csproj \
     --no-build --configuration Release -- \
     run --file .github/workflows/ci.yml \
     --job build \
+    --host \
+    --step-filter "Checkout code" \
+    --step-filter "Restore dependencies" \
+    --step-filter "Run unit tests" \
     --verbose 2>&1 | tee "$OUTPUT_DIR/output.log" || EXIT_CODE=$?
 
 END_TIME=$(date +%s)
