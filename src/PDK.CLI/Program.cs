@@ -868,6 +868,14 @@ static void ConfigureServices(ServiceCollection services)
     services.AddSingleton<ConfigurationValidator>();
     services.AddSingleton<IConfigurationLoader, ConfigurationLoader>();
     services.AddSingleton<IConfigurationMerger, ConfigurationMerger>();
+    // Register default configuration (can be replaced by command-specific configuration)
+    services.AddSingleton<IConfiguration>(sp =>
+    {
+        var loader = sp.GetRequiredService<IConfigurationLoader>();
+        // Pass null to use config discovery (returns null if no config file found)
+        var config = loader.LoadAsync(null).GetAwaiter().GetResult() ?? new PdkConfig();
+        return new PdkConfiguration(config);
+    });
 
     // Register variable services (Sprint 7)
     services.AddSingleton<IBuiltInVariables, BuiltInVariables>();
@@ -903,6 +911,9 @@ static void ConfigureServices(ServiceCollection services)
 
     // Register container manager
     services.AddSingleton<PDK.Runners.IContainerManager, DockerContainerManager>();
+    // IContainerManager extends IDockerStatusProvider, so forward the registration
+    services.AddSingleton<PDK.Core.Docker.IDockerStatusProvider>(sp =>
+        sp.GetRequiredService<PDK.Runners.IContainerManager>());
 
     // Register artifact services (Sprint 8)
     services.AddSingleton<PDK.Core.Artifacts.IFileSelector, PDK.Core.Artifacts.FileSelector>();
