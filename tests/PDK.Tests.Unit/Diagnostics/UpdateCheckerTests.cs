@@ -12,13 +12,32 @@ using Xunit;
 /// </summary>
 public class UpdateCheckerTests : IDisposable
 {
-    private readonly string? _originalCiVar;
+    // All CI environment variables that CiDetector checks
+    private static readonly string[] CiVariables =
+    [
+        "CI",
+        "GITHUB_ACTIONS",
+        "AZURE_PIPELINES",
+        "TF_BUILD",
+        "GITLAB_CI",
+        "JENKINS_URL",
+        "TRAVIS",
+        "CIRCLECI",
+        "BUILDKITE",
+        "TEAMCITY_VERSION"
+    ];
+
+    private readonly Dictionary<string, string?> _originalCiVars = new();
     private readonly string _testDir;
 
     public UpdateCheckerTests()
     {
-        _originalCiVar = Environment.GetEnvironmentVariable("CI");
-        Environment.SetEnvironmentVariable("CI", null);
+        // Save and clear all CI environment variables
+        foreach (var varName in CiVariables)
+        {
+            _originalCiVars[varName] = Environment.GetEnvironmentVariable(varName);
+            Environment.SetEnvironmentVariable(varName, null);
+        }
 
         // Create test directory for update check file
         _testDir = Path.Combine(Path.GetTempPath(), $"pdk-test-{Guid.NewGuid()}");
@@ -27,7 +46,11 @@ public class UpdateCheckerTests : IDisposable
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("CI", _originalCiVar);
+        // Restore all CI environment variables
+        foreach (var kvp in _originalCiVars)
+        {
+            Environment.SetEnvironmentVariable(kvp.Key, kvp.Value);
+        }
 
         if (Directory.Exists(_testDir))
         {

@@ -179,9 +179,11 @@ public class ProcessExecutorTests
             ["TEST_VAR"] = "test_value_123"
         };
 
+        // Use printenv/set to verify environment variables are passed correctly
+        // This avoids shell variable expansion issues with escaping
         var command = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? "echo %TEST_VAR%"
-            : "echo $TEST_VAR";
+            ? "set TEST_VAR"
+            : "printenv TEST_VAR";
 
         // Act
         var result = await _executor.ExecuteAsync(

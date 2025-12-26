@@ -52,7 +52,12 @@ jobs:
       - name: Run Benchmarks
         run: |
           cd tests/PDK.Tests.Performance
-          dotnet run -c Release -- --${{ github.event.inputs.benchmark_filter || 'all' }} --exporters json markdown
+          FILTER="${{ github.event.inputs.benchmark_filter || 'all' }}"
+          if [ "$FILTER" = "all" ]; then
+            dotnet run -c Release -- --filter "*" --exporters json markdown
+          else
+            dotnet run -c Release -- --filter "*$FILTER*" --exporters json markdown
+          fi
         continue-on-error: true
 
       - name: Upload Benchmark Results
