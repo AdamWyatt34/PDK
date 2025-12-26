@@ -133,8 +133,8 @@ jobs:
             ./scripts/self-test.sh
           else
             echo "Docker not available, skipping container-based self-test"
-            echo "Building and testing directly..."
-            dotnet test --configuration Release --verbosity normal
+            echo "Running unit tests only (integration tests require Docker)..."
+            dotnet test tests/PDK.Tests.Unit --configuration Release --verbosity normal
           fi
 
       - name: Upload Dogfood Results

@@ -41,11 +41,15 @@ warn() {
 echo "Checking .NET SDK..."
 if command -v dotnet &> /dev/null; then
     DOTNET_VERSION=$(dotnet --version 2>/dev/null || echo "unknown")
-    if [[ "$DOTNET_VERSION" == 8.* ]]; then
-        ok ".NET SDK:     $DOTNET_VERSION (required: 8.0.x)"
-    elif [[ "$DOTNET_VERSION" == 9.* ]]; then
-        # .NET 9.x is backwards compatible with 8.x projects
-        warn ".NET SDK:     $DOTNET_VERSION (CI uses 8.0.x, but 9.x is compatible)"
+    # Extract major version number
+    MAJOR_VERSION=$(echo "$DOTNET_VERSION" | cut -d. -f1)
+    if [[ "$MAJOR_VERSION" -ge 8 ]]; then
+        if [[ "$MAJOR_VERSION" -eq 8 ]]; then
+            ok ".NET SDK:     $DOTNET_VERSION (required: 8.0.x)"
+        else
+            # .NET 9.x, 10.x, etc. are backwards compatible with 8.x projects
+            ok ".NET SDK:     $DOTNET_VERSION (CI uses 8.0.x, but $MAJOR_VERSION.x is compatible)"
+        fi
     else
         fail ".NET SDK:     $DOTNET_VERSION (required: 8.0.x or higher)"
     fi

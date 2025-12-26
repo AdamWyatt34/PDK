@@ -32,11 +32,15 @@ function Write-Warn {
 Write-Host "Checking .NET SDK..."
 try {
     $dotnetVersion = & dotnet --version 2>$null
-    if ($dotnetVersion -match "^8\.") {
-        Write-OK ".NET SDK:     $dotnetVersion (required: 8.0.x)"
-    } elseif ($dotnetVersion -match "^9\.") {
-        # .NET 9.x is backwards compatible with 8.x projects
-        Write-Warn ".NET SDK:     $dotnetVersion (CI uses 8.0.x, but 9.x is compatible)"
+    # Extract major version number
+    $majorVersion = [int]($dotnetVersion -split '\.')[0]
+    if ($majorVersion -ge 8) {
+        if ($majorVersion -eq 8) {
+            Write-OK ".NET SDK:     $dotnetVersion (required: 8.0.x)"
+        } else {
+            # .NET 9.x, 10.x, etc. are backwards compatible with 8.x projects
+            Write-OK ".NET SDK:     $dotnetVersion (CI uses 8.0.x, but $majorVersion.x is compatible)"
+        }
     } else {
         Write-Fail ".NET SDK:     $dotnetVersion (required: 8.0.x or higher)"
     }
