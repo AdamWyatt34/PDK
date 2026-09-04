@@ -867,9 +867,17 @@ secretListCommand.SetHandler(async (InvocationContext context) =>
             context.ExitCode = ExitCodes.Success;
             return;
         }
+        var unreadable = new HashSet<string>(await manager.GetUnreadableSecretNamesAsync(), StringComparer.Ordinal);
         foreach (var name in names)
         {
-            AnsiConsole.WriteLine(name);
+            if (unreadable.Contains(name))
+            {
+                AnsiConsole.MarkupLine($"{Markup.Escape(name)} [yellow](unreadable: cannot be decrypted with the current key; set it again)[/]");
+            }
+            else
+            {
+                AnsiConsole.WriteLine(name);
+            }
         }
         context.ExitCode = ExitCodes.Success;
     }
@@ -987,7 +995,8 @@ static void ConfigureServices(ServiceCollection services)
     services.AddSingleton<ISecretManager>(sp => new SecretManager(
         sp.GetRequiredService<ISecretEncryption>(),
         sp.GetRequiredService<SecretStorage>(),
-        sp.GetRequiredService<ISecretMasker>()));
+        sp.GetRequiredService<ISecretMasker>(),
+        sp.GetService<ILogger<SecretManager>>()));
     services.AddSingleton<ISecretDetector, SecretDetector>();
 
     // Register error handling services

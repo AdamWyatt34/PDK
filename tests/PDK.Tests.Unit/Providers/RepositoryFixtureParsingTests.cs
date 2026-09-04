@@ -99,17 +99,19 @@ public class RepositoryFixtureParsingTests
         var ubuntu = pipeline.Jobs["build-ubuntu-latest"];
         ubuntu.RunsOn.Should().Be("ubuntu-latest");
         ubuntu.Name.Should().Be("Build and Test (ubuntu-latest)");
-        ubuntu.Timeout.Should().Be(TimeSpan.FromMinutes(15));
+        ubuntu.Timeout.Should().Be(TimeSpan.FromMinutes(20));
         ubuntu.Matrix.Should().Equal(new Dictionary<string, string> { ["os"] = "ubuntu-latest" });
 
         ubuntu.Steps.Select(s => s.Type).Should().ContainInOrder(
             StepType.Checkout, StepType.Setup, StepType.Setup, StepType.Script);
         ubuntu.Steps.Single(s => s.Name == "Upload test results").Artifact!.Name.Should().Be("test-results-ubuntu-latest");
         ubuntu.Steps.Single(s => s.Name == "Upload coverage to Codecov").Type.Should().Be(StepType.Setup);
-        ubuntu.Steps.Single(s => s.Name == "Pre-pull Docker images (Linux/Windows)").ContinueOnError.Should().BeTrue();
-        ubuntu.Steps.Single(s => s.Name == "Run integration tests (Linux only)").Condition!.Expression
-            .Should().Be("matrix.os == 'ubuntu-latest'");
-        ubuntu.Steps.Single(s => s.Name == "List package contents").Type.Should().Be(StepType.Script);
+        var prePull = ubuntu.Steps.Single(s => s.Name == "Pre-pull Docker images (Linux)");
+        prePull.ContinueOnError.Should().BeTrue();
+        prePull.Condition!.Expression.Should().Be("matrix.os == 'ubuntu-latest'");
+        ubuntu.Steps.Single(s => s.Name == "Run integration tests with coverage").Environment["PDK_DOCKER_TESTS"]
+            .Should().Contain("matrix.os == 'ubuntu-latest'");
+        ubuntu.Steps.Single(s => s.Name == "Verify package").Type.Should().Be(StepType.Script);
     }
 
     [Fact]

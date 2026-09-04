@@ -747,7 +747,7 @@ public class HostExecutionTests : IDisposable
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task HostJobRunner_StepFailure_StopsExecution()
+    public async Task HostJobRunner_StepFailure_SkipsRemainingSteps()
     {
         // Arrange
         var workspacePath = CreateTempWorkspace();
@@ -809,9 +809,11 @@ public class HostExecutionTests : IDisposable
         // Assert
         result.Should().NotBeNull();
         result.Success.Should().BeFalse();
-        result.StepResults.Should().HaveCount(2);  // Only 2 steps run
+        result.StepResults.Should().HaveCount(3);  // Every step is accounted for
         result.StepResults[0].Success.Should().BeTrue();
         result.StepResults[1].Success.Should().BeFalse();
+        result.StepResults[2].Skipped.Should().BeTrue();  // Not executed after the failure
+        result.StepResults[2].Output.Should().NotContain("Should not see this");
     }
 
     [Fact]
@@ -871,16 +873,17 @@ public class HostExecutionTests : IDisposable
 
         // Assert
         result.Should().NotBeNull();
-        result.Success.Should().BeFalse();  // Overall job fails
-        result.StepResults.Should().HaveCount(2);  // But all steps ran
+        result.Success.Should().BeTrue();  // continue-on-error keeps the job green
+        result.StepResults.Should().HaveCount(2);  // All steps ran
         result.StepResults[0].Success.Should().BeFalse();
+        result.StepResults[0].AllowedFailure.Should().BeTrue();
         result.StepResults[1].Success.Should().BeTrue();
         result.StepResults[1].Output.Should().Contain("Continued successfully");
     }
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task HostJobRunner_WithVariables_ExpandsVariables()
+    public async Task HostJobRunner_WithVariables_ExportsVariablesToEnvironment()
     {
         // Arrange
         var workspacePath = CreateTempWorkspace();
@@ -916,8 +919,8 @@ public class HostExecutionTests : IDisposable
                     Name = "Echo variable",
                     Type = StepType.Script,
                     Script = _processExecutor.Platform == OperatingSystemPlatform.Windows
-                        ? "echo ${greeting}"
-                        : "echo '${greeting}'"
+                        ? "echo %greeting%"
+                        : "echo \"$greeting\""
                 }
             }
         };
@@ -970,8 +973,8 @@ public class HostExecutionTests : IDisposable
                     Name = "Echo secret",
                     Type = StepType.Script,
                     Script = _processExecutor.Platform == OperatingSystemPlatform.Windows
-                        ? "echo ${api_key}"
-                        : "echo '${api_key}'"
+                        ? "echo %api_key%"
+                        : "echo \"$api_key\""
                 }
             }
         };

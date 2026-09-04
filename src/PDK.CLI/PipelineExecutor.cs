@@ -137,6 +137,14 @@ public class PipelineExecutor
         var parser = _parserFactory.GetParser(options.FilePath);
         var pipeline = await parser.ParseFile(options.FilePath);
 
+        if (parser is PDK.Providers.IPipelineParserWarnings { Warnings.Count: > 0 } parserWarnings)
+        {
+            foreach (var warning in parserWarnings.Warnings)
+            {
+                _output.WriteWarning(warning);
+            }
+        }
+
         if (options.ValidateOnly)
         {
             _output.WriteSuccess("Pipeline validation successful");

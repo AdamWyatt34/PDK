@@ -123,7 +123,11 @@ public sealed class ExpressionParser
         {
             case TokenKind.Number:
                 Advance();
-                ExpressionTokenizer.TryParseNumber(token.Text, out var number);
+                if (!ExpressionTokenizer.TryParseNumber(token.Text, out var number))
+                {
+                    throw new ExpressionException(_source, $"invalid number '{token.Text}'");
+                }
+
                 return new LiteralNode(number);
 
             case TokenKind.StringLiteral:

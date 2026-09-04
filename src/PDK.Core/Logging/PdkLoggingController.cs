@@ -41,6 +41,7 @@ public sealed class PdkLoggingController : IDisposable
             .MinimumLevel.ControlledBy(_levelSwitch)
             .Enrich.FromLogContext()
             .Enrich.With(new CorrelationIdEnricher())
+            .Enrich.With(new SecretMaskingEnricher(_secretMasker))
             .WriteTo.Sink(_sink)
             .CreateLogger();
 
@@ -100,7 +101,7 @@ public sealed class PdkLoggingController : IDisposable
         if (!string.IsNullOrEmpty(options.JsonLogFilePath))
         {
             ITextFormatter json = options.MaskSecrets
-                ? new MaskingTextFormatter(new CompactJsonFormatter(), _secretMasker)
+                ? new MaskingJsonFormatter(_secretMasker)
                 : new CompactJsonFormatter();
             sinks.Add(FileSink(options.JsonLogFilePath, json, options));
         }

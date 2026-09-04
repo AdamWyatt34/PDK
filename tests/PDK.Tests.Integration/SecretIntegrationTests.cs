@@ -22,7 +22,7 @@ public class SecretIntegrationTests : IDisposable
             $"secrets-{Guid.NewGuid()}.json");
 
         _storage = new SecretStorage(_testStoragePath);
-        _encryption = new SecretEncryption();
+        _encryption = new SecretEncryption(Path.ChangeExtension(_testStoragePath, ".key"));
         _masker = new SecretMasker();
         _secretManager = new SecretManager(_encryption, _storage, _masker);
     }
@@ -32,6 +32,15 @@ public class SecretIntegrationTests : IDisposable
         if (File.Exists(_testStoragePath))
         {
             File.Delete(_testStoragePath);
+        }
+
+        foreach (var extra in new[] { ".key", ".key.lock", ".json.lock" })
+        {
+            var path = Path.ChangeExtension(_testStoragePath, extra);
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
         }
 
         var directory = Path.GetDirectoryName(_testStoragePath);

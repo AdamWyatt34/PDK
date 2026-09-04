@@ -334,7 +334,7 @@ public class Sprint7EndToEndTests : IDisposable
         // Arrange
         var storagePath = Path.Combine(_tempDir, "secrets.json");
         var storage = new SecretStorage(storagePath);
-        var encryption = new SecretEncryption();
+        var encryption = new SecretEncryption(Path.Combine(_tempDir, "secret.key"));
         var masker = new SecretMasker();
         var manager = new SecretManager(encryption, storage, masker);
 
