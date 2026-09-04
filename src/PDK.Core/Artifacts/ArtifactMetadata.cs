@@ -6,12 +6,27 @@ using System.Text.Json.Serialization;
 /// <summary>
 /// Metadata stored alongside artifacts for tracking and restoration.
 /// </summary>
+/// <remarks>
+/// Storage layout (schema version 1.1), inside <c>artifact-&lt;name&gt;/</c>:
+/// <list type="bullet">
+/// <item><description><c>artifact.metadata.json</c> - this document (the original artifact name lives in <c>artifact.name</c>).</description></item>
+/// <item><description><c>artifact.zip</c> or <c>artifact.tar.gz</c> - the content when compression is enabled.</description></item>
+/// <item><description><c>files/</c> - the content tree when compression is <see cref="CompressionType.None"/>.</description></item>
+/// </list>
+/// Only one representation of the content is stored. Version 1.0 artifacts (files directly in the
+/// artifact directory, archive stored next to it) are still readable.
+/// </remarks>
 public record ArtifactMetadata
 {
     /// <summary>
+    /// The current metadata schema version.
+    /// </summary>
+    public const string CurrentVersion = "1.1";
+
+    /// <summary>
     /// Gets the metadata schema version.
     /// </summary>
-    public string Version { get; init; } = "1.0";
+    public string Version { get; init; } = CurrentVersion;
 
     /// <summary>
     /// Gets the artifact information.
@@ -32,7 +47,8 @@ public record ArtifactMetadata
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         WriteIndented = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        Converters = { new JsonStringEnumConverter() }
     };
 
     /// <summary>
@@ -56,7 +72,7 @@ public record ArtifactMetadata
 public record ArtifactInfo
 {
     /// <summary>
-    /// Gets the artifact name.
+    /// Gets the artifact name as given by the pipeline (the directory name is a sanitized form of it).
     /// </summary>
     public required string Name { get; init; }
 
@@ -79,6 +95,16 @@ public record ArtifactInfo
     /// Gets the compression type used for the artifact.
     /// </summary>
     public required CompressionType Compression { get; init; }
+
+    /// <summary>
+    /// Gets the run identifier the artifact was produced in.
+    /// </summary>
+    public string? RunId { get; init; }
+
+    /// <summary>
+    /// Gets the retention period requested for the artifact (from <c>retention-days</c>), if any.
+    /// </summary>
+    public int? RetentionDays { get; init; }
 }
 
 /// <summary>
@@ -87,7 +113,7 @@ public record ArtifactInfo
 public record ArtifactFileInfo
 {
     /// <summary>
-    /// Gets the original source path of the file.
+    /// Gets the original source path of the file (relative to the upload source directory when possible).
     /// </summary>
     public required string SourcePath { get; init; }
 

@@ -301,10 +301,25 @@ public class ArtifactCompressorTests : IDisposable
         cts.Cancel(); // Cancel immediately
 
         // Act & Assert
-        // The compressor wraps OperationCanceledException in ArtifactException
+        // Cancellation is propagated as-is (never wrapped) and no partial archive is left behind
         var act = async () => await _compressor.CompressAsync(_sourceDir, archivePath, CompressionType.Zip, cancellationToken: cts.Token);
-        var exception = await act.Should().ThrowAsync<ArtifactException>();
-        exception.Which.InnerException.Should().BeOfType<OperationCanceledException>();
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        File.Exists(archivePath).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task DecompressAsync_Cancelled_ThrowsOperationCanceledException()
+    {
+        // Arrange
+        CreateTestFile("file.txt", "content");
+        var archivePath = Path.Combine(_targetDir, "test.tar.gz");
+        await _compressor.CompressAsync(_sourceDir, archivePath, CompressionType.Gzip);
+        var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        // Act & Assert
+        var act = async () => await _compressor.DecompressAsync(archivePath, Path.Combine(_testDir, "extracted"), cancellationToken: cts.Token);
+        await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
     #endregion
@@ -331,6 +346,169 @@ public class ArtifactCompressorTests : IDisposable
         File.Exists(Path.Combine(extractDir, "level1", "file1.txt")).Should().BeTrue();
         File.Exists(Path.Combine(extractDir, "level1", "level2", "file2.txt")).Should().BeTrue();
         File.Exists(Path.Combine(extractDir, "level1", "level2", "level3", "file3.txt")).Should().BeTrue();
+    }
+
+    #endregion
+
+    #region CompressFilesAsync Tests
+
+    [Theory]
+    [InlineData(CompressionType.Zip, ".zip")]
+    [InlineData(CompressionType.Gzip, ".tar.gz")]
+    public async Task CompressFilesAsync_UsesGivenEntryPaths(CompressionType type, string extension)
+    {
+        // Arrange
+        CreateTestFile("deep/nested/a.txt", "A");
+        CreateTestFile("b.txt", "B");
+        var entries = new List<ArchiveFileEntry>
+        {
+            new(Path.Combine(_sourceDir, "deep", "nested", "a.txt"), "renamed/a.txt"),
+            new(Path.Combine(_sourceDir, "b.txt"), "b.txt")
+        };
+        var archivePath = Path.Combine(_targetDir, "files" + extension);
+        var extractDir = Path.Combine(_testDir, "extracted");
+
+        // Act
+        await _compressor.CompressFilesAsync(entries, archivePath, type);
+        await _compressor.DecompressAsync(archivePath, extractDir);
+
+        // Assert
+        (await File.ReadAllTextAsync(Path.Combine(extractDir, "renamed", "a.txt"))).Should().Be("A");
+        (await File.ReadAllTextAsync(Path.Combine(extractDir, "b.txt"))).Should().Be("B");
+        Directory.Exists(Path.Combine(extractDir, "deep")).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task CompressFilesAsync_None_DoesNothing()
+    {
+        CreateTestFile("b.txt", "B");
+        var archivePath = Path.Combine(_targetDir, "none.bin");
+
+        await _compressor.CompressFilesAsync(new[] { new ArchiveFileEntry(Path.Combine(_sourceDir, "b.txt"), "b.txt") }, archivePath, CompressionType.None);
+
+        File.Exists(archivePath).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task CompressFilesAsync_MissingSourceFile_ThrowsArtifactExceptionAndRemovesArchive()
+    {
+        var archivePath = Path.Combine(_targetDir, "broken.zip");
+        var entries = new[] { new ArchiveFileEntry(Path.Combine(_sourceDir, "missing.txt"), "missing.txt") };
+
+        var act = async () => await _compressor.CompressFilesAsync(entries, archivePath, CompressionType.Zip);
+
+        await act.Should().ThrowAsync<ArtifactException>();
+        File.Exists(archivePath).Should().BeFalse();
+    }
+
+    #endregion
+
+    #region Timestamp Tests
+
+    [Theory]
+    [InlineData(CompressionType.Zip)]
+    [InlineData(CompressionType.Gzip)]
+    public async Task CompressAsync_FileOlderThan1980_IsClamped(CompressionType type)
+    {
+        // Arrange - ZipArchiveEntry.LastWriteTime throws for dates before 1980 unless clamped
+        CreateTestFile("old.txt", "old");
+        File.SetLastWriteTimeUtc(Path.Combine(_sourceDir, "old.txt"), new DateTime(1969, 12, 31, 0, 0, 0, DateTimeKind.Utc));
+        var archivePath = Path.Combine(_targetDir, "old" + _compressor.GetExtension(type));
+        var extractDir = Path.Combine(_testDir, "extracted");
+
+        // Act
+        await _compressor.CompressAsync(_sourceDir, archivePath, type);
+        await _compressor.DecompressAsync(archivePath, extractDir);
+
+        // Assert
+        (await File.ReadAllTextAsync(Path.Combine(extractDir, "old.txt"))).Should().Be("old");
+    }
+
+    #endregion
+
+    #region Zip-Slip Tests
+
+    [Theory]
+    [InlineData("../evil.txt")]
+    [InlineData("sub/../../evil.txt")]
+    [InlineData("/abs/evil.txt")]
+    public async Task DecompressAsync_Zip_RejectsEntriesOutsideTarget(string entryName)
+    {
+        // Arrange
+        var archivePath = Path.Combine(_targetDir, "evil.zip");
+        await using (var stream = File.Create(archivePath))
+        using (var zip = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Create))
+        {
+            var entry = zip.CreateEntry(entryName);
+            await using var entryStream = entry.Open();
+            entryStream.Write("evil"u8);
+        }
+
+        var extractDir = Path.Combine(_testDir, "extract", "inner");
+
+        // Act
+        var act = async () => await _compressor.DecompressAsync(archivePath, extractDir);
+
+        // Assert
+        var exception = await act.Should().ThrowAsync<ArtifactException>();
+        exception.Which.ErrorCode.Should().Be(PDK.Core.ErrorHandling.ErrorCodes.ArtifactDecompressionFailed);
+        File.Exists(Path.Combine(_testDir, "extract", "evil.txt")).Should().BeFalse();
+        File.Exists(Path.Combine(_testDir, "evil.txt")).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("../evil.txt")]
+    [InlineData("sub/../../evil.txt")]
+    public async Task DecompressAsync_TarGz_RejectsEntriesOutsideTarget(string entryName)
+    {
+        // Arrange - build a tar.gz by hand with a traversal entry
+        var archivePath = Path.Combine(_targetDir, "evil.tar.gz");
+        await using (var fileStream = File.Create(archivePath))
+        await using (var gzip = new System.IO.Compression.GZipStream(fileStream, System.IO.Compression.CompressionLevel.Fastest))
+        using (var writer = SharpCompress.Writers.WriterFactory.Open(
+                   gzip,
+                   SharpCompress.Common.ArchiveType.Tar,
+                   new SharpCompress.Writers.Tar.TarWriterOptions(SharpCompress.Common.CompressionType.None, true)))
+        {
+            using var content = new MemoryStream("evil"u8.ToArray());
+            writer.Write(entryName, content, DateTime.UtcNow);
+        }
+
+        var extractDir = Path.Combine(_testDir, "extract", "inner");
+
+        // Act
+        var act = async () => await _compressor.DecompressAsync(archivePath, extractDir);
+
+        // Assert
+        await act.Should().ThrowAsync<ArtifactException>();
+        File.Exists(Path.Combine(_testDir, "extract", "evil.txt")).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("safe.txt")]
+    [InlineData("a/b/c.txt")]
+    [InlineData("./dot/prefixed.txt")]
+    public void GetSafeExtractionPath_AcceptsPathsInsideTarget(string entryName)
+    {
+        var result = ArtifactCompressor.GetSafeExtractionPath(_targetDir, entryName, "archive.zip");
+
+        result.Should().StartWith(Path.GetFullPath(_targetDir) + Path.DirectorySeparatorChar);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(null)]
+    [InlineData("..")]
+    [InlineData("../x")]
+    [InlineData("a/../../x")]
+    [InlineData("/etc/passwd")]
+    [InlineData("C:/windows/evil.txt")]
+    [InlineData("..\\evil.txt")]
+    public void GetSafeExtractionPath_RejectsUnsafePaths(string? entryName)
+    {
+        var act = () => ArtifactCompressor.GetSafeExtractionPath(_targetDir, entryName, "archive.zip");
+
+        act.Should().Throw<ArtifactException>();
     }
 
     #endregion
