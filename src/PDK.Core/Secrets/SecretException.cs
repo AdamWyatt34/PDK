@@ -1,26 +1,19 @@
 namespace PDK.Core.Secrets;
 
 using PDK.Core.ErrorHandling;
+using PDK.Core.Models;
 
 /// <summary>
 /// Exception for secret-related errors with structured error codes and suggestions.
+/// Derives from <see cref="PdkException"/> so the CLI error formatter shows the
+/// error code and recovery suggestions.
 /// </summary>
-public class SecretException : Exception
+public class SecretException : PdkException
 {
-    /// <summary>
-    /// Gets the error code for this exception.
-    /// </summary>
-    public string ErrorCode { get; }
-
     /// <summary>
     /// Gets the name of the secret that caused the error, if applicable.
     /// </summary>
     public string? SecretName { get; }
-
-    /// <summary>
-    /// Gets suggestions for resolving the error.
-    /// </summary>
-    public IReadOnlyList<string> Suggestions { get; }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="SecretException"/> class.
@@ -36,11 +29,9 @@ public class SecretException : Exception
         string? secretName = null,
         IReadOnlyList<string>? suggestions = null,
         Exception? innerException = null)
-        : base(message, innerException)
+        : base(errorCode, message, null, suggestions, innerException)
     {
-        ErrorCode = errorCode;
         SecretName = secretName;
-        Suggestions = suggestions ?? Array.Empty<string>();
     }
 
     /// <summary>
@@ -56,9 +47,9 @@ public class SecretException : Exception
             ErrorCodes.SecretEncryptionFailed,
             suggestions: new[]
             {
-                "Verify the platform encryption service is available",
-                "On Windows, ensure DPAPI is accessible",
-                "On Linux/macOS, ensure the key derivation can access machine information"
+                "Verify that the secret key file (~/.pdk/secret.key) can be created and read",
+                "On Windows, ensure the Data Protection API (DPAPI) is available for the current user",
+                "Ensure the ~/.pdk directory is writable by the current user"
             },
             innerException: inner);
     }
@@ -66,22 +57,36 @@ public class SecretException : Exception
     /// <summary>
     /// Creates an exception for decryption failure.
     /// </summary>
-    /// <param name="secretName">The name of the secret that failed to decrypt.</param>
+    /// <param name="secretName">The name of the secret that failed to decrypt, or null when the name is not known.</param>
     /// <param name="inner">The inner exception, if any.</param>
+    /// <param name="reason">An optional human-readable reason that is appended to the message.</param>
     /// <returns>A new SecretException.</returns>
-    public static SecretException DecryptionFailed(string secretName, Exception? inner = null)
+    public static SecretException DecryptionFailed(string? secretName, Exception? inner = null, string? reason = null)
     {
+        var subject = secretName is null ? "secret value" : $"secret '{secretName}'";
+        var detail = reason ?? inner?.Message;
+        var message = string.IsNullOrWhiteSpace(detail)
+            ? $"Failed to decrypt {subject}"
+            : $"Failed to decrypt {subject}: {detail}";
+
+        var suggestions = new List<string>
+        {
+            "The value may have been encrypted with a different key file (~/.pdk/secret.key), for example on another machine or by another user",
+            "Secrets stored by older PDK versions are migrated automatically when the legacy machine-derived key still matches; otherwise they must be set again"
+        };
+
+        if (secretName is not null)
+        {
+            suggestions.Add($"Set the secret again: pdk secret set {secretName}");
+            suggestions.Add($"Or remove it: pdk secret delete {secretName}");
+        }
+
         return new SecretException(
-            $"Failed to decrypt secret '{secretName}'",
+            message,
             ErrorCodes.SecretDecryptionFailed,
             secretName,
-            suggestions: new[]
-            {
-                "The secret may have been encrypted on a different machine",
-                "The secret may have been encrypted by a different user",
-                "Try deleting and re-setting the secret: pdk secret delete " + secretName
-            },
-            innerException: inner);
+            suggestions,
+            inner);
     }
 
     /// <summary>
@@ -112,7 +117,7 @@ public class SecretException : Exception
     public static SecretException StorageFailed(string path, Exception inner)
     {
         return new SecretException(
-            $"Failed to access secret storage at '{path}'",
+            $"Failed to access secret storage at '{path}': {inner?.Message}",
             ErrorCodes.SecretStorageFailed,
             suggestions: new[]
             {
@@ -124,21 +129,126 @@ public class SecretException : Exception
     }
 
     /// <summary>
+    /// Creates an exception for a secret storage lock that could not be acquired in time.
+    /// </summary>
+    /// <param name="lockPath">The path of the lock file.</param>
+    /// <param name="timeout">How long the lock was waited for.</param>
+    /// <param name="inner">The inner exception, if any.</param>
+    /// <returns>A new SecretException.</returns>
+    public static SecretException StorageLocked(string lockPath, TimeSpan timeout, Exception? inner = null)
+    {
+        return new SecretException(
+            $"Timed out after {timeout.TotalSeconds:0.#}s waiting for exclusive access to secret storage (lock file '{lockPath}')",
+            ErrorCodes.SecretStorageFailed,
+            suggestions: new[]
+            {
+                "Another pdk process is probably updating secrets; wait for it to finish and retry",
+                $"If no other pdk process is running, verify that '{lockPath}' is writable by the current user"
+            },
+            innerException: inner);
+    }
+
+    /// <summary>
+    /// Creates an exception for a secret key file that exists but cannot be used.
+    /// </summary>
+    /// <param name="keyFilePath">The path of the key file.</param>
+    /// <param name="reason">Why the key file cannot be used.</param>
+    /// <param name="inner">The inner exception, if any.</param>
+    /// <returns>A new SecretException.</returns>
+    public static SecretException KeyFileInvalid(string keyFilePath, string reason, Exception? inner = null)
+    {
+        return new SecretException(
+            $"The secret key file '{keyFilePath}' cannot be used: {reason}",
+            ErrorCodes.SecretStorageFailed,
+            suggestions: new[]
+            {
+                "Restore the key file from a backup; without it, previously stored secrets cannot be decrypted",
+                $"Or delete '{keyFilePath}' to generate a new key (all stored secrets must then be set again)",
+                "On Windows the key file is protected with DPAPI and can only be read by the user who created it"
+            },
+            innerException: inner);
+    }
+
+    /// <summary>
     /// Creates an exception for an invalid secret name.
     /// </summary>
     /// <param name="name">The invalid secret name.</param>
     /// <returns>A new SecretException.</returns>
     public static SecretException InvalidName(string name)
     {
+        var display = name ?? "null";
+        var reason = DescribeNameProblem(name);
+        var suggestion = SuggestValidName(name);
+
+        var suggestions = new List<string>
+        {
+            "Secret names must start with a letter or underscore and contain only letters, digits, and underscores (pattern: [A-Za-z_][A-Za-z0-9_]*)",
+            "Example valid names: API_KEY, MySecret, _private_key"
+        };
+
+        if (!string.IsNullOrWhiteSpace(suggestion) && !string.Equals(suggestion, name, StringComparison.Ordinal))
+        {
+            suggestions.Insert(0, $"Did you mean '{suggestion}'? Replace hyphens, dots, and spaces with underscores");
+        }
+
         return new SecretException(
-            $"Invalid secret name: '{name}'",
+            $"Invalid secret name '{display}': {reason}",
             ErrorCodes.SecretInvalidName,
             name,
-            suggestions: new[]
-            {
-                "Secret names must contain only letters, numbers, and underscores",
-                "Secret names must start with a letter or underscore",
-                "Example valid names: API_KEY, MySecret, _private_key"
-            });
+            suggestions);
+    }
+
+    /// <summary>
+    /// Produces a valid secret name derived from an invalid one by replacing unsupported
+    /// characters with underscores and prefixing a leading digit with an underscore.
+    /// </summary>
+    /// <param name="name">The candidate name.</param>
+    /// <returns>A name that satisfies the secret name rules.</returns>
+    public static string SuggestValidName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return "MY_SECRET";
+        }
+
+        var chars = name.Trim()
+            .Select(c => char.IsAsciiLetterOrDigit(c) || c == '_' ? c : '_')
+            .ToArray();
+        var candidate = new string(chars);
+
+        if (char.IsAsciiDigit(candidate[0]))
+        {
+            candidate = "_" + candidate;
+        }
+
+        return candidate;
+    }
+
+    private static string DescribeNameProblem(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return "the name is empty";
+        }
+
+        var trimmed = name.Trim();
+        if (trimmed.Length != name.Length)
+        {
+            return "the name must not contain leading or trailing whitespace";
+        }
+
+        if (char.IsAsciiDigit(name[0]))
+        {
+            return "the name must not start with a digit";
+        }
+
+        var invalid = name.Where(c => !(char.IsAsciiLetterOrDigit(c) || c == '_')).Distinct().ToArray();
+        if (invalid.Length > 0)
+        {
+            var list = string.Join(", ", invalid.Select(c => c == ' ' ? "' '" : $"'{c}'"));
+            return $"the name contains unsupported character(s) {list}";
+        }
+
+        return "the name does not match the pattern [A-Za-z_][A-Za-z0-9_]*";
     }
 }
