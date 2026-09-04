@@ -18,14 +18,14 @@
 
           <!-- Settings -->
           <SingleHit>false</SingleHit>
-          <UseSourceLink>true</UseSourceLink>
           <IncludeTestAssembly>false</IncludeTestAssembly>
           <SkipAutoProps>true</SkipAutoProps>
 
-          <!-- Thresholds -->
-          <Threshold>80</Threshold>
-          <ThresholdType>line,branch</ThresholdType>
-          <ThresholdStat>total</ThresholdStat>
+          <!--
+            Coverage thresholds are NOT enforced here: the VSTest data collector ignores
+            <Threshold> settings (they only apply to coverlet.msbuild). The minimum line coverage
+            is enforced in CI (.github/workflows/ci.yml) from ReportGenerator's summary.
+          -->
         </Configuration>
       </DataCollector>
     </DataCollectors>

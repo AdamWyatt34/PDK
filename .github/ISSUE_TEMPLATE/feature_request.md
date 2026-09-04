@@ -1,7 +1,7 @@
 ---
 name: Feature Request
-description: Suggest a new feature for PDK
-labels: ["enhancement"]
+about: Suggest a new feature for PDK
+labels: enhancement
 ---
 
 ## Feature Description

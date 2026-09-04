@@ -121,19 +121,46 @@ Closes #123
 
 ### Running Tests
 
+CI builds in `Release`, so build once and run the suites against that build:
+
 ```bash
-# Run all tests
-dotnet test
+# Build the solution (0 warnings required: TreatWarningsAsErrors is on)
+dotnet build -c Release
 
-# Run unit tests only
-dotnet test --filter Category=Unit
+# Unit tests (fast, no external dependencies)
+dotnet test tests/PDK.Tests.Unit --no-build -c Release
 
-# Run integration tests only
-dotnet test --filter Category=Integration
+# Integration tests
+dotnet test tests/PDK.Tests.Integration --no-build -c Release
 
-# Run with coverage
-dotnet test /p:CollectCoverage=true
+# Both suites in one go
+dotnet test --no-build -c Release
+
+# With code coverage (Cobertura, lcov and OpenCover files are written under each project's TestResults/)
+dotnet test tests/PDK.Tests.Unit --no-build -c Release --collect:"XPlat Code Coverage" --settings coverlet.runsettings
+dotnet test tests/PDK.Tests.Integration --no-build -c Release --collect:"XPlat Code Coverage" --settings coverlet.runsettings
+
+# HTML coverage report from the files above (installs ReportGenerator on first use)
+./scripts/coverage.sh
 ```
+
+#### Tests that need Docker
+
+Integration tests that talk to a Docker daemon are marked `[DockerFact]` / `[DockerTheory]` together with
+`[Trait("Category", "RequiresDocker")]`. When no daemon that runs Linux containers is reachable
+(`DOCKER_HOST`, or the platform default socket / named pipe), those tests are reported as **Skipped** rather
+than failed, so the suite passes on machines without Docker. Two overrides exist:
+
+- `PDK_DOCKER_TESTS=require` never skips them (CI uses this on the Linux runner, where Docker must be present).
+- `PDK_DOCKER_TESTS=skip` skips them unconditionally.
+
+To leave them out explicitly: `dotnet test tests/PDK.Tests.Integration --no-build -c Release --filter "Category!=RequiresDocker"`.
+
+#### Coverage gate
+
+CI fails when the combined line coverage of the unit and integration tests drops below **70%**
+(`MIN_LINE_COVERAGE` in `.github/workflows/ci.yml`, measured with ReportGenerator on the Linux runner).
+The current figure is around 75%, so keep new code well covered rather than relying on the headroom.
 
 ### Writing Tests
 
@@ -141,7 +168,7 @@ All new code should include tests:
 
 - **Unit tests:** Required for all new logic
 - **Integration tests:** Required for end-to-end scenarios
-- **Coverage target:** 80% minimum
+- **Coverage target:** CI enforces a 70% minimum line coverage overall; aim for 80% or better on new code
 
 Example unit test:
 

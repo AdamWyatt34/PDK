@@ -1,6 +1,11 @@
 # Generate changelog from git commits
 # Usage: .\generate-changelog.ps1 <version>
 # Example: .\generate-changelog.ps1 1.2.3
+#
+# Prepends a "## [<version>] - <date>" section, built from the conventional-commit subjects since the
+# previous tag, to CHANGELOG.md while keeping the header, the "## [Unreleased]" placeholder and every
+# previous release section. scripts/generate-changelog.sh is the bash twin and writes the same content;
+# this script additionally keeps the file's existing line endings (CRLF checkouts stay CRLF).
 
 param(
     [Parameter(Mandatory=$true, Position=0)]
@@ -13,117 +18,151 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RootDir = Split-Path -Parent $ScriptDir
 $ChangelogFile = Join-Path $RootDir "CHANGELOG.md"
 
+# Runs git with stderr suppressed and never throws; returns the output lines (empty on failure).
+function Invoke-Git {
+    param([string[]]$Arguments)
+
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & git @Arguments 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            return @()
+        }
+        return @($output | ForEach-Object { "$_" })
+    } catch {
+        return @()
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+}
+
 Write-Host "Generating changelog for v$Version..."
 
-# Get the previous tag
+# git commands must run inside the repository
+Push-Location $RootDir
 try {
-    $previousTag = git describe --tags --abbrev=0 2>$null
-} catch {
-    $previousTag = $null
+    # Get the previous tag
+    $previousTag = Invoke-Git @("describe", "--tags", "--abbrev=0") | Select-Object -First 1
+
+    # Get commits since last tag (or all commits if no tag)
+    if ($previousTag) {
+        Write-Host "Changes since ${previousTag}:"
+        $commits = Invoke-Git @("log", "$previousTag..HEAD", "--pretty=format:- %s (%h)", "--no-merges")
+    } else {
+        Write-Host "Initial release:"
+        $commits = Invoke-Git @("log", "--pretty=format:- %s (%h)", "--no-merges")
+    }
+} finally {
+    Pop-Location
 }
 
-# Get commits since last tag (or all commits if no tag)
-if ($previousTag) {
-    Write-Host "Changes since $previousTag`:"
-    $commits = git log "$previousTag..HEAD" --pretty=format:"- %s (%h)" --no-merges 2>$null
-} else {
-    Write-Host "Initial release:"
-    $commits = git log --pretty=format:"- %s (%h)" --no-merges 2>$null
-}
+$commits = @($commits | Where-Object { $_ -and $_.Trim() -ne "" })
 
-if (-not $commits) {
-    $commits = @()
-} elseif ($commits -is [string]) {
-    $commits = $commits -split "`n"
-}
-
-# Categorize commits using conventional commits format
-$features = $commits | Where-Object { $_ -match "^- feat[\(:]" }
-$fixes = $commits | Where-Object { $_ -match "^- fix[\(:]" }
-$docs = $commits | Where-Object { $_ -match "^- docs[\(:]" }
-$chores = $commits | Where-Object { $_ -match "^- (chore|build|ci|refactor|style|test)[\(:]" }
-$breaking = $commits | Where-Object { $_ -match "^- .*!:" }
-$other = $commits | Where-Object {
-    $_ -notmatch "^- (feat|fix|docs|chore|build|ci|refactor|style|test)[\(:]" -and
+# Categorize commits using conventional commits format (-match is case-insensitive, like grep -i)
+$features = @($commits | Where-Object { $_ -match "^- feat[:(]" })
+$fixes = @($commits | Where-Object { $_ -match "^- fix[:(]" })
+$docs = @($commits | Where-Object { $_ -match "^- docs[:(]" })
+$chores = @($commits | Where-Object { $_ -match "^- (chore|build|ci|refactor|style|test)[:(]" })
+$breaking = @($commits | Where-Object { $_ -match "^- .*!:" })
+# Remaining commits that don't match conventional format
+$other = @($commits | Where-Object {
+    $_ -notmatch "^- (feat|fix|docs|chore|build|ci|refactor|style|test)[:(]" -and
     $_ -notmatch "^- .*!:"
-}
+})
 
 # Build changelog entry
 $date = Get-Date -Format "yyyy-MM-dd"
-$changelogEntry = "## [$Version] - $date`n`n"
+$entry = "## [$Version] - $date`n`n"
 
-if ($breaking) {
-    $changelogEntry += "### Breaking Changes`n"
-    $changelogEntry += ($breaking -join "`n") + "`n`n"
+if ($breaking.Count -gt 0) {
+    $entry += "### Breaking Changes`n" + ($breaking -join "`n") + "`n`n"
 }
 
-if ($features) {
-    $changelogEntry += "### Added`n"
-    $changelogEntry += ($features -join "`n") + "`n`n"
+if ($features.Count -gt 0) {
+    $entry += "### Added`n" + ($features -join "`n") + "`n`n"
 }
 
-if ($fixes) {
-    $changelogEntry += "### Fixed`n"
-    $changelogEntry += ($fixes -join "`n") + "`n`n"
+if ($fixes.Count -gt 0) {
+    $entry += "### Fixed`n" + ($fixes -join "`n") + "`n`n"
 }
 
-if ($docs) {
-    $changelogEntry += "### Documentation`n"
-    $changelogEntry += ($docs -join "`n") + "`n`n"
+if ($docs.Count -gt 0) {
+    $entry += "### Documentation`n" + ($docs -join "`n") + "`n`n"
 }
 
-if ($chores) {
-    $changelogEntry += "### Changed`n"
-    $changelogEntry += ($chores -join "`n") + "`n`n"
+if ($chores.Count -gt 0) {
+    $entry += "### Changed`n" + ($chores -join "`n") + "`n`n"
 }
 
-if ($other) {
-    $changelogEntry += "### Other`n"
-    $changelogEntry += ($other -join "`n") + "`n`n"
+if ($other.Count -gt 0) {
+    $entry += "### Other`n" + ($other -join "`n") + "`n`n"
 }
 
-# Prepend to CHANGELOG.md
+# Strip trailing blank lines from the entry
+$entry = $entry.TrimEnd("`n")
+
+$defaultHeader = @(
+    "# Changelog",
+    "",
+    "All notable changes to PDK (Pipeline Development Kit) will be documented in this file.",
+    "",
+    "The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),",
+    "and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)."
+) -join "`n"
+
+$header = $defaultHeader
+$existingReleases = ""
+$newline = "`n"
+
 if (Test-Path $ChangelogFile) {
-    $content = Get-Content $ChangelogFile -Raw
+    $content = [System.IO.File]::ReadAllText($ChangelogFile)
 
-    # Find the position after [Unreleased] section
-    if ($content -match '(?s)(.*## \[Unreleased\].*?\n\n)(.*)') {
-        $header = $matches[1]
-        $rest = $matches[2]
-        $newContent = $header + $changelogEntry + $rest
-    } else {
-        # If no [Unreleased] section, add after header
-        $header = @"
-# Changelog
-
-All notable changes to PDK (Pipeline Development Kit) will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [Unreleased]
-
-"@
-        $newContent = $header + $changelogEntry + $content
+    # Keep the file's line endings
+    if ($content.Contains("`r`n")) {
+        $newline = "`r`n"
     }
 
-    Set-Content -Path $ChangelogFile -Value $newContent -NoNewline
-} else {
-    # Create new CHANGELOG.md
-    $newContent = @"
-# Changelog
+    $lines = $content -split "`r?`n"
 
-All notable changes to PDK (Pipeline Development Kit) will be documented in this file.
+    # Header: everything before the first "## " heading
+    $headerLines = @()
+    foreach ($line in $lines) {
+        if ($line -match '^## ') {
+            break
+        }
+        $headerLines += $line
+    }
+    $fileHeader = ($headerLines -join "`n").TrimEnd("`n")
+    if (($fileHeader -replace '\s', '') -ne '') {
+        $header = $fileHeader
+    }
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [Unreleased]
-
-$changelogEntry
-"@
-    Set-Content -Path $ChangelogFile -Value $newContent -NoNewline
+    # Previous releases: from the first "## [" heading that is not "[Unreleased]" to the end of the file
+    $releaseLines = @()
+    $found = $false
+    foreach ($line in $lines) {
+        if (-not $found -and $line -match '^## \[' -and $line -notmatch '^## \[Unreleased\]') {
+            $found = $true
+        }
+        if ($found) {
+            $releaseLines += $line
+        }
+    }
+    $existingReleases = ($releaseLines -join "`n").TrimEnd("`n")
 }
+
+# Write the new changelog: header, Unreleased placeholder, new entry, previous releases
+$output = $header + "`n`n" + "## [Unreleased]" + "`n`n" + $entry + "`n"
+if ($existingReleases -ne "") {
+    $output += "`n" + $existingReleases + "`n"
+}
+if ($newline -ne "`n") {
+    $output = $output -replace "`n", $newline
+}
+
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($ChangelogFile, $output, $utf8NoBom)
 
 Write-Host "Changelog generated for v$Version"
 Write-Host "File: $ChangelogFile"

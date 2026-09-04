@@ -1,7 +1,7 @@
 ---
 name: Bug Report
-description: Report a bug in PDK
-labels: ["bug"]
+about: Report a bug in PDK
+labels: bug
 ---
 
 ## Bug Description

@@ -5,8 +5,39 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      microsoft-extensions:
+        patterns:
+          - "Microsoft.Extensions.*"
+      serilog:
+        patterns:
+          - "Serilog*"
+      test-stack:
+        patterns:
+          - "xunit*"
+          - "Moq"
+          - "FluentAssertions"
+          - "coverlet*"
+          - "Microsoft.NET.Test.Sdk"
+    ignore:
+      # FluentAssertions 8 switched to a commercial licence; stay on the Apache-2.0 7.x line.
+      - dependency-name: "FluentAssertions"
+        versions: [">=8.0.0"]
+      # Keep the 8.x line that matches the net8.0 target framework.
+      - dependency-name: "Microsoft.Extensions.*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "Serilog.Extensions.Logging"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

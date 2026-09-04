@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # PDK Output Comparison Script (REQ-09-021)
 # Compares local PDK run with actual GitHub Actions CI run
@@ -35,16 +35,16 @@ WORKFLOW_NAME="CI"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --local-run)
-            LOCAL_RUN="$2"
-            shift 2
-            ;;
-        --ci-run)
-            CI_RUN_ID="$2"
-            shift 2
-            ;;
-        --workflow)
-            WORKFLOW_NAME="$2"
+        --local-run|--ci-run|--workflow)
+            if [ $# -lt 2 ] || [ -z "$2" ]; then
+                echo "Error: $1 requires a value"
+                exit 1
+            fi
+            case $1 in
+                --local-run) LOCAL_RUN="$2" ;;
+                --ci-run) CI_RUN_ID="$2" ;;
+                --workflow) WORKFLOW_NAME="$2" ;;
+            esac
             shift 2
             ;;
         -h|--help)
@@ -64,15 +64,17 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+echo "${CYAN}Workflow:${RESET} $WORKFLOW_NAME"
+
 # Check for GitHub CLI
-if ! command -v gh &> /dev/null; then
+if ! command -v gh > /dev/null 2>&1; then
     echo "${RED}Error:${RESET} GitHub CLI (gh) is required for CI comparison."
     echo "Install: https://cli.github.com/"
     exit 2
 fi
 
 # Check authentication
-if ! gh auth status &> /dev/null; then
+if ! gh auth status > /dev/null 2>&1; then
     echo "${RED}Error:${RESET} GitHub CLI is not authenticated."
     echo "Run: gh auth login"
     exit 2
@@ -120,16 +122,19 @@ gh run view "$CI_RUN_ID" --json status,conclusion,jobs,createdAt,updatedAt > "$C
     exit 3
 }
 
-CI_STATUS=$(cat "$COMPARE_DIR/ci-run.json" | grep -o '"conclusion":"[^"]*"' | head -1 | cut -d'"' -f4)
-CI_JOBS=$(cat "$COMPARE_DIR/ci-run.json" | grep -o '"name":"[^"]*"' | cut -d'"' -f4 | head -5)
+# A run that is still in progress has no conclusion yet: every extraction below tolerates "no match"
+CI_STATUS=$(grep -o '"conclusion":"[^"]*"' "$COMPARE_DIR/ci-run.json" | head -n 1 | cut -d'"' -f4 || true)
 
 echo "${GREEN}CI run details fetched${RESET}"
 echo ""
 
 # Read local run summary
-LOCAL_SUCCESS=$(cat "$LOCAL_RUN/summary.json" | grep -o '"success":[^,]*' | head -1 | cut -d':' -f2 | tr -d ' ')
-LOCAL_EXIT_CODE=$(cat "$LOCAL_RUN/summary.json" | grep -o '"exitCode":[^,}]*' | head -1 | cut -d':' -f2 | tr -d ' ')
-LOCAL_DURATION=$(cat "$LOCAL_RUN/summary.json" | grep -o '"durationSeconds":[^,}]*' | head -1 | cut -d':' -f2 | tr -d ' ')
+LOCAL_SUCCESS=$(grep -o '"success":[^,]*' "$LOCAL_RUN/summary.json" | head -n 1 | cut -d':' -f2 | tr -d ' ' || true)
+LOCAL_EXIT_CODE=$(grep -o '"exitCode":[^,}]*' "$LOCAL_RUN/summary.json" | head -n 1 | cut -d':' -f2 | tr -d ' ' || true)
+LOCAL_DURATION=$(grep -o '"durationSeconds":[^,}]*' "$LOCAL_RUN/summary.json" | head -n 1 | cut -d':' -f2 | tr -d ' ' || true)
+LOCAL_SUCCESS=${LOCAL_SUCCESS:-false}
+LOCAL_EXIT_CODE=${LOCAL_EXIT_CODE:-null}
+LOCAL_DURATION=${LOCAL_DURATION:-null}
 
 # Determine CI success
 CI_SUCCESS="false"
@@ -200,7 +205,7 @@ EOF
 # Generate JSON comparison
 cat > "$COMPARE_DIR/comparison.json" << EOF
 {
-    "timestamp": "$(date -Iseconds)",
+    "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
     "localRun": "$LOCAL_RUN",
     "ciRunId": "$CI_RUN_ID",
     "comparison": {

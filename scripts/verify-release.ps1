@@ -17,7 +17,7 @@ Write-Host ""
 $passed = 0
 $failed = 0
 
-function Check-Result {
+function Write-CheckResult {
     param([bool]$Success, [string]$Message)
 
     if ($Success) {
@@ -31,12 +31,8 @@ function Check-Result {
 
 Write-Host "1. Checking Git tag..."
 Write-Host "-----------------------"
-$tags = git tag
-if ($tags -contains "v$Version") {
-    Check-Result $true "Git tag v$Version exists"
-} else {
-    Check-Result $false "Git tag v$Version not found"
-}
+& git rev-parse -q --verify "refs/tags/v$Version" 2>$null | Out-Null
+Write-CheckResult ($LASTEXITCODE -eq 0) "Git tag v$Version exists"
 
 Write-Host ""
 Write-Host "2. Checking GitHub Release..."
@@ -47,59 +43,72 @@ Write-Host "  https://github.com/AdamWyatt34/pdk/releases/tag/v$Version"
 Write-Host ""
 Write-Host "3. Checking NuGet Package..."
 Write-Host "-----------------------------"
+# The package must exist on NuGet.org for the release to be complete
+$nugetFound = $false
 try {
-    $response = Invoke-WebRequest -Uri "https://api.nuget.org/v3-flatcontainer/pdk/$Version/pdk.$Version.nupkg" -Method Head -ErrorAction SilentlyContinue
-    if ($response.StatusCode -eq 200) {
-        Check-Result $true "Package pdk@$Version found on NuGet.org"
-    }
+    $response = Invoke-WebRequest -Uri "https://api.nuget.org/v3-flatcontainer/pdk/$Version/pdk.$Version.nupkg" -Method Head -UseBasicParsing -ErrorAction Stop
+    $nugetFound = ($response.StatusCode -eq 200)
 } catch {
-    Write-Host "  [INFO] Package not yet available on NuGet.org" -ForegroundColor Yellow
-    Write-Host "         This is expected if NuGet publishing was skipped or is pending"
+    $nugetFound = $false
 }
+Write-CheckResult $nugetFound "Package pdk@$Version available on NuGet.org"
 
 Write-Host ""
 Write-Host "4. Testing Tool Installation..."
 Write-Host "--------------------------------"
 
 # Uninstall existing version if present
-dotnet tool uninstall -g pdk 2>$null | Out-Null
+& dotnet tool uninstall -g pdk 2>$null | Out-Null
 
 # Try to install the specific version
-$installResult = dotnet tool install -g pdk --version $Version 2>&1
+& dotnet tool install -g pdk --version $Version 2>&1 | Out-Null
 if ($LASTEXITCODE -eq 0) {
-    Check-Result $true "Tool installed successfully"
+    Write-CheckResult $true "Tool installed successfully"
+
+    # Global tools live in ~/.dotnet/tools, which is not always on PATH yet
+    $pdkCommand = "pdk"
+    if (-not (Get-Command pdk -ErrorAction SilentlyContinue)) {
+        foreach ($candidate in @((Join-Path $HOME ".dotnet\tools\pdk.exe"), (Join-Path $HOME ".dotnet/tools/pdk"))) {
+            if (Test-Path $candidate) {
+                $pdkCommand = $candidate
+                break
+            }
+        }
+    }
 
     Write-Host ""
     Write-Host "5. Verifying Tool Version..."
     Write-Host "-----------------------------"
-    $installedVersion = (pdk --version 2>$null) -match '\d+\.\d+\.\d+' | Out-Null
-    $installedVersion = $matches[0]
-    if ($installedVersion -eq $Version) {
-        Check-Result $true "Tool reports correct version: $installedVersion"
+    $versionOutput = (& $pdkCommand --version 2>$null) -join "`n"
+    if ($versionOutput -match '(\d+\.\d+\.\d+)') {
+        $installedVersion = $Matches[1]
     } else {
-        Check-Result $false "Version mismatch: expected $Version, got $installedVersion"
+        $installedVersion = "unknown"
+    }
+    if ($installedVersion -eq $Version) {
+        Write-CheckResult $true "Tool reports correct version: $installedVersion"
+    } else {
+        Write-CheckResult $false "Version mismatch: expected $Version, got $installedVersion"
     }
 
     Write-Host ""
     Write-Host "6. Testing Tool Execution..."
     Write-Host "-----------------------------"
-    $helpResult = pdk --help 2>&1
-    if ($LASTEXITCODE -eq 0) {
-        Check-Result $true "Tool executes successfully"
-    } else {
-        Check-Result $false "Tool execution failed"
-    }
+    & $pdkCommand --help 2>&1 | Out-Null
+    Write-CheckResult ($LASTEXITCODE -eq 0) "Tool executes successfully"
 
     # Cleanup
     Write-Host ""
     Write-Host "7. Cleanup..."
     Write-Host "--------------"
-    dotnet tool uninstall -g pdk | Out-Null
-    Write-Host "  Tool uninstalled"
-
+    & dotnet tool uninstall -g pdk 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  Tool uninstalled"
+    } else {
+        Write-Host "  Warning: could not uninstall the tool" -ForegroundColor Yellow
+    }
 } else {
-    Write-Host "  [INFO] Could not install from NuGet.org" -ForegroundColor Yellow
-    Write-Host "         The package may not be published yet"
+    Write-CheckResult $false "Could not install pdk $Version from NuGet.org"
     Write-Host ""
     Write-Host "  Skipping installation tests..."
 }
@@ -114,7 +123,7 @@ Write-Host "  Failed: $failed"
 Write-Host ""
 
 if ($failed -gt 0) {
-    Write-Host "  Status: INCOMPLETE - Some checks failed or require manual verification" -ForegroundColor Yellow
+    Write-Host "  Status: FAILED - $failed check(s) failed" -ForegroundColor Red
     exit 1
 } else {
     Write-Host "  Status: PASSED - All automated checks passed" -ForegroundColor Green

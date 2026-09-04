@@ -3,7 +3,7 @@
 # Usage: ./bump-version.sh [major|minor|patch]
 # Default: patch
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -16,11 +16,16 @@ if [ ! -f "$PROPS_FILE" ]; then
     exit 1
 fi
 
-# Get current version
-CURRENT_VERSION=$(grep -oP '<VersionPrefix>\K[^<]+' "$PROPS_FILE")
+# Get current version (portable: BSD grep has no -P)
+CURRENT_VERSION=$(sed -n 's/.*<VersionPrefix>\([^<]*\)<\/VersionPrefix>.*/\1/p' "$PROPS_FILE" | head -n 1)
 
 if [ -z "$CURRENT_VERSION" ]; then
     echo "Error: Could not find VersionPrefix in Directory.Build.props"
+    exit 1
+fi
+
+if ! [[ $CURRENT_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "Error: Current version '$CURRENT_VERSION' is not in MAJOR.MINOR.PATCH format"
     exit 1
 fi
 
@@ -52,14 +57,18 @@ NEW_VERSION="$MAJOR.$MINOR.$PATCH"
 
 echo "Bumping version: $CURRENT_VERSION -> $NEW_VERSION ($BUMP_TYPE)"
 
-# Update Directory.Build.props
-sed -i "s|<VersionPrefix>$CURRENT_VERSION</VersionPrefix>|<VersionPrefix>$NEW_VERSION</VersionPrefix>|" "$PROPS_FILE"
+# Update Directory.Build.props (portable: BSD sed has no GNU-style "sed -i")
+TMP_FILE="$PROPS_FILE.tmp"
+sed "s|<VersionPrefix>$CURRENT_VERSION</VersionPrefix>|<VersionPrefix>$NEW_VERSION</VersionPrefix>|" "$PROPS_FILE" > "$TMP_FILE"
+mv "$TMP_FILE" "$PROPS_FILE"
 
 echo "Version bumped to $NEW_VERSION"
 
 # Output for GitHub Actions
-if [ -n "$GITHUB_OUTPUT" ]; then
-    echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-    echo "previous_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
-    echo "bump_type=$BUMP_TYPE" >> "$GITHUB_OUTPUT"
+if [ -n "${GITHUB_OUTPUT:-}" ]; then
+    {
+        echo "version=$NEW_VERSION"
+        echo "previous_version=$CURRENT_VERSION"
+        echo "bump_type=$BUMP_TYPE"
+    } >> "$GITHUB_OUTPUT"
 fi

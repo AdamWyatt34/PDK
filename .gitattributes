@@ -1,0 +1,16 @@
+# Normalize line endings: LF in the repository, native line endings on checkout.
+* text=auto
+
+# Shell scripts must always be LF (bash rejects CRLF); PowerShell and batch files are CRLF.
+*.sh text eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.nupkg binary

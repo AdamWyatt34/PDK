@@ -15,7 +15,7 @@ public class DockerIntegrationTests
 {
     #region Docker Availability Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task IsDockerAvailable_WithDockerRunning_ReturnsTrue()
@@ -37,7 +37,7 @@ public class DockerIntegrationTests
         }
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task IsDockerAvailable_CanConnectToDockerSocket()
@@ -66,7 +66,7 @@ public class DockerIntegrationTests
 
     #region Image Pulling Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task PullImage_StandardImage_PullsSuccessfully()
@@ -110,7 +110,7 @@ public class DockerIntegrationTests
         }
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task PullImage_AlreadyExists_SkipsPull()
@@ -138,7 +138,7 @@ public class DockerIntegrationTests
         }
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task PullImage_InvalidImage_ThrowsException()
@@ -165,7 +165,7 @@ public class DockerIntegrationTests
 
     #region Container Lifecycle Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task CreateContainer_AlpineImage_CreatesSuccessfully()
@@ -195,7 +195,7 @@ public class DockerIntegrationTests
         }
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task CreateContainer_WithAllOptions_AppliesSettings()
@@ -244,7 +244,7 @@ public class DockerIntegrationTests
         }
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task RemoveContainer_AfterCreation_RemovesCleanly()
@@ -278,7 +278,7 @@ public class DockerIntegrationTests
 
     #region Command Execution Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task ExecuteCommand_SimpleEcho_ReturnsOutput()
@@ -311,7 +311,7 @@ public class DockerIntegrationTests
         }
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task ExecuteCommand_ExitCodeZero_SuccessIsTrue()
@@ -341,7 +341,7 @@ public class DockerIntegrationTests
         }
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task ExecuteCommand_FailingCommand_ReturnsNonZeroExitCode()
@@ -371,7 +371,7 @@ public class DockerIntegrationTests
         }
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task ExecuteCommand_NonExistentCommand_ReturnsError()
@@ -402,7 +402,7 @@ public class DockerIntegrationTests
         }
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task ExecuteCommand_WithEnvironmentVars_VariablesAvailable()
@@ -439,7 +439,7 @@ public class DockerIntegrationTests
         }
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task ExecuteCommand_WithWorkingDir_UsesCorrectDirectory()
@@ -470,7 +470,7 @@ public class DockerIntegrationTests
         }
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task ExecuteCommand_CapturesStdout_AndStderr_Separately()
@@ -501,7 +501,7 @@ public class DockerIntegrationTests
         }
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task ExecuteCommand_MultipleCommands_AllSucceed()
@@ -549,7 +549,7 @@ public class DockerIntegrationTests
 
     #region Volume Mounting Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task VolumeMount_CreateFileInContainer_AppearsOnHost()
@@ -594,7 +594,7 @@ public class DockerIntegrationTests
         }
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task VolumeMount_ModifyFileInContainer_ChangesOnHost()
@@ -640,7 +640,7 @@ public class DockerIntegrationTests
         }
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task VolumeMount_HostFileExists_VisibleInContainer()
@@ -687,7 +687,7 @@ public class DockerIntegrationTests
 
     #region Cleanup and Disposal Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task Dispose_RemovesAllContainers()
@@ -738,7 +738,7 @@ public class DockerIntegrationTests
         }
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task Exception_DuringExecution_StillCleansUp()
@@ -792,7 +792,7 @@ public class DockerIntegrationTests
         }
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task MultipleContainers_AllRemovedOnDispose()
@@ -857,7 +857,7 @@ public class DockerIntegrationTests
 
     #region End-to-End Workflow Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task CompleteWorkflow_CreateExecuteCleanup_Success()

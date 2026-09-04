@@ -7,6 +7,15 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: 1
+  # Minimum line coverage (unit + integration tests, measured on ubuntu). Documented in CONTRIBUTING.md.
+  MIN_LINE_COVERAGE: 70
+
 jobs:
   build:
     name: Build and Test (${{ matrix.os }})
@@ -15,7 +24,7 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
       fail-fast: false
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
@@ -32,7 +41,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.nuget/packages
-          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', 'Directory.Packages.props') }}
           restore-keys: |
             ${{ runner.os }}-nuget-
 
@@ -42,8 +51,10 @@ jobs:
       - name: Build
         run: dotnet build --no-restore --configuration Release
 
-      - name: Pre-pull Docker images (Linux/Windows)
-        if: matrix.os != 'macos-latest'
+      # Only the Linux runner has a Docker daemon that runs Linux containers. On Windows and macOS the
+      # Docker-dependent integration tests skip themselves (tests/PDK.Tests.Integration/DockerAvailability.cs).
+      - name: Pre-pull Docker images (Linux)
+        if: matrix.os == 'ubuntu-latest'
         run: |
           docker pull mcr.microsoft.com/dotnet/sdk:8.0
           docker pull alpine:latest
@@ -54,17 +65,20 @@ jobs:
       - name: Run unit tests with coverage
         run: dotnet test tests/PDK.Tests.Unit --no-build --configuration Release --collect:"XPlat Code Coverage" --settings coverlet.runsettings --logger "trx;LogFileName=test-results.trx"
 
-      - name: Run integration tests (Linux only)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Run integration tests with coverage
+        env:
+          # The Linux runner is expected to have Docker: never skip the Docker tests there, fail instead.
+          PDK_DOCKER_TESTS: ${{ matrix.os == 'ubuntu-latest' && 'require' || 'auto' }}
         run: dotnet test tests/PDK.Tests.Integration --no-build --configuration Release --collect:"XPlat Code Coverage" --settings coverlet.runsettings --logger "trx;LogFileName=integration-test-results.trx"
-        continue-on-error: true
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results-${{ matrix.os }}
-          path: '**/test-results.trx'
+          path: |
+            **/test-results.trx
+            **/integration-test-results.trx
           retention-days: 7
 
       # Coverage steps - only on Ubuntu to avoid duplicates
@@ -72,7 +86,22 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           dotnet tool install -g dotnet-reportgenerator-globaltool
-          reportgenerator -reports:**/coverage.cobertura.xml -targetdir:coveragereport -reporttypes:Html
+          reportgenerator -reports:"**/coverage.cobertura.xml" -targetdir:coveragereport -reporttypes:"Html;TextSummary;MarkdownSummaryGithub"
+          cat coveragereport/SummaryGithub.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce minimum line coverage
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          LINE_COVERAGE=$(sed -n 's/^ *Line coverage: *\([0-9.]*\)%.*/\1/p' coveragereport/Summary.txt | head -n 1)
+          if [ -z "$LINE_COVERAGE" ]; then
+            echo "::error::Could not read the line coverage from coveragereport/Summary.txt"
+            exit 1
+          fi
+          echo "Line coverage: ${LINE_COVERAGE}% (minimum: ${MIN_LINE_COVERAGE}%)"
+          if [ "$(awk -v cov="$LINE_COVERAGE" -v min="$MIN_LINE_COVERAGE" 'BEGIN { print (cov + 0 < min + 0) ? "below" : "ok" }')" = "below" ]; then
+            echo "::error::Line coverage ${LINE_COVERAGE}% is below the required ${MIN_LINE_COVERAGE}%"
+            exit 1
+          fi
 
       - name: Upload coverage report
         if: matrix.os == 'ubuntu-latest'
@@ -97,15 +126,15 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: dotnet pack src/PDK.CLI/PDK.CLI.csproj --no-build --configuration Release --output ./artifacts
 
-      - name: List package contents
+      - name: Verify package
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
-          if [ -f ./artifacts/*.nupkg ]; then
+          if ls ./artifacts/*.nupkg > /dev/null 2>&1; then
             echo "Package created successfully"
             ls -lh ./artifacts/
           else
-            echo "Error: Package not found"
+            echo "::error::No .nupkg found in ./artifacts"
             exit 1
           fi
 
