@@ -6,6 +6,8 @@ using Microsoft.Extensions.Logging;
 /// <summary>
 /// Detects potential secrets based on variable name patterns.
 /// Used to warn users when sensitive values might be stored insecurely.
+/// Keywords are matched as whole words or unambiguous suffixes (see <see cref="SecretNameHeuristics"/>),
+/// so names such as <c>AUTHOR</c>, <c>MONKEY</c> or <c>CERTAIN</c> are not flagged.
 /// </summary>
 public partial class SecretDetector : ISecretDetector
 {
@@ -17,6 +19,7 @@ public partial class SecretDetector : ISecretDetector
         "password",
         "passwd",
         "pwd",
+        "passphrase",
         "secret",
         "token",
         "key",
@@ -26,9 +29,8 @@ public partial class SecretDetector : ISecretDetector
         "auth",
         "credential",
         "credentials",
-        "private",
-        "privatekey",
         "private_key",
+        "privatekey",
         "access_token",
         "accesstoken",
         "refresh_token",
@@ -42,20 +44,21 @@ public partial class SecretDetector : ISecretDetector
     };
 
     /// <summary>
-    /// Regex pattern to match secret keywords in variable names (case-insensitive).
+    /// Minimum value length for a warning; shorter values are unlikely to be secrets.
     /// </summary>
-    [GeneratedRegex(@"(password|passwd|pwd|secret|token|key|api[_-]?key|auth|credential|private[_-]?key|access[_-]?token|refresh[_-]?token|bearer|cert|signing|encryption|decrypt)", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
-    private static partial Regex SecretKeywordPattern();
+    public const int MinValueLength = 4;
+
+    /// <summary>
+    /// Matches values that are unresolved variable references or placeholders rather than secrets
+    /// (<c>${VAR}</c>, <c>$(VAR)</c>, <c>{{ var }}</c>, <c>&lt;placeholder&gt;</c>).
+    /// </summary>
+    [GeneratedRegex(@"^\s*(\$\{[^}]*\}|\$\([^)]*\)|\{\{.*\}\}|<[^>]*>)\s*$", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 500)]
+    private static partial Regex PlaceholderPattern();
 
     /// <inheritdoc/>
     public bool IsPotentialSecret(string variableName)
     {
-        if (string.IsNullOrWhiteSpace(variableName))
-        {
-            return false;
-        }
-
-        return SecretKeywordPattern().IsMatch(variableName);
+        return SecretNameHeuristics.IsPotentialSecret(variableName);
     }
 
     /// <inheritdoc/>
@@ -66,8 +69,7 @@ public partial class SecretDetector : ISecretDetector
             return;
         }
 
-        // Don't warn for empty or short values that are unlikely to be secrets
-        if (string.IsNullOrEmpty(value) || value.Length < 4)
+        if (!LooksLikeSecretValue(value))
         {
             return;
         }
@@ -82,5 +84,39 @@ public partial class SecretDetector : ISecretDetector
     public IEnumerable<string> GetSecretKeywords()
     {
         return SecretKeywords.ToArray();
+    }
+
+    /// <summary>
+    /// Filters out values that cannot reasonably be secrets: empty or very short values, booleans and
+    /// unresolved placeholders such as <c>${TOKEN}</c>.
+    /// </summary>
+    private static bool LooksLikeSecretValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length < MinValueLength)
+        {
+            return false;
+        }
+
+        var trimmed = value.Trim();
+        if (string.Equals(trimmed, "true", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(trimmed, "false", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(trimmed, "null", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        try
+        {
+            if (PlaceholderPattern().IsMatch(trimmed))
+            {
+                return false;
+            }
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            // Treat as a potential secret when the check cannot complete.
+        }
+
+        return true;
     }
 }

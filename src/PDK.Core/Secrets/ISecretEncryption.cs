@@ -1,7 +1,7 @@
 namespace PDK.Core.Secrets;
 
 /// <summary>
-/// Provides platform-specific encryption for secrets.
+/// Provides encryption for secrets at rest.
 /// </summary>
 public interface ISecretEncryption
 {
@@ -14,7 +14,8 @@ public interface ISecretEncryption
     byte[] Encrypt(string plaintext);
 
     /// <summary>
-    /// Decrypts ciphertext bytes to plaintext.
+    /// Decrypts ciphertext bytes to plaintext. Implementations may accept ciphertext produced by
+    /// earlier (legacy) formats in addition to the current format.
     /// </summary>
     /// <param name="ciphertext">The encrypted ciphertext bytes.</param>
     /// <returns>The decrypted plaintext.</returns>
@@ -24,6 +25,14 @@ public interface ISecretEncryption
     /// <summary>
     /// Gets the algorithm name used for encryption.
     /// </summary>
-    /// <returns>The algorithm name (e.g., "DPAPI", "AES-256-CBC").</returns>
+    /// <returns>The algorithm name (e.g., "AES-256-GCM").</returns>
     string GetAlgorithmName();
+
+    /// <summary>
+    /// Determines whether <paramref name="ciphertext"/> was produced by a legacy format that should be
+    /// re-encrypted with the current format once it has been decrypted successfully.
+    /// </summary>
+    /// <param name="ciphertext">The encrypted ciphertext bytes.</param>
+    /// <returns>True when the payload is not in the current format.</returns>
+    bool IsLegacyFormat(byte[] ciphertext) => false;
 }

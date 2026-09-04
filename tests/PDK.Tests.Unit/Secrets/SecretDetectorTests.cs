@@ -128,6 +128,30 @@ public class SecretDetectorTests
     [InlineData("COUNT")]
     [InlineData("SIZE")]
     [InlineData("TIMEOUT")]
+    // Whole-word matching: keywords embedded in unrelated words must not be flagged
+    [InlineData("AUTHOR")]
+    [InlineData("AUTHORITY")]
+    [InlineData("MONKEY")]
+    [InlineData("DONKEY")]
+    [InlineData("TURKEY_REGION")]
+    [InlineData("HOCKEY_TEAM")]
+    [InlineData("CERTAIN")]
+    [InlineData("CONCERT_DATE")]
+    [InlineData("KEYBOARD_LAYOUT")]
+    [InlineData("KEYWORD")]
+    [InlineData("TOKENIZER_MODEL")]
+    [InlineData("SECRETARY")]
+    // Metadata about a secret rather than the secret itself
+    [InlineData("PUBLIC_KEY")]
+    [InlineData("TOKEN_URL")]
+    [InlineData("OAUTH_CALLBACK_URL")]
+    [InlineData("PASSWORD_LENGTH")]
+    [InlineData("PASSWORD_FILE")]
+    [InlineData("API_KEY_HEADER")]
+    [InlineData("PRIVATE_KEY_PATH")]
+    [InlineData("SECRET_NAME")]
+    [InlineData("TOKEN_EXPIRY")]
+    [InlineData("KEY_VAULT_NAME")]
     public void IsPotentialSecret_NonSecretNames_ReturnsFalse(string name)
     {
         _detector.IsPotentialSecret(name).Should().BeFalse($"'{name}' should NOT be detected as potential secret");
@@ -281,5 +305,86 @@ public class SecretDetectorTests
         {
             _detector.IsPotentialSecret(name).Should().BeTrue($"'{name}' should be detected");
         }
+    }
+    [Theory]
+    [InlineData("apiKey")]
+    [InlineData("dbPassword")]
+    [InlineData("githubToken")]
+    [InlineData("AwsSecretAccessKey")]
+    [InlineData("HTTPAuth")]
+    public void IsPotentialSecret_CamelCaseNames_ReturnsTrue(string name)
+    {
+        _detector.IsPotentialSecret(name).Should().BeTrue($"'{name}' should be detected as potential secret");
+    }
+
+    [Theory]
+    [InlineData("MYPASSWORD")]
+    [InlineData("GITHUBTOKEN")]
+    [InlineData("AWSSECRET")]
+    [InlineData("dbpasswd")]
+    [InlineData("SSHPRIVATEKEY")]
+    public void IsPotentialSecret_GluedSuffixes_ReturnsTrue(string name)
+    {
+        _detector.IsPotentialSecret(name).Should().BeTrue($"'{name}' should be detected as potential secret");
+    }
+
+    [Theory]
+    [InlineData("SECRET2")]
+    [InlineData("OAUTH2_TOKEN")]
+    [InlineData("X509_CERT")]
+    [InlineData("DB_PASSWORD_HASH")]
+    [InlineData("SSH_PRIVATE_KEY")]
+    [InlineData("service.account.token")]
+    [InlineData("client-secret")]
+    public void IsPotentialSecret_SeparatorsAndDigits_ReturnsTrue(string name)
+    {
+        _detector.IsPotentialSecret(name).Should().BeTrue($"'{name}' should be detected as potential secret");
+    }
+
+    [Theory]
+    [InlineData("${DB_PASSWORD}")]
+    [InlineData("$(SecretFromPipeline)")]
+    [InlineData("{{ secrets.token }}")]
+    [InlineData("<your-token-here>")]
+    [InlineData("true")]
+    [InlineData("FALSE")]
+    public void WarnIfPotentialSecret_PlaceholderOrBooleanValue_DoesNotLog(string value)
+    {
+        // Arrange
+        var logger = new Mock<ILogger>();
+        logger.Setup(l => l.IsEnabled(LogLevel.Warning)).Returns(true);
+
+        // Act
+        _detector.WarnIfPotentialSecret("API_KEY", value, logger.Object);
+
+        // Assert
+        logger.Verify(l => l.Log(
+            It.IsAny<LogLevel>(),
+            It.IsAny<EventId>(),
+            It.IsAny<It.IsAnyType>(),
+            It.IsAny<Exception?>(),
+            It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public void WarnIfPotentialSecret_FalsePositiveName_DoesNotLog()
+    {
+        // Arrange
+        var logger = new Mock<ILogger>();
+        logger.Setup(l => l.IsEnabled(LogLevel.Warning)).Returns(true);
+
+        // Act
+        _detector.WarnIfPotentialSecret("AUTHOR", "Jane Doe", logger.Object);
+        _detector.WarnIfPotentialSecret("MONKEY", "banana-12345", logger.Object);
+
+        // Assert
+        logger.Verify(l => l.Log(
+            It.IsAny<LogLevel>(),
+            It.IsAny<EventId>(),
+            It.IsAny<It.IsAnyType>(),
+            It.IsAny<Exception?>(),
+            It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
+            Times.Never);
     }
 }

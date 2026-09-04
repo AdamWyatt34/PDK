@@ -329,4 +329,217 @@ public class SecretMaskerTests
         // Assert
         result.Should().Be("Values: ***, ***");
     }
+    [Fact]
+    public void RegisterSecret_MultiLineSecret_MasksEachLinePrintedSeparately()
+    {
+        // Arrange - a PEM-style key stored as one secret
+        const string pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Z3VS5JJcds3xfn\nQ8EWpvXkpuzhtEzGJRZfObsuDJSp7pR\n-----END RSA PRIVATE KEY-----";
+        _masker.RegisterSecret(pem);
+
+        // Act - a tool prints the key line by line (e.g. cat key.pem in a container)
+        var output = "line1: MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn\nline2: Q8EWpvXkpuzhtEzGJRZfObsuDJSp7pR\r\n-----END RSA PRIVATE KEY-----\n";
+        var result = _masker.MaskSecrets(output);
+
+        // Assert
+        result.Should().NotContain("MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn");
+        result.Should().NotContain("Q8EWpvXkpuzhtEzGJRZfObsuDJSp7pR");
+        result.Should().NotContain("END RSA PRIVATE KEY");
+        result.Should().Be("line1: ***\nline2: ***\r\n***\n");
+    }
+
+    [Fact]
+    public void RegisterSecret_MultiLineSecret_MasksWholeValueToo()
+    {
+        const string secret = "first-line-value\nsecond-line-value";
+        _masker.RegisterSecret(secret);
+
+        _masker.MaskSecrets($"[{secret}]").Should().Be("[***]");
+    }
+
+    [Fact]
+    public void RegisterSecret_MultiLineSecret_IgnoresTrivialLines()
+    {
+        // Arrange - lines shorter than 4 characters (after trim) are not registered on their own
+        _masker.RegisterSecret("abcdef\n  ab \nxy\nlongline");
+
+        // Act
+        var result = _masker.MaskSecrets("ab xy abcdef longline");
+
+        // Assert
+        result.Should().Be("ab xy *** ***");
+    }
+
+    [Fact]
+    public void RegisterSecret_ValueWithTrailingNewline_MasksTrimmedValue()
+    {
+        _masker.RegisterSecret("token-with-newline\n");
+
+        _masker.MaskSecrets("value=token-with-newline;").Should().Be("value=***;");
+    }
+
+    [Fact]
+    public void MaskSecrets_UrlEncodedVariant_IsMasked()
+    {
+        // Arrange
+        const string secret = "p@ss w/rd+1&x";
+        _masker.RegisterSecret(secret);
+
+        // Act & Assert - RFC 3986 escaping and form encoding
+        _masker.MaskSecrets("q=" + Uri.EscapeDataString(secret)).Should().Be("q=***");
+        _masker.MaskSecrets("q=" + System.Net.WebUtility.UrlEncode(secret)).Should().Be("q=***");
+    }
+
+    [Fact]
+    public void MaskSecrets_Base64Variants_AreMasked()
+    {
+        // Arrange - '>' / '?' as the third byte of a base64 group yield '+' / '/' in the encoding
+        const string secret = "ab>ab?cd>ef?";
+        _masker.RegisterSecret(secret);
+        var standard = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(secret));
+        var urlSafe = standard.TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        standard.Should().Contain("+").And.Contain("/");
+
+        // Act & Assert
+        _masker.MaskSecrets("Authorization: Basic " + standard).Should().Be("Authorization: Basic ***");
+        _masker.MaskSecrets("token=" + urlSafe).Should().Be("token=***");
+        _masker.MaskSecrets("token=" + standard.TrimEnd('=')).Should().Be("token=***");
+    }
+
+    [Fact]
+    public void MaskSecrets_Base64Variant_NotRegisteredForShortSecrets()
+    {
+        // Arrange - 7 characters: too short for a distinctive base64 form
+        const string secret = "abcdefg";
+        _masker.RegisterSecret(secret);
+        var base64 = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(secret));
+
+        // Act & Assert
+        _masker.MaskSecrets("x=" + base64).Should().Be("x=" + base64);
+        _masker.MaskSecrets("x=" + secret).Should().Be("x=***");
+    }
+
+    [Fact]
+    public void MaskSecrets_JsonEscapedVariants_AreMasked()
+    {
+        // Arrange - quotes/backslashes (minimal escaping) and HTML-sensitive characters (STJ default escaping)
+        const string secret = "pa\"ss\\wo<rd>+1";
+        _masker.RegisterSecret(secret);
+        var relaxed = System.Text.Json.JsonEncodedText.Encode(secret, System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping).ToString();
+        var strict = System.Text.Json.JsonEncodedText.Encode(secret).ToString();
+        relaxed.Should().NotBe(secret);
+        strict.Should().NotBe(relaxed);
+
+        // Act & Assert
+        _masker.MaskSecrets("{\"p\":\"" + relaxed + "\"}").Should().Be("{\"p\":\"***\"}");
+        _masker.MaskSecrets("{\"p\":\"" + strict + "\"}").Should().Be("{\"p\":\"***\"}");
+    }
+
+    [Fact]
+    public void MaskSecrets_VeryLongOutput_WithManySecrets_CompletesQuickly()
+    {
+        // Arrange - 2 MB of output and 50 registered secrets
+        var secrets = Enumerable.Range(1, 50).Select(i => $"secret-value-{i:D3}-{Guid.NewGuid():N}").ToList();
+        foreach (var secret in secrets)
+        {
+            _masker.RegisterSecret(secret);
+        }
+
+        var builder = new System.Text.StringBuilder();
+        var index = 0;
+        while (builder.Length < 2 * 1024 * 1024)
+        {
+            builder.Append("log line ").Append(index).Append(" with ").Append(secrets[index % secrets.Count]).Append(" embedded\n");
+            index++;
+        }
+
+        var text = builder.ToString();
+
+        // Act
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var result = _masker.MaskSecretsEnhanced(text);
+        stopwatch.Stop();
+
+        // Assert
+        foreach (var secret in secrets)
+        {
+            result.Should().NotContain(secret);
+        }
+
+        stopwatch.ElapsedMilliseconds.Should().BeLessThan(10000);
+    }
+
+    [Fact]
+    public void MaskSecretsEnhanced_PathologicalInput_DoesNotHang()
+    {
+        // Arrange - long runs of keyword-like text without separators, quotes, and long tokens
+        var text = string.Concat(Enumerable.Repeat("passwordtokensecret", 50_000))
+                   + new string('a', 200_000)
+                   + string.Concat(Enumerable.Repeat("\"password", 20_000))
+                   + string.Concat(Enumerable.Repeat("auth=", 50_000));
+
+        // Act
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var act = () => _masker.MaskSecretsEnhanced(text);
+
+        // Assert - completes (timeouts are handled internally) in bounded time
+        act.Should().NotThrow();
+        stopwatch.ElapsedMilliseconds.Should().BeLessThan(30000);
+    }
+
+    [Fact]
+    public void RedactionDisabled_BypassesAllMasking()
+    {
+        // Arrange
+        _masker.RegisterSecret("registered-secret");
+        _masker.RedactionEnabled = false;
+        const string text = "registered-secret password=hunter2 Authorization: Bearer abcdefghijkl https://u:p@h/";
+        var data = new Dictionary<string, object?> { ["password"] = "hunter2" };
+
+        // Act & Assert
+        _masker.MaskSecrets(text).Should().BeSameAs(text);
+        _masker.MaskSecrets(text, new[] { "registered-secret" }).Should().BeSameAs(text);
+        _masker.MaskSecretsEnhanced(text).Should().BeSameAs(text);
+        _masker.MaskSecretsInLine(text).Should().BeSameAs(text);
+        _masker.MaskDictionary(data).Should().BeSameAs(data);
+
+        // Re-enabling masks again
+        _masker.RedactionEnabled = true;
+        _masker.MaskSecrets(text).Should().NotContain("registered-secret");
+    }
+
+    [Fact]
+    public void MaskSecretsInLine_MasksRegisteredSecretsAndPatterns()
+    {
+        _masker.RegisterSecret("line-secret-value");
+
+        var result = _masker.MaskSecretsInLine("echo line-secret-value --password=abc");
+
+        result.Should().Be("echo *** --password=***");
+    }
+
+    [Fact]
+    public void ClearSecrets_AlsoRemovesEncodedVariants()
+    {
+        // Arrange
+        const string secret = "super-secret-value";
+        _masker.RegisterSecret(secret);
+        var base64 = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(secret));
+        _masker.MaskSecrets(base64).Should().Be("***");
+
+        // Act
+        _masker.ClearSecrets();
+
+        // Assert
+        _masker.MaskSecrets(base64).Should().Be(base64);
+    }
+
+    [Fact]
+    public void RegisterSecret_SameSecretTwice_IsIdempotent()
+    {
+        _masker.RegisterSecret("dup-secret");
+        _masker.RegisterSecret("dup-secret");
+        _masker.RegisterSecret("DUP-SECRET");
+
+        _masker.MaskSecrets("a dup-secret b").Should().Be("a *** b");
+    }
 }
