@@ -45,7 +45,7 @@ public class AzureDevOpsParserIntegrationTests
 
         // Verify first step (UseDotNet task)
         var step0 = defaultJob.Steps[0];
-        step0.Type.Should().Be(StepType.Dotnet);
+        step0.Type.Should().Be(StepType.Setup);
         step0.Name.Should().Be("Install .NET SDK");
         step0.With.Should().ContainKey("_task");
         step0.With["_task"].Should().Be("UseDotNet");
@@ -56,10 +56,10 @@ public class AzureDevOpsParserIntegrationTests
         step1.Name.Should().Be("Restore dependencies");
         step1.Script.Should().Be("dotnet restore");
 
-        // Verify variable syntax conversion $(var) -> ${var}
+        // Verify variable syntax is kept raw: $(var) stays $(var) for run-time resolution
         var step2 = defaultJob.Steps[2];
-        step2.Script.Should().Contain("${buildConfiguration}");
-        step2.Script.Should().NotContain("$(buildConfiguration)");
+        step2.Script.Should().Contain("$(buildConfiguration)");
+        step2.Script.Should().NotContain("${buildConfiguration}");
     }
 
     [Fact]
@@ -181,7 +181,7 @@ public class AzureDevOpsParserIntegrationTests
 
         // Verify UseDotNet task
         var useDotNetStep = job.Steps[1];
-        useDotNetStep.Type.Should().Be(StepType.Dotnet);
+        useDotNetStep.Type.Should().Be(StepType.Setup);
         useDotNetStep.Name.Should().Contain(".NET");
         useDotNetStep.With.Should().ContainKey("version");
 
@@ -198,7 +198,7 @@ public class AzureDevOpsParserIntegrationTests
         buildStep.Type.Should().Be(StepType.Dotnet);
         buildStep.With["command"].Should().Be("build");
         buildStep.With.Should().ContainKey("arguments");
-        buildStep.With["arguments"].Should().Contain("${buildConfiguration}"); // Variable converted
+        buildStep.With["arguments"].Should().Contain("$(buildConfiguration)"); // Variable kept raw
 
         // Verify DotNetCoreCLI test task
         var testStep = job.Steps[4];
@@ -212,7 +212,7 @@ public class AzureDevOpsParserIntegrationTests
 
         // Verify bash script with environment variables
         var bashStep = job.Steps[6];
-        bashStep.Type.Should().Be(StepType.Bash);
+        bashStep.Type.Should().Be(StepType.Script);
         bashStep.Script.Should().Contain("echo");
         bashStep.Environment.Should().ContainKey("BUILD_CONFIG");
     }
@@ -255,14 +255,14 @@ public class AzureDevOpsParserIntegrationTests
         // Verify Bash@3 (inline)
         var bashInlineStep = job.Steps.FirstOrDefault(s => s.Name == "Run Bash script (inline)");
         bashInlineStep.Should().NotBeNull();
-        bashInlineStep!.Type.Should().Be(StepType.Bash);
+        bashInlineStep!.Type.Should().Be(StepType.Script);
         bashInlineStep.Script.Should().Contain("echo");
         bashInlineStep.Shell.Should().Be("bash");
 
         // Verify Bash@3 (file)
         var bashFileStep = job.Steps.FirstOrDefault(s => s.Name == "Run Bash script (file)");
         bashFileStep.Should().NotBeNull();
-        bashFileStep!.Type.Should().Be(StepType.Bash);
+        bashFileStep!.Type.Should().Be(StepType.Script);
         bashFileStep.With.Should().ContainKey("scriptFile");
 
         // Verify Docker@2
@@ -281,7 +281,7 @@ public class AzureDevOpsParserIntegrationTests
         // Verify bash shortcut
         var bashShortcut = job.Steps.FirstOrDefault(s => s.Name == "Bash shortcut");
         bashShortcut.Should().NotBeNull();
-        bashShortcut!.Type.Should().Be(StepType.Bash);
+        bashShortcut!.Type.Should().Be(StepType.Script);
         bashShortcut.Shell.Should().Be("bash");
 
         // Verify pwsh shortcut
@@ -323,7 +323,7 @@ public class AzureDevOpsParserIntegrationTests
 
         // Job uses self-hosted pool
         var selfHostedJob = pipeline.Jobs["SelfHostedPool_UseSelfHostedPool"];
-        selfHostedJob.RunsOn.Should().Be("$(customPool)");
+        selfHostedJob.RunsOn.Should().Be("self-hosted"); // pool.name means self-hosted agents
 
         // Job with no pool specified uses pipeline default
         var defaultJob = pipeline.Jobs["NoPoolSpecified_DefaultPoolJob"];
@@ -403,7 +403,7 @@ jobs:
     }
 
     [Fact]
-    public async Task ParsePipeline_WithVariableReferences_ConvertsVariableSyntax()
+    public async Task ParsePipeline_WithVariableReferences_KeepsVariableSyntaxRaw()
     {
         // Arrange
         var pipelinePath = Path.Combine(_fixturesPath, "dotnet-build-azure.yml");
@@ -418,15 +418,13 @@ jobs:
         var buildStep = job.Steps.FirstOrDefault(s => s.Name == "Build solution");
         buildStep.Should().NotBeNull();
 
-        // Verify variable syntax conversion: $(var) -> ${var}
-        buildStep!.With["arguments"].Should().Contain("${buildConfiguration}");
-        buildStep.With["arguments"].Should().NotContain("$(buildConfiguration)");
+        // Verify variable syntax is kept raw: $(var) stays $(var) for run-time resolution
+        buildStep!.With["arguments"].Should().Contain("$(buildConfiguration)");
+        buildStep.With["arguments"].Should().NotContain("${buildConfiguration}");
 
         // Verify in environment variables too
-        var bashStep = job.Steps.FirstOrDefault(s => s.Type == StepType.Bash);
-        if (bashStep?.Environment != null && bashStep.Environment.Any())
-        {
-            bashStep.Environment.Values.Should().NotContain(v => v.Contains("$("));
-        }
+        var bashStep = job.Steps.FirstOrDefault(s => s.Type == StepType.Script && s.Shell == "bash");
+        bashStep.Should().NotBeNull();
+        bashStep!.Environment["BUILD_CONFIG"].Should().Be("$(buildConfiguration)");
     }
 }

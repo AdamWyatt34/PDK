@@ -1,19 +1,38 @@
+using System.Text.RegularExpressions;
 using PDK.Core.Artifacts;
 using PDK.Core.Models;
+using PDK.Providers.Common;
 using PDK.Providers.GitHub.Models;
-using System.Text.RegularExpressions;
 
 namespace PDK.Providers.GitHub;
 
 /// <summary>
-/// Maps GitHub Actions to PDK step types.
+/// Maps GitHub Actions steps to PDK step types.
 /// Handles action reference parsing and shell detection for run commands.
 /// </summary>
 public static class ActionMapper
 {
     private static readonly Regex ActionReferenceRegex = new(
-        @"^(?<owner>[^/]+)/(?<repo>[^/@]+)(?:/(?<path>[^@]+))?@(?<version>.+)$",
+        @"^(?<owner>[^/@\s]+)/(?<repo>[^/@\s]+)(?:/(?<path>[^@]+))?@(?<version>\S+)$",
         RegexOptions.Compiled);
+
+    private static readonly HashSet<string> SetupActions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "actions/setup-dotnet",
+        "actions/setup-node",
+        "actions/setup-python",
+        "actions/setup-java",
+        "actions/setup-go",
+        "actions/cache",
+        "actions/cache/restore",
+        "actions/cache/save",
+        "codecov/codecov-action",
+        "docker/setup-buildx-action",
+        "docker/setup-qemu-action",
+        "docker/login-action",
+        "gradle/actions/setup-gradle",
+        "gradle/gradle-build-action"
+    };
 
     /// <summary>
     /// Maps a GitHub step to a PDK Step model.
@@ -21,32 +40,42 @@ public static class ActionMapper
     /// <param name="gitHubStep">The GitHub step to map.</param>
     /// <param name="stepIndex">The index of the step (used for auto-generating names).</param>
     /// <returns>A PDK Step object.</returns>
-    public static Step MapStep(GitHubStep gitHubStep, int stepIndex)
+    public static Step MapStep(GitHubStep gitHubStep, int stepIndex) => MapStep(gitHubStep, stepIndex, null);
+
+    /// <summary>
+    /// Maps a GitHub step to a PDK Step model, applying <c>defaults.run</c> to run steps.
+    /// </summary>
+    /// <param name="gitHubStep">The GitHub step to map.</param>
+    /// <param name="stepIndex">The index of the step (used for auto-generating names).</param>
+    /// <param name="runDefaults">The effective <c>defaults.run</c> (workflow merged with job), or null.</param>
+    /// <returns>A PDK Step object.</returns>
+    public static Step MapStep(GitHubStep gitHubStep, int stepIndex, GitHubRunDefaults? runDefaults)
     {
+        ArgumentNullException.ThrowIfNull(gitHubStep);
+
         var step = new Step
         {
-            Id = gitHubStep.Id,
+            Id = string.IsNullOrWhiteSpace(gitHubStep.Id) ? null : gitHubStep.Id,
             Name = GenerateStepName(gitHubStep, stepIndex),
-            Environment = gitHubStep.Env ?? new Dictionary<string, string>(),
-            ContinueOnError = gitHubStep.ContinueOnError ?? false,
-            WorkingDirectory = gitHubStep.WorkingDirectory
+            Environment = MergeEnvironmentVariables(null, null, gitHubStep.Env),
+            ContinueOnError = gitHubStep.ContinueOnErrorValue,
+            WorkingDirectory = gitHubStep.WorkingDirectory,
+            TimeoutMinutes = gitHubStep.TimeoutMinutesValue
         };
 
-        // Determine step type and configuration
         if (!string.IsNullOrWhiteSpace(gitHubStep.Uses))
         {
             MapActionStep(gitHubStep, step);
         }
         else if (!string.IsNullOrWhiteSpace(gitHubStep.Run))
         {
-            MapScriptStep(gitHubStep, step);
+            MapScriptStep(gitHubStep, step, runDefaults);
         }
         else
         {
             step.Type = StepType.Unknown;
         }
 
-        // Map conditional if present
         if (!string.IsNullOrWhiteSpace(gitHubStep.If))
         {
             step.Condition = new Condition
@@ -60,66 +89,133 @@ public static class ActionMapper
     }
 
     /// <summary>
+    /// Reduces a GitHub <c>shell:</c> value to its base shell name: the first token of a template such as
+    /// <c>bash --noprofile --norc -eo pipefail {0}</c> becomes <c>bash</c>; paths and <c>.exe</c> suffixes are dropped.
+    /// An unset shell defaults to <c>bash</c>.
+    /// </summary>
+    public static string NormalizeShell(string? shell)
+    {
+        if (string.IsNullOrWhiteSpace(shell))
+        {
+            return "bash";
+        }
+
+        var trimmed = shell.Trim();
+
+        // An explicit executable path may contain spaces ("C:/Program Files/Git/bin/bash.exe {0}"): cut at ".exe" first
+        var exeIndex = trimmed.IndexOf(".exe", StringComparison.OrdinalIgnoreCase);
+        string token;
+        if (exeIndex > 0 && (exeIndex + 4 == trimmed.Length || char.IsWhiteSpace(trimmed[exeIndex + 4])))
+        {
+            token = trimmed[..exeIndex];
+        }
+        else
+        {
+            var tokens = trimmed.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            token = tokens.Length > 0 ? tokens[0] : "bash";
+        }
+
+        if (token.Contains('/') || token.Contains('\\'))
+        {
+            token = Path.GetFileName(token.Replace('\\', '/'));
+        }
+
+        return token.Length == 0 ? "bash" : token.ToLowerInvariant();
+    }
+
+    /// <summary>
     /// Maps an action step (uses) to a PDK Step.
     /// </summary>
     private static void MapActionStep(GitHubStep gitHubStep, Step step)
     {
-        var actionRef = gitHubStep.Uses!;
-        var match = ActionReferenceRegex.Match(actionRef);
+        var actionRef = gitHubStep.Uses!.Trim();
+        step.ActionReference = actionRef;
+        step.With = gitHubStep.With is null
+            ? new Dictionary<string, string>()
+            : gitHubStep.With.ToDictionary(pair => pair.Key, pair => pair.Value ?? string.Empty);
 
+        // Store original action reference for reference
+        step.With["_action"] = actionRef;
+
+        var match = ActionReferenceRegex.Match(actionRef);
         if (!match.Success)
         {
-            // Invalid action reference format, treat as unknown
+            // Local actions (./path), docker://image or malformed references: skipped with a warning by the runners
             step.Type = StepType.Unknown;
-            step.Script = actionRef;
             return;
         }
 
         var owner = match.Groups["owner"].Value;
         var repo = match.Groups["repo"].Value;
-        var path = match.Groups["path"].Value;
+        var path = match.Groups["path"].Value.Trim('/');
         var version = match.Groups["version"].Value;
 
-        // Map well-known actions to step types
+        step.With["_version"] = version;
+
         var actionKey = string.IsNullOrEmpty(path)
             ? $"{owner}/{repo}"
             : $"{owner}/{repo}/{path}";
 
         step.Type = MapActionToStepType(actionKey);
-        step.With = gitHubStep.With ?? new Dictionary<string, string>();
 
-        // Store original action reference for reference
-        step.With["_action"] = actionRef;
-        step.With["_version"] = version;
-
-        // Parse artifact definitions for artifact steps
-        if (step.Type == StepType.UploadArtifact)
+        switch (step.Type)
         {
-            step.Artifact = ParseUploadArtifact(gitHubStep.With);
+            case StepType.UploadArtifact:
+                step.Artifact = ParseUploadArtifact(gitHubStep.With);
+                break;
+            case StepType.DownloadArtifact:
+                step.Artifact = ParseDownloadArtifact(gitHubStep.With);
+                break;
+            case StepType.Docker:
+                MapDockerBuildPushInputs(step);
+                break;
         }
-        else if (step.Type == StepType.DownloadArtifact)
+    }
+
+    /// <summary>
+    /// Maps docker/build-push-action inputs onto the keys the Docker executor understands.
+    /// </summary>
+    private static void MapDockerBuildPushInputs(Step step)
+    {
+        step.With["command"] = "build";
+
+        if (step.With.TryGetValue("file", out var file) && !string.IsNullOrWhiteSpace(file))
         {
-            step.Artifact = ParseDownloadArtifact(gitHubStep.With);
+            step.With["Dockerfile"] = file;
+        }
+
+        if (!step.With.TryGetValue("context", out var context) || string.IsNullOrWhiteSpace(context))
+        {
+            step.With["context"] = ".";
+        }
+
+        if (step.With.TryGetValue("build-args", out var buildArgs) && !string.IsNullOrWhiteSpace(buildArgs))
+        {
+            step.With["buildArgs"] = buildArgs;
         }
     }
 
     /// <summary>
     /// Maps a script step (run) to a PDK Step.
     /// </summary>
-    private static void MapScriptStep(GitHubStep gitHubStep, Step step)
+    private static void MapScriptStep(GitHubStep gitHubStep, Step step, GitHubRunDefaults? runDefaults)
     {
         step.Script = gitHubStep.Run;
-        step.Shell = gitHubStep.Shell ?? "bash"; // Default to bash
 
-        // Determine step type based on shell
-        step.Type = gitHubStep.Shell?.ToLowerInvariant() switch
+        var shellSource = !string.IsNullOrWhiteSpace(gitHubStep.Shell) ? gitHubStep.Shell : runDefaults?.Shell;
+        var shell = NormalizeShell(shellSource);
+
+        step.Shell = shell;
+        step.Type = shell switch
         {
             "pwsh" or "powershell" => StepType.PowerShell,
-            "bash" => StepType.Bash,
-            "sh" => StepType.Bash,
-            "python" => StepType.Python,
-            _ => StepType.Script // Generic script type
+            _ => StepType.Script
         };
+
+        if (string.IsNullOrWhiteSpace(step.WorkingDirectory) && !string.IsNullOrWhiteSpace(runDefaults?.WorkingDirectory))
+        {
+            step.WorkingDirectory = runDefaults.WorkingDirectory;
+        }
     }
 
     /// <summary>
@@ -129,18 +225,15 @@ public static class ActionMapper
     /// <returns>The corresponding StepType.</returns>
     private static StepType MapActionToStepType(string actionKey)
     {
-        return actionKey.ToLowerInvariant() switch
+        var key = actionKey.ToLowerInvariant();
+
+        return key switch
         {
             "actions/checkout" => StepType.Checkout,
-            "actions/setup-dotnet" => StepType.Dotnet,
-            "actions/setup-node" => StepType.Npm,
-            "actions/setup-python" => StepType.Python,
-            "actions/setup-java" => StepType.Maven,
             "actions/upload-artifact" => StepType.UploadArtifact,
             "actions/download-artifact" => StepType.DownloadArtifact,
-            "gradle/gradle-build-action" => StepType.Gradle,
             "docker/build-push-action" => StepType.Docker,
-            "docker/login-action" => StepType.Docker,
+            _ when SetupActions.Contains(key) || key.StartsWith("actions/setup-", StringComparison.Ordinal) => StepType.Setup,
             _ => StepType.Unknown
         };
     }
@@ -159,18 +252,19 @@ public static class ActionMapper
         // Generate name from action reference
         if (!string.IsNullOrWhiteSpace(gitHubStep.Uses))
         {
-            var match = ActionReferenceRegex.Match(gitHubStep.Uses);
-            if (match.Success)
+            var uses = gitHubStep.Uses.Trim();
+            var match = ActionReferenceRegex.Match(uses);
+            if (!match.Success)
             {
-                var repo = match.Groups["repo"].Value;
-                var path = match.Groups["path"].Value;
-
-                // Format: "Setup .NET" or "Checkout"
-                var actionName = string.IsNullOrEmpty(path) ? repo : path;
-                return FormatActionName(actionName);
+                return uses;
             }
 
-            return gitHubStep.Uses;
+            var owner = match.Groups["owner"].Value;
+            var repo = match.Groups["repo"].Value;
+            var path = match.Groups["path"].Value.Trim('/');
+            var actionKey = string.IsNullOrEmpty(path) ? $"{owner}/{repo}" : $"{owner}/{repo}/{path}";
+
+            return KnownActionDisplayName(actionKey) ?? actionKey;
         }
 
         // Generate name from run command
@@ -189,7 +283,7 @@ public static class ActionMapper
 
             if (firstLine.Length > maxCommandLength)
             {
-                firstLine = firstLine.Substring(0, maxCommandLength) + ellipsis;
+                firstLine = firstLine[..maxCommandLength] + ellipsis;
             }
 
             return $"{prefix}{firstLine}";
@@ -200,11 +294,48 @@ public static class ActionMapper
     }
 
     /// <summary>
-    /// Formats an action name into a human-readable format.
-    /// Example: "setup-dotnet" -> "Setup .NET"
+    /// Returns the display name of a well-known action, or null for actions PDK does not recognise.
     /// </summary>
-    private static string FormatActionName(string actionName)
+    private static string? KnownActionDisplayName(string actionKey)
     {
+        var key = actionKey.ToLowerInvariant();
+
+        return key switch
+        {
+            "actions/checkout" => "Checkout",
+            "actions/setup-dotnet" => "Setup .NET",
+            "actions/setup-node" => "Setup Node.js",
+            "actions/setup-python" => "Setup Python",
+            "actions/setup-java" => "Setup Java",
+            "actions/setup-go" => "Setup Go",
+            "actions/upload-artifact" => "Upload Artifact",
+            "actions/download-artifact" => "Download Artifact",
+            "actions/cache" => "Cache",
+            "actions/cache/restore" => "Cache Restore",
+            "actions/cache/save" => "Cache Save",
+            "codecov/codecov-action" => "Codecov",
+            "docker/setup-buildx-action" => "Set up Docker Buildx",
+            "docker/setup-qemu-action" => "Set up QEMU",
+            "docker/login-action" => "Docker Login",
+            "docker/build-push-action" => "Docker Build and Push",
+            "gradle/actions/setup-gradle" => "Setup Gradle",
+            "gradle/gradle-build-action" => "Gradle Build",
+            _ when key.StartsWith("actions/setup-", StringComparison.Ordinal) => FormatActionName(key["actions/".Length..]),
+            _ => null
+        };
+    }
+
+    /// <summary>
+    /// Formats an action name into a human-readable format.
+    /// Example: "setup-dotnet" -> "Setup .NET", "cache/restore" -> "Cache Restore". Empty segments are ignored.
+    /// </summary>
+    public static string FormatActionName(string actionName)
+    {
+        if (string.IsNullOrWhiteSpace(actionName))
+        {
+            return "Action";
+        }
+
         // Handle special cases
         var formatted = actionName switch
         {
@@ -213,21 +344,24 @@ public static class ActionMapper
             "setup-node" => "Setup Node.js",
             "setup-python" => "Setup Python",
             "setup-java" => "Setup Java",
+            "setup-go" => "Setup Go",
             "upload-artifact" => "Upload Artifact",
             "download-artifact" => "Download Artifact",
-            _ => actionName
+            _ => null
         };
 
-        // If no special case, apply general formatting
-        if (formatted == actionName)
+        if (formatted is not null)
         {
-            // Replace hyphens with spaces and title case
-            formatted = string.Join(" ",
-                actionName.Split('-')
-                    .Select(word => char.ToUpper(word[0]) + word.Substring(1)));
+            return formatted;
         }
 
-        return formatted;
+        // Replace hyphens/slashes/underscores with spaces and title case, skipping empty segments ("foo--bar")
+        var words = actionName
+            .Split(new[] { '-', '/', '_' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(word => char.ToUpperInvariant(word[0]) + word[1..]);
+
+        var joined = string.Join(' ', words);
+        return joined.Length == 0 ? actionName : joined;
     }
 
     /// <summary>
@@ -236,27 +370,7 @@ public static class ActionMapper
     /// </summary>
     /// <param name="needs">The needs field value.</param>
     /// <returns>A list of job IDs this job depends on.</returns>
-    public static List<string> ParseJobDependencies(object? needs)
-    {
-        if (needs == null)
-        {
-            return new List<string>();
-        }
-
-        if (needs is string singleDep)
-        {
-            return new List<string> { singleDep };
-        }
-
-        if (needs is IEnumerable<object> deps)
-        {
-            return deps.Select(d => d.ToString() ?? string.Empty)
-                .Where(s => !string.IsNullOrWhiteSpace(s))
-                .ToList();
-        }
-
-        return new List<string>();
-    }
+    public static List<string> ParseJobDependencies(object? needs) => YamlValues.ToStringList(needs);
 
     /// <summary>
     /// Merges environment variables from workflow, job, and step levels.
@@ -274,27 +388,16 @@ public static class ActionMapper
         var merged = new Dictionary<string, string>();
 
         // Apply in order: workflow -> job -> step
-        if (workflowEnv != null)
+        foreach (var level in new[] { workflowEnv, jobEnv, stepEnv })
         {
-            foreach (var kvp in workflowEnv)
+            if (level is null)
             {
-                merged[kvp.Key] = kvp.Value;
+                continue;
             }
-        }
 
-        if (jobEnv != null)
-        {
-            foreach (var kvp in jobEnv)
+            foreach (var kvp in level)
             {
-                merged[kvp.Key] = kvp.Value;
-            }
-        }
-
-        if (stepEnv != null)
-        {
-            foreach (var kvp in stepEnv)
-            {
-                merged[kvp.Key] = kvp.Value;
+                merged[kvp.Key] = kvp.Value ?? string.Empty;
             }
         }
 
@@ -357,7 +460,9 @@ public static class ActionMapper
     private static string[] ParsePathPatterns(string pathValue)
     {
         if (string.IsNullOrWhiteSpace(pathValue))
+        {
             return Array.Empty<string>();
+        }
 
         // Handle multi-line literal blocks or newline-separated paths
         return pathValue

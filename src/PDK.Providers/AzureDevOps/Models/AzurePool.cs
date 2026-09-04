@@ -1,34 +1,57 @@
+using System.Text.RegularExpressions;
 using YamlDotNet.Serialization;
 
 namespace PDK.Providers.AzureDevOps.Models;
 
 /// <summary>
-/// Represents agent pool configuration for Azure Pipelines.
-/// Supports both Microsoft-hosted agents (via vmImage) and self-hosted agents (via name and demands).
+/// Represents an agent pool configuration in an Azure Pipeline.
+/// Can be written as a mapping (<c>vmImage:</c> / <c>name:</c> / <c>demands:</c>) or as a plain string
+/// (<c>pool: Default</c>, <c>pool: 'ubuntu-latest'</c>); see <see cref="AzurePoolNodeDeserializer"/>.
 /// </summary>
 public sealed class AzurePool
 {
+    private static readonly Regex HostedImageFamily = new(
+        "^(ubuntu|windows|macos)-",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     /// <summary>
-    /// Gets or sets the virtual machine image for Microsoft-hosted agents.
-    /// Common values include "ubuntu-latest", "windows-latest", "macos-latest", "ubuntu-22.04", etc.
-    /// Mutually exclusive with self-hosted pool configuration (Name/Demands).
+    /// Gets or sets the Microsoft-hosted VM image (e.g. <c>ubuntu-latest</c>, <c>windows-2022</c>).
     /// </summary>
     [YamlMember(Alias = "vmImage")]
     public string? VmImage { get; set; }
 
     /// <summary>
-    /// Gets or sets the name of the agent pool for self-hosted agents.
-    /// Used to specify a custom agent pool configured in Azure DevOps.
-    /// Mutually exclusive with vmImage.
+    /// Gets or sets the pool name for self-hosted agents.
     /// </summary>
     [YamlMember(Alias = "name")]
     public string? Name { get; set; }
 
     /// <summary>
-    /// Gets or sets the list of agent capabilities required for the job.
-    /// Used with self-hosted agents to match agents with specific capabilities.
-    /// Example: ["Agent.OS -equals Linux", "java", "maven"].
+    /// Gets or sets the agent demands (capabilities) required by the job.
     /// </summary>
     [YamlMember(Alias = "demands")]
     public List<string>? Demands { get; set; }
+
+    /// <summary>
+    /// Gets whether the pool refers to self-hosted agents (a pool name without a VM image).
+    /// </summary>
+    [YamlIgnore]
+    public bool IsSelfHosted => string.IsNullOrWhiteSpace(VmImage) && !string.IsNullOrWhiteSpace(Name);
+
+    /// <summary>
+    /// Builds a pool from the string form. Values that look like a hosted image (<c>ubuntu-*</c>, <c>windows-*</c>,
+    /// <c>macos-*</c>) become <see cref="VmImage"/>; anything else is a pool <see cref="Name"/>.
+    /// </summary>
+    public static AzurePool? FromString(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        return HostedImageFamily.IsMatch(trimmed)
+            ? new AzurePool { VmImage = trimmed }
+            : new AzurePool { Name = trimmed };
+    }
 }
