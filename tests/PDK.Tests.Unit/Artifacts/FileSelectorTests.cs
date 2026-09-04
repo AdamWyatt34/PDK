@@ -333,6 +333,193 @@ public class FileSelectorTests : IDisposable
 
     #endregion
 
+    #region Directory And File Path Patterns
+
+    [Theory]
+    [InlineData("dist")]
+    [InlineData("dist/")]
+    [InlineData("./dist")]
+    [InlineData("./dist/")]
+    public void SelectFiles_BareDirectoryPattern_MatchesWholeTree(string pattern)
+    {
+        // Arrange
+        CreateTestFile("dist/index.html");
+        CreateTestFile("dist/js/app.js");
+        CreateTestFile("dist/js/vendor/lib.js");
+        CreateTestFile("other/file.txt");
+
+        // Act
+        var result = _selector.SelectFiles(_testDir, new[] { pattern }).ToList();
+
+        // Assert
+        result.Should().BeEquivalentTo(new[] { "dist/index.html", "dist/js/app.js", "dist/js/vendor/lib.js" });
+    }
+
+    [Fact]
+    public void SelectFiles_PlainFilePath_MatchesThatFile()
+    {
+        // Arrange
+        CreateTestFile("docs/readme.md");
+        CreateTestFile("docs/other.md");
+
+        // Act
+        var result = _selector.SelectFiles(_testDir, new[] { "docs/readme.md" }).ToList();
+
+        // Assert
+        result.Should().ContainSingle().Which.Should().Be("docs/readme.md");
+    }
+
+    [Fact]
+    public void SelectFiles_DotPattern_MatchesEverything()
+    {
+        // Arrange
+        CreateTestFile("a.txt");
+        CreateTestFile("sub/b.txt");
+
+        // Act
+        var result = _selector.SelectFiles(_testDir, new[] { "." }).ToList();
+
+        // Assert
+        result.Should().BeEquivalentTo(new[] { "a.txt", "sub/b.txt" });
+    }
+
+    [Fact]
+    public void SelectFiles_BareDirectoryExclusion_ExcludesWholeTree()
+    {
+        // Arrange
+        CreateTestFile("dist/app.js");
+        CreateTestFile("dist/vendor/lib.js");
+        CreateTestFile("dist/vendor/deep/x.js");
+
+        // Act
+        var result = _selector.SelectFiles(_testDir, new[] { "dist", "!dist/vendor" }).ToList();
+
+        // Assert
+        result.Should().ContainSingle().Which.Should().Be("dist/app.js");
+    }
+
+    [Fact]
+    public void SelectFiles_ExclusionsAppliedAfterInclusions_RegardlessOfOrder()
+    {
+        // Arrange
+        CreateTestFile("src/a.cs");
+        CreateTestFile("src/gen/b.cs");
+
+        // Act - exclusion listed first
+        var result = _selector.SelectFiles(_testDir, new[] { "!src/gen/**", "src/**/*.cs" }).ToList();
+
+        // Assert
+        result.Should().ContainSingle().Which.Should().Be("src/a.cs");
+    }
+
+    [Fact]
+    public void SelectFiles_AbsolutePatternInsideBase_IsRelativized()
+    {
+        // Arrange
+        CreateTestFile("dist/app.js");
+        var absolute = Path.Combine(_testDir, "dist", "*.js");
+
+        // Act
+        var result = _selector.SelectFiles(_testDir, new[] { absolute }).ToList();
+
+        // Assert
+        result.Should().ContainSingle().Which.Should().Be("dist/app.js");
+    }
+
+    [Fact]
+    public void SelectFiles_AbsolutePatternOutsideBase_IsIgnored()
+    {
+        // Arrange
+        CreateTestFile("dist/app.js");
+        var outside = Path.Combine(Path.GetTempPath(), $"pdk-outside-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outside);
+        try
+        {
+            File.WriteAllText(Path.Combine(outside, "x.js"), "x");
+
+            // Act
+            var result = _selector.SelectFiles(_testDir, new[] { Path.Combine(outside, "*.js") }).ToList();
+
+            // Assert
+            result.Should().BeEmpty();
+        }
+        finally
+        {
+            Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void SelectFiles_BlankPatterns_AreIgnored()
+    {
+        // Arrange
+        CreateTestFile("a.txt");
+
+        // Act
+        var result = _selector.SelectFiles(_testDir, new[] { "", "   ", "*.txt" }).ToList();
+
+        // Assert
+        result.Should().ContainSingle();
+    }
+
+    [Fact]
+    public void SelectFiles_DuplicateMatches_AreReturnedOnce()
+    {
+        // Arrange
+        CreateTestFile("dist/app.js");
+
+        // Act
+        var result = _selector.SelectFiles(_testDir, new[] { "dist", "dist/**/*.js", "**/*.js" }).ToList();
+
+        // Assert
+        result.Should().ContainSingle();
+    }
+
+    #endregion
+
+    #region Case Sensitivity
+
+    [Fact]
+    public void SelectFiles_CaseSensitivity_FollowsPlatform()
+    {
+        // Arrange
+        CreateTestFile("Build/App.DLL");
+
+        // Act
+        var result = _selector.SelectFiles(_testDir, new[] { "build/*.dll" }).ToList();
+
+        // Assert
+        if (OperatingSystem.IsWindows())
+        {
+            result.Should().ContainSingle();
+        }
+        else
+        {
+            result.Should().BeEmpty("matching is case-sensitive on Linux/macOS");
+            _selector.SelectFiles(_testDir, new[] { "Build/*.DLL" }).Should().ContainSingle();
+        }
+    }
+
+    [Fact]
+    public void Matches_CaseSensitivity_FollowsPlatform()
+    {
+        var expected = OperatingSystem.IsWindows();
+        _selector.Matches("Build/App.DLL", "build/*.dll").Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("obj/x.cs", "obj", true)]
+    [InlineData("obj/deep/x.cs", "obj/", true)]
+    [InlineData("object/x.cs", "obj", false)]
+    [InlineData("src/x.cs", "!src", false)]
+    [InlineData("docs/x.cs", "!src", true)]
+    public void Matches_DirectoryPrefixPattern_MatchesTree(string filePath, string pattern, bool expected)
+    {
+        _selector.Matches(filePath, pattern).Should().Be(expected);
+    }
+
+    #endregion
+
     #region Helper Methods
 
     private void CreateTestFile(string relativePath)

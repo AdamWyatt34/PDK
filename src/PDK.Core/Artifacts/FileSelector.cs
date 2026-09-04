@@ -5,6 +5,7 @@ using Microsoft.Extensions.FileSystemGlobbing.Abstractions;
 
 /// <summary>
 /// Selects files based on glob patterns using Microsoft.Extensions.FileSystemGlobbing.
+/// Matching is case-sensitive on Linux/macOS and case-insensitive on Windows.
 /// </summary>
 public class FileSelector : IFileSelector
 {
@@ -16,42 +17,72 @@ public class FileSelector : IFileSelector
             throw new ArgumentException("Base path cannot be null or empty.", nameof(basePath));
         }
 
+        ArgumentNullException.ThrowIfNull(patterns);
+
         if (!Directory.Exists(basePath))
         {
             return Enumerable.Empty<string>();
         }
 
-        var patternList = patterns.ToList();
-        if (patternList.Count == 0)
+        var fullBasePath = Path.GetFullPath(basePath);
+        var normalizedBase = ArtifactPathResolver.NormalizeAbsolute(fullBasePath);
+
+        var includes = new List<string>();
+        var excludes = new List<string>();
+
+        foreach (var raw in patterns)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                continue;
+            }
+
+            var isExclude = ArtifactPathResolver.IsExclusion(raw);
+            var body = isExclude ? raw.TrimStart()[1..] : raw;
+            var matcherPattern = ToMatcherPattern(fullBasePath, normalizedBase, body);
+
+            if (matcherPattern == null)
+            {
+                continue;
+            }
+
+            if (isExclude)
+            {
+                excludes.Add(matcherPattern);
+            }
+            else
+            {
+                includes.Add(matcherPattern);
+            }
+        }
+
+        if (includes.Count == 0)
         {
             return Enumerable.Empty<string>();
         }
 
-        var matcher = new Matcher();
+        var matcher = new Matcher(ArtifactPathResolver.PathComparison);
 
-        // Separate include and exclude patterns
-        var includePatterns = patternList.Where(p => !p.StartsWith('!')).ToList();
-        var excludePatterns = patternList.Where(p => p.StartsWith('!')).ToList();
-
-        // Add inclusion patterns
-        foreach (var pattern in includePatterns)
+        foreach (var include in includes)
         {
-            matcher.AddInclude(NormalizePath(pattern));
+            matcher.AddInclude(include);
         }
 
-        // Add exclusion patterns (remove leading !)
-        foreach (var pattern in excludePatterns)
+        // Exclusions are applied after inclusions: a file is selected when it matches at least one
+        // include and no exclude.
+        foreach (var exclude in excludes)
         {
-            var normalizedPattern = NormalizePath(pattern[1..]);
-            matcher.AddExclude(normalizedPattern);
+            matcher.AddExclude(exclude);
         }
 
-        // Execute the match
-        var directoryInfo = new DirectoryInfoWrapper(new DirectoryInfo(basePath));
+        var directoryInfo = new DirectoryInfoWrapper(new DirectoryInfo(fullBasePath));
         var result = matcher.Execute(directoryInfo);
 
-        // Return relative paths
-        return result.Files.Select(f => f.Path);
+        return result.Files
+            .Select(f => f.Path.Replace('\\', '/'))
+            .Distinct(ArtifactPathResolver.PathComparer)
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .ToList();
     }
 
     /// <inheritdoc/>
@@ -62,25 +93,75 @@ public class FileSelector : IFileSelector
             return false;
         }
 
-        var matcher = new Matcher();
-        var normalizedPattern = NormalizePath(pattern);
+        var normalizedPath = ArtifactPathResolver.Normalize(filePath);
+        var isExclude = ArtifactPathResolver.IsExclusion(pattern);
+        var body = ArtifactPathResolver.Normalize(isExclude ? pattern.TrimStart()[1..] : pattern);
 
-        if (normalizedPattern.StartsWith('!'))
+        if (body.Length == 0)
         {
-            // For exclusion patterns, check if it would match
-            matcher.AddInclude(normalizedPattern[1..]);
-            return !matcher.Match(NormalizePath(filePath)).HasMatches;
+            body = "**";
         }
 
+        var matches = MatchesPattern(normalizedPath, body);
+        return isExclude ? !matches : matches;
+    }
+
+    private static bool MatchesPattern(string normalizedPath, string normalizedPattern)
+    {
+        // A pattern without glob characters also matches everything below it when it names a directory.
+        if (!ArtifactPathResolver.ContainsGlob(normalizedPattern)
+            && ArtifactPathResolver.IsUnder(normalizedPath, normalizedPattern, ArtifactPathResolver.PathComparison))
+        {
+            return true;
+        }
+
+        var matcher = new Matcher(ArtifactPathResolver.PathComparison);
         matcher.AddInclude(normalizedPattern);
-        return matcher.Match(NormalizePath(filePath)).HasMatches;
+        return matcher.Match(normalizedPath).HasMatches;
     }
 
     /// <summary>
-    /// Normalizes path separators to forward slashes for cross-platform compatibility.
+    /// Converts a user pattern into a pattern relative to the base directory that the Matcher understands.
+    /// Returns null when the pattern cannot be evaluated in the base directory.
     /// </summary>
-    private static string NormalizePath(string path)
+    private static string? ToMatcherPattern(string fullBasePath, string normalizedBase, string pattern)
     {
-        return path.Replace('\\', '/');
+        var normalized = ArtifactPathResolver.Normalize(pattern);
+
+        if (ArtifactPathResolver.IsAbsolute(normalized))
+        {
+            var searchPath = ArtifactPathResolver.GetSearchPath(normalized);
+            var absoluteSearch = ArtifactPathResolver.NormalizeAbsolute(ArtifactPathResolver.ToOsPath(searchPath));
+            var remainder = normalized.Length > searchPath.Length
+                ? normalized[searchPath.Length..].TrimStart('/')
+                : string.Empty;
+            var absolutePattern = ArtifactPathResolver.Combine(absoluteSearch, remainder);
+
+            if (!ArtifactPathResolver.IsUnder(absoluteSearch, normalizedBase, ArtifactPathResolver.PathComparison))
+            {
+                return null;
+            }
+
+            normalized = ArtifactPathResolver.MakeRelative(absolutePattern, normalizedBase);
+        }
+
+        if (normalized.Length == 0)
+        {
+            return "**";
+        }
+
+        if (ArtifactPathResolver.ContainsGlob(normalized))
+        {
+            return normalized;
+        }
+
+        // A bare directory name selects its whole tree.
+        var candidate = Path.Combine(fullBasePath, ArtifactPathResolver.ToOsPath(normalized));
+        if (Directory.Exists(candidate) && !File.Exists(candidate))
+        {
+            return normalized + "/**";
+        }
+
+        return normalized;
     }
 }

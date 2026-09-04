@@ -1,14 +1,17 @@
 using System.Diagnostics;
+using Docker.DotNet;
 using Microsoft.Extensions.Logging;
 using PDK.Core.Artifacts;
+using PDK.Core.ErrorHandling;
 using PDK.Core.Models;
 using PDK.Runners.Utilities;
 
 namespace PDK.Runners.StepExecutors;
 
 /// <summary>
-/// Executes artifact upload steps by copying files from a container
-/// and uploading them to the artifact storage.
+/// Executes artifact upload steps by copying the matched paths out of the container
+/// (one archive per matched path, preserving the directory structure) and handing them
+/// to the artifact manager.
 /// </summary>
 public class UploadArtifactExecutor : IStepExecutor
 {
@@ -37,105 +40,99 @@ public class UploadArtifactExecutor : IStepExecutor
         ExecutionContext context,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(step);
+        ArgumentNullException.ThrowIfNull(context);
+
         var startTime = DateTimeOffset.Now;
         var stopwatch = Stopwatch.StartNew();
-        string? tempPath = null;
+        string? stagingRoot = null;
 
         try
         {
-            // Validate artifact definition
             if (step.Artifact == null)
             {
-                throw new InvalidOperationException(
-                    "Artifact definition is required for upload artifact step.");
+                return Failure(step, "Artifact definition is required for upload artifact step.", startTime, stopwatch);
             }
 
             if (step.Artifact.Operation != ArtifactOperation.Upload)
             {
-                throw new InvalidOperationException(
-                    $"Expected Upload operation but got {step.Artifact.Operation}.");
+                return Failure(step, $"Expected Upload operation but got {step.Artifact.Operation}.", startTime, stopwatch);
             }
 
-            // Validate artifact context
             if (context.ArtifactContext == null)
             {
-                throw new InvalidOperationException(
-                    "ArtifactContext is required for artifact operations.");
+                return Failure(step, "ArtifactContext is required for artifact operations.", startTime, stopwatch);
             }
 
             var artifact = step.Artifact;
             var artifactContext = context.ArtifactContext;
 
-            _logger.LogInformation(
-                "Uploading artifact '{ArtifactName}' with {PatternCount} pattern(s)",
-                artifact.Name,
-                artifact.Patterns.Length);
-
-            // Step 1: Find files in container matching patterns
-            var basePath = artifact.TargetPath ?? context.ContainerWorkspacePath;
-            var files = await FindFilesInContainerAsync(
-                context,
-                basePath,
-                artifact.Patterns,
-                cancellationToken);
-
-            _logger.LogDebug("Found {FileCount} files matching patterns", files.Count);
-
-            // Handle no files found
-            if (files.Count == 0)
+            var nameError = ArtifactNames.TryGetValidationError(artifact.Name);
+            if (nameError != null)
             {
-                return HandleNoFilesFound(
-                    artifact,
-                    step.Name,
-                    startTime,
-                    stopwatch);
+                return Failure(step, $"Invalid artifact name '{artifact.Name}': {nameError}", startTime, stopwatch);
             }
 
-            // Step 2: Create temp directory and copy files from container
-            tempPath = Path.Combine(Path.GetTempPath(), $"pdk-artifact-{Guid.NewGuid():N}");
-            Directory.CreateDirectory(tempPath);
-
-            _logger.LogDebug("Copying {FileCount} files from container to {TempPath}", files.Count, tempPath);
-
-            await CopyFilesFromContainerAsync(
-                context,
-                basePath,
-                files,
-                tempPath,
-                cancellationToken);
-
-            // Step 3: Upload to artifact manager
-            _logger.LogDebug("Uploading files to artifact storage");
-
-            // Build relative patterns from container paths
-            // Files are extracted to tempPath with relative paths from basePath
-            var patterns = files.Select(f =>
+            var patterns = NormalizePatterns(artifact.Patterns);
+            if (!patterns.Any(p => !ArtifactPathResolver.IsExclusion(p)))
             {
-                if (f.StartsWith(basePath))
-                {
-                    return f[(basePath.Length + 1)..]; // Remove basePath prefix to get relative path
-                }
-                return Path.GetFileName(f); // Fallback to just filename
-            }).ToArray();
+                return Failure(step, "Artifact upload requires at least one path to upload.", startTime, stopwatch);
+            }
 
-            // Create a modified artifact context pointing to the temp directory
-            // where we extracted the files from the container
-            var uploadContext = new ArtifactContext
-            {
-                WorkspacePath = tempPath,
-                RunId = artifactContext.RunId,
-                JobName = artifactContext.JobName,
-                StepIndex = artifactContext.StepIndex,
-                StepName = artifactContext.StepName
-            };
+            var containerBase = PathResolver.ResolvePath(artifact.TargetPath ?? string.Empty, context.ContainerWorkspacePath);
 
-            var uploadResult = await _artifactManager.UploadAsync(
+            _logger.LogInformation(
+                "Uploading artifact '{ArtifactName}' with {PatternCount} pattern(s) from {BasePath}",
                 artifact.Name,
-                patterns,
-                uploadContext,
-                artifact.Options,
-                progress: null,
-                cancellationToken);
+                patterns.Count,
+                containerBase);
+
+            // The staging directory mirrors the container's file system root so that relative and
+            // absolute container paths keep their structure.
+            stagingRoot = Path.Combine(Path.GetTempPath(), $"pdk-artifact-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(stagingRoot);
+
+            var searchPaths = ResolveSearchPaths(patterns, containerBase);
+            var extractedFiles = 0;
+
+            foreach (var searchPath in searchPaths)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                extractedFiles += await FetchFromContainerAsync(context, searchPath, stagingRoot, cancellationToken);
+            }
+
+            if (extractedFiles == 0)
+            {
+                return HandleNoFilesFound(step, artifact, patterns, Array.Empty<string>(), startTime, stopwatch);
+            }
+
+            var sourcePath = ToStagingPath(stagingRoot, containerBase);
+            var hostPatterns = patterns
+                .Select(p => ToHostPattern(p, containerBase, stagingRoot))
+                .ToList();
+
+            var uploadContext = artifactContext with { SourcePath = sourcePath };
+
+            UploadResult uploadResult;
+            try
+            {
+                uploadResult = await _artifactManager.UploadAsync(
+                    artifact.Name,
+                    hostPatterns,
+                    uploadContext,
+                    artifact.Options,
+                    progress: null,
+                    cancellationToken);
+            }
+            catch (ArtifactException ex) when (ex.ErrorCode == ErrorCodes.ArtifactNoFilesMatched)
+            {
+                return HandleNoFilesFound(step, artifact, patterns, Array.Empty<string>(), startTime, stopwatch);
+            }
+
+            if (uploadResult.FileCount == 0)
+            {
+                return HandleNoFilesFound(step, artifact, patterns, uploadResult.Warnings, startTime, stopwatch);
+            }
 
             stopwatch.Stop();
 
@@ -150,260 +147,182 @@ public class UploadArtifactExecutor : IStepExecutor
                 StepName = step.Name,
                 Success = true,
                 ExitCode = 0,
-                Output = $"Uploaded {uploadResult.FileCount} files to artifact '{artifact.Name}' " +
-                         $"({FormatBytes(uploadResult.TotalSizeBytes)})",
+                Output = ArtifactStepSupport.DescribeUpload(uploadResult),
                 ErrorOutput = string.Empty,
                 Duration = stopwatch.Elapsed,
                 StartTime = startTime,
                 EndTime = DateTimeOffset.Now
             };
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (ArtifactException ex)
         {
-            stopwatch.Stop();
             _logger.LogError(ex, "Artifact upload failed: {Message}", ex.Message);
-
-            return new StepExecutionResult
-            {
-                StepName = step.Name,
-                Success = false,
-                ExitCode = 1,
-                Output = string.Empty,
-                ErrorOutput = $"Artifact upload failed: {ex.Message}",
-                Duration = stopwatch.Elapsed,
-                StartTime = startTime,
-                EndTime = DateTimeOffset.Now
-            };
+            return Failure(step, $"Artifact upload failed: {ex.Message}", startTime, stopwatch);
         }
         catch (ContainerException ex)
         {
-            stopwatch.Stop();
             _logger.LogError(ex, "Container operation failed: {Message}", ex.Message);
-
-            return new StepExecutionResult
-            {
-                StepName = step.Name,
-                Success = false,
-                ExitCode = 1,
-                Output = string.Empty,
-                ErrorOutput = $"Container operation failed: {ex.Message}",
-                Duration = stopwatch.Elapsed,
-                StartTime = startTime,
-                EndTime = DateTimeOffset.Now
-            };
+            return Failure(step, $"Container operation failed: {ex.Message}", startTime, stopwatch);
         }
         catch (Exception ex)
         {
-            stopwatch.Stop();
             _logger.LogError(ex, "Unexpected error during artifact upload: {Message}", ex.Message);
-
-            return new StepExecutionResult
-            {
-                StepName = step.Name,
-                Success = false,
-                ExitCode = 1,
-                Output = string.Empty,
-                ErrorOutput = $"Unexpected error: {ex.Message}",
-                Duration = stopwatch.Elapsed,
-                StartTime = startTime,
-                EndTime = DateTimeOffset.Now
-            };
+            return Failure(step, $"Unexpected error: {ex.Message}", startTime, stopwatch);
         }
         finally
         {
-            // Always cleanup temp directory
-            if (tempPath != null && Directory.Exists(tempPath))
-            {
-                try
-                {
-                    Directory.Delete(tempPath, recursive: true);
-                    _logger.LogDebug("Cleaned up temp directory: {TempPath}", tempPath);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Failed to cleanup temp directory: {TempPath}", tempPath);
-                }
-            }
+            CleanupStaging(stagingRoot);
         }
     }
 
     /// <summary>
-    /// Finds files in the container matching the specified patterns.
+    /// Trims the patterns and drops empty ones.
     /// </summary>
-    private async Task<List<string>> FindFilesInContainerAsync(
-        ExecutionContext context,
-        string basePath,
-        string[] patterns,
-        CancellationToken cancellationToken)
+    private static List<string> NormalizePatterns(IEnumerable<string>? patterns)
     {
-        var files = new List<string>();
+        return (patterns ?? Array.Empty<string>())
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(p => p.Trim())
+            .ToList();
+    }
 
-        // Build find command for each pattern
-        // Convert glob patterns to find command patterns
-        foreach (var pattern in patterns)
+    /// <summary>
+    /// Resolves the absolute container path of a pattern (without a leading '!').
+    /// </summary>
+    private static string ResolveContainerPattern(string pattern, string containerBase)
+    {
+        var body = ArtifactPathResolver.IsExclusion(pattern) ? pattern.TrimStart()[1..] : pattern;
+        var normalized = ArtifactPathResolver.Normalize(body);
+
+        return normalized.Length == 0
+            ? containerBase
+            : PathResolver.ResolvePath(normalized, containerBase);
+    }
+
+    /// <summary>
+    /// Computes the container paths that have to be copied out: the non-glob prefix of every
+    /// inclusion pattern, minus paths that are already covered by an ancestor.
+    /// </summary>
+    internal static IReadOnlyList<string> ResolveSearchPaths(IEnumerable<string> patterns, string containerBase)
+    {
+        var candidates = patterns
+            .Where(p => !ArtifactPathResolver.IsExclusion(p))
+            .Select(p => ArtifactPathResolver.GetSearchPath(ResolveContainerPattern(p, containerBase)))
+            .Where(p => p.Length > 0 && p != "/")
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(p => p.Length)
+            .ThenBy(p => p, StringComparer.Ordinal)
+            .ToList();
+
+        var result = new List<string>();
+        foreach (var candidate in candidates)
         {
-            // Skip exclusion patterns for now (handled by artifact manager)
-            if (pattern.StartsWith("!"))
+            if (result.Any(kept => ArtifactPathResolver.IsUnder(candidate, kept, StringComparison.Ordinal)))
             {
                 continue;
             }
 
-            // Build find command based on pattern
-            var findCommand = BuildFindCommand(basePath, pattern);
-
-            _logger.LogDebug("Executing find command: {Command}", findCommand);
-
-            var result = await context.ContainerManager.ExecuteCommandAsync(
-                context.ContainerId,
-                findCommand,
-                workingDirectory: null,
-                environment: null,
-                cancellationToken);
-
-            if (result.ExitCode == 0 && !string.IsNullOrWhiteSpace(result.StandardOutput))
-            {
-                var foundFiles = result.StandardOutput
-                    .Split('\n', StringSplitOptions.RemoveEmptyEntries)
-                    .Select(f => f.Trim())
-                    .Where(f => !string.IsNullOrEmpty(f))
-                    .ToList();
-
-                files.AddRange(foundFiles);
-            }
+            result.Add(candidate);
         }
 
-        // Remove duplicates and sort
-        return files.Distinct().OrderBy(f => f).ToList();
+        return result;
     }
 
     /// <summary>
-    /// Builds a find command for the given glob pattern.
+    /// Maps a container path to its location inside the staging directory.
     /// </summary>
-    private static string BuildFindCommand(string basePath, string pattern)
+    internal static string ToStagingPath(string stagingRoot, string containerPath)
     {
-        // Handle different glob patterns:
-        // **/*.dll -> find . -name "*.dll" -type f
-        // bin/** -> find bin -type f
-        // *.log -> find . -maxdepth 1 -name "*.log" -type f
-
-        string searchPath;
-        string namePattern;
-        string maxDepthFlag = "";
-
-        if (pattern.StartsWith("**/"))
-        {
-            // Recursive search from base path
-            searchPath = basePath;
-            namePattern = pattern[3..]; // Remove **/
-        }
-        else if (pattern.Contains("/**/"))
-        {
-            // Directory prefix with recursive search
-            var parts = pattern.Split("/**/", 2);
-            searchPath = Path.Combine(basePath, parts[0]).Replace('\\', '/');
-            namePattern = parts[1];
-        }
-        else if (pattern.Contains("/"))
-        {
-            // Directory path included
-            var lastSlash = pattern.LastIndexOf('/');
-            var dir = pattern[..lastSlash];
-            searchPath = Path.Combine(basePath, dir).Replace('\\', '/');
-            namePattern = pattern[(lastSlash + 1)..];
-            if (!namePattern.Contains('*') && !namePattern.Contains('?'))
-            {
-                // Exact filename
-                return $"find {searchPath} -name \"{namePattern}\" -type f 2>/dev/null";
-            }
-        }
-        else
-        {
-            // Simple pattern in current directory only
-            searchPath = basePath;
-            namePattern = pattern;
-            maxDepthFlag = "-maxdepth 1 ";
-        }
-
-        // Handle patterns that are just directory names (e.g., "bin/**")
-        if (namePattern == "*" || namePattern == "**")
-        {
-            return $"find {searchPath} {maxDepthFlag}-type f 2>/dev/null";
-        }
-
-        return $"find {searchPath} {maxDepthFlag}-name \"{namePattern}\" -type f 2>/dev/null";
+        var relative = containerPath.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
+        return relative.Length == 0 ? stagingRoot : Path.Combine(stagingRoot, relative);
     }
 
     /// <summary>
-    /// Copies files from the container to a local directory.
+    /// Rewrites a pattern so that it points into the staging directory on the host.
     /// </summary>
-    private async Task CopyFilesFromContainerAsync(
+    internal static string ToHostPattern(string pattern, string containerBase, string stagingRoot)
+    {
+        var isExclusion = ArtifactPathResolver.IsExclusion(pattern);
+        var containerPattern = ResolveContainerPattern(pattern, containerBase);
+        var hostPattern = ToStagingPath(stagingRoot, containerPattern);
+        return isExclusion ? "!" + hostPattern : hostPattern;
+    }
+
+    /// <summary>
+    /// Copies one container path (file or directory tree) into the staging directory with a single
+    /// archive request. Returns the number of files extracted; a missing path yields zero.
+    /// </summary>
+    private async Task<int> FetchFromContainerAsync(
         ExecutionContext context,
-        string containerBasePath,
-        List<string> files,
-        string targetPath,
+        string containerPath,
+        string stagingRoot,
         CancellationToken cancellationToken)
     {
-        // Get archive from container for each file
-        // For better performance, we could batch files by directory
-        foreach (var file in files)
+        // The archive returned by Docker is rooted at the last path segment, so extracting it into the
+        // staged parent directory recreates the container layout.
+        var parent = ArtifactPathResolver.GetParent(containerPath);
+        var extractTo = ToStagingPath(stagingRoot, parent);
+
+        _logger.LogDebug("Copying {Path} from container to {Target}", containerPath, extractTo);
+
+        Stream archive;
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            archive = await context.ContainerManager.GetArchiveFromContainerAsync(
+                context.ContainerId,
+                containerPath,
+                cancellationToken);
+        }
+        catch (ContainerException ex) when (IsNotFound(ex))
+        {
+            _logger.LogDebug("Path {Path} does not exist in the container", containerPath);
+            return 0;
+        }
 
-            _logger.LogDebug("Copying file from container: {File}", file);
-
-            try
-            {
-                // Get the tar archive for this file
-                using var tarStream = await context.ContainerManager.GetArchiveFromContainerAsync(
-                    context.ContainerId,
-                    file,
-                    cancellationToken);
-
-                // Calculate relative path for extraction
-                var relativePath = file;
-                if (file.StartsWith(containerBasePath))
-                {
-                    relativePath = file[(containerBasePath.Length + 1)..];
-                }
-
-                // Extract tar to temp path
-                var fileDir = Path.GetDirectoryName(Path.Combine(targetPath, relativePath));
-                if (!string.IsNullOrEmpty(fileDir))
-                {
-                    Directory.CreateDirectory(fileDir);
-                }
-
-                await TarArchiveHelper.ExtractTarAsync(tarStream, targetPath, cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to copy file from container: {File}", file);
-                throw new ContainerException($"Failed to copy file '{file}' from container: {ex.Message}", ex);
-            }
+        using (archive)
+        {
+            Directory.CreateDirectory(extractTo);
+            var count = await TarArchiveHelper.ExtractTarAsync(archive, extractTo, cancellationToken);
+            _logger.LogDebug("Extracted {Count} file(s) from {Path}", count, containerPath);
+            return count;
         }
     }
 
-    /// <summary>
-    /// Handles the case when no files match the patterns.
-    /// </summary>
+    private static bool IsNotFound(ContainerException exception)
+    {
+        if (exception.InnerException is DockerApiException { StatusCode: System.Net.HttpStatusCode.NotFound })
+        {
+            return true;
+        }
+
+        return exception.Message.Contains("not found", StringComparison.OrdinalIgnoreCase)
+               || exception.Message.Contains("No such file", StringComparison.OrdinalIgnoreCase);
+    }
+
     private StepExecutionResult HandleNoFilesFound(
+        Step step,
         ArtifactDefinition artifact,
-        string stepName,
+        IEnumerable<string> patterns,
+        IReadOnlyList<string> warnings,
         DateTimeOffset startTime,
         Stopwatch stopwatch)
     {
         stopwatch.Stop();
 
         var behavior = artifact.Options?.IfNoFilesFound ?? IfNoFilesFound.Error;
-        var message = $"No files found matching patterns: {string.Join(", ", artifact.Patterns)}";
+        var message = ArtifactStepSupport.DescribeNoFiles(patterns);
 
         switch (behavior)
         {
             case IfNoFilesFound.Error:
-                _logger.LogError(message);
+                _logger.LogError("{Message}", message);
                 return new StepExecutionResult
                 {
-                    StepName = stepName,
+                    StepName = step.Name,
                     Success = false,
                     ExitCode = 1,
                     Output = string.Empty,
@@ -414,25 +333,30 @@ public class UploadArtifactExecutor : IStepExecutor
                 };
 
             case IfNoFilesFound.Warn:
-                _logger.LogWarning(message);
+                _logger.LogWarning("{Message}", message);
+                var output = "Warning: " + message + ". No artifact was uploaded.";
+                foreach (var warning in warnings)
+                {
+                    output += Environment.NewLine + "Warning: " + warning;
+                }
+
                 return new StepExecutionResult
                 {
-                    StepName = stepName,
+                    StepName = step.Name,
                     Success = true,
                     ExitCode = 0,
-                    Output = $"Warning: {message}",
+                    Output = output,
                     ErrorOutput = string.Empty,
                     Duration = stopwatch.Elapsed,
                     StartTime = startTime,
                     EndTime = DateTimeOffset.Now
                 };
 
-            case IfNoFilesFound.Ignore:
             default:
-                _logger.LogDebug(message);
+                _logger.LogDebug("{Message}", message);
                 return new StepExecutionResult
                 {
-                    StepName = stepName,
+                    StepName = step.Name,
                     Success = true,
                     ExitCode = 0,
                     Output = "No files to upload (ignored)",
@@ -444,21 +368,37 @@ public class UploadArtifactExecutor : IStepExecutor
         }
     }
 
-    /// <summary>
-    /// Formats a byte count as a human-readable string.
-    /// </summary>
-    private static string FormatBytes(long bytes)
+    private static StepExecutionResult Failure(Step step, string message, DateTimeOffset startTime, Stopwatch stopwatch)
     {
-        string[] sizes = ["B", "KB", "MB", "GB"];
-        int order = 0;
-        double size = bytes;
-
-        while (size >= 1024 && order < sizes.Length - 1)
+        stopwatch.Stop();
+        return new StepExecutionResult
         {
-            order++;
-            size /= 1024;
+            StepName = step.Name,
+            Success = false,
+            ExitCode = 1,
+            Output = string.Empty,
+            ErrorOutput = message,
+            Duration = stopwatch.Elapsed,
+            StartTime = startTime,
+            EndTime = DateTimeOffset.Now
+        };
+    }
+
+    private void CleanupStaging(string? stagingRoot)
+    {
+        if (stagingRoot == null || !Directory.Exists(stagingRoot))
+        {
+            return;
         }
 
-        return $"{size:0.##} {sizes[order]}";
+        try
+        {
+            Directory.Delete(stagingRoot, recursive: true);
+            _logger.LogDebug("Cleaned up staging directory: {Path}", stagingRoot);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to clean up staging directory: {Path}", stagingRoot);
+        }
     }
 }
