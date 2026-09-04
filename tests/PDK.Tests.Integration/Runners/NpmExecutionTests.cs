@@ -76,7 +76,7 @@ public class NpmExecutionTests : IAsyncDisposable
 
     #region Install Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task NpmInstall_WithPackageJson_InstallsSuccessfully()
@@ -117,7 +117,7 @@ public class NpmExecutionTests : IAsyncDisposable
         result.ExitCode.Should().Be(0);
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task NpmInstall_DefaultCommand_UsesInstall()
@@ -155,7 +155,7 @@ public class NpmExecutionTests : IAsyncDisposable
         result.ExitCode.Should().Be(0);
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task NpmInstall_MissingPackageJson_Fails()
@@ -212,7 +212,7 @@ public class NpmExecutionTests : IAsyncDisposable
 
     #region Build Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task NpmRunBuild_WithBuildScript_BuildsSuccessfully()
@@ -272,7 +272,7 @@ public class NpmExecutionTests : IAsyncDisposable
 
     #region Test Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task NpmTest_WithTestScript_RunsTests()
@@ -332,7 +332,7 @@ public class NpmExecutionTests : IAsyncDisposable
 
     #region Custom Script Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task NpmRunCustomScript_ExecutesSuccessfully()
@@ -379,7 +379,7 @@ public class NpmExecutionTests : IAsyncDisposable
 
     #region Tool Validation Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task NpmNotInstalled_ThrowsToolNotFoundException()
@@ -432,7 +432,7 @@ public class NpmExecutionTests : IAsyncDisposable
 
     #region CI Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task NpmCi_WithPackageLock_InstallsSuccessfully()
@@ -505,7 +505,7 @@ public class NpmExecutionTests : IAsyncDisposable
 
     #region End-to-End Workflow Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task NpmWorkflow_InstallBuildTest_SucceedsEndToEnd()

@@ -13,7 +13,7 @@ public class DoctorCommandTests
 {
     #region Docker Availability Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task GetDockerStatus_WithDockerRunning_ReturnsSuccessStatus()
@@ -39,7 +39,7 @@ public class DoctorCommandTests
         }
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task GetDockerVersion_WithDockerRunning_ReturnsVersion()
@@ -62,7 +62,7 @@ public class DoctorCommandTests
         }
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task GetDockerStatus_CompletesWithinOneSecond()
@@ -88,7 +88,7 @@ public class DoctorCommandTests
         }
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task GetDockerStatus_CalledMultipleTimes_ConsistentResults()
@@ -119,7 +119,7 @@ public class DoctorCommandTests
 
     #region Platform Detection Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task GetDockerStatus_ReturnsValidPlatformInfo()

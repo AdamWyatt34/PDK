@@ -74,7 +74,7 @@ public class ArtifactExecutionTests : IAsyncDisposable
 
     #region End-to-End Upload Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task UploadArtifact_FilesInContainer_UploadsSuccessfully()
@@ -108,7 +108,7 @@ public class ArtifactExecutionTests : IAsyncDisposable
         exists.Should().BeTrue();
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task UploadArtifact_WithPatternMatching_SelectsCorrectFiles()
@@ -145,7 +145,7 @@ public class ArtifactExecutionTests : IAsyncDisposable
 
     #region End-to-End Download Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task DownloadArtifact_ExistingArtifact_DownloadsSuccessfully()
@@ -195,7 +195,7 @@ public class ArtifactExecutionTests : IAsyncDisposable
         checkResult.ExitCode.Should().Be(0);
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task DownloadArtifact_NonExistentArtifact_ReturnsFailure()
@@ -222,7 +222,7 @@ public class ArtifactExecutionTests : IAsyncDisposable
 
     #region Container File Operations Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task GetArchiveFromContainer_ValidPath_ReturnsStream()
@@ -254,7 +254,7 @@ public class ArtifactExecutionTests : IAsyncDisposable
         stream.Dispose();
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task PutArchiveToContainer_ValidTar_ExtractsFiles()

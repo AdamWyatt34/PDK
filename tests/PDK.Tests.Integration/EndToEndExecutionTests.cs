@@ -112,36 +112,16 @@ public class EndToEndExecutionTests : IDisposable
         return await parser.ParseFile(pipelineFile);
     }
 
-    /// <summary>
-    /// Checks if Docker is available before running tests.
-    /// </summary>
-    private async Task<bool> IsDockerAvailableAsync()
-    {
-        var isAvailable = await _containerManager.IsDockerAvailableAsync();
-
-        if (!isAvailable)
-        {
-            _logger?.LogWarning("Docker is not available. Integration tests will be skipped.");
-        }
-
-        return isAvailable;
-    }
-
     #endregion
 
     #region Simple Hello World Test
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task EndToEnd_SimpleHelloWorld_ExecutesSuccessfully()
     {
-        // Arrange - Check Docker availability
-        if (!await IsDockerAvailableAsync())
-        {
-            _logger?.LogWarning("Skipping test - Docker not available");
-            return; // Skip test if Docker not available
-        }
+        // Arrange
 
         var pipeline = await ParseTestPipelineAsync("simple-hello-world.yml");
         pipeline.Jobs.Should().NotBeEmpty("pipeline should contain at least one job");
@@ -177,17 +157,12 @@ public class EndToEndExecutionTests : IDisposable
 
     #region Multi-Step Bash Test
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task EndToEnd_MultiStepBash_ExecutesInOrder()
     {
         // Arrange
-        if (!await IsDockerAvailableAsync())
-        {
-            _logger?.LogWarning("Skipping test - Docker not available");
-            return;
-        }
 
         var pipeline = await ParseTestPipelineAsync("multi-step-bash.yml");
         var jobRunner = CreateJobRunner();
@@ -232,18 +207,13 @@ public class EndToEndExecutionTests : IDisposable
 
     #region Checkout and Build Test
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     [Trait("Category", "RequiresInternet")]
     public async Task EndToEnd_CheckoutAndBuild_ClonesRepository()
     {
         // Arrange
-        if (!await IsDockerAvailableAsync())
-        {
-            _logger?.LogWarning("Skipping test - Docker not available");
-            return;
-        }
 
         var pipeline = await ParseTestPipelineAsync("checkout-and-build.yml");
         var jobRunner = CreateJobRunner();
@@ -288,17 +258,12 @@ public class EndToEndExecutionTests : IDisposable
 
     #region PowerShell Script Test
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task EndToEnd_PowerShellScript_ExecutesSuccessfully()
     {
         // Arrange
-        if (!await IsDockerAvailableAsync())
-        {
-            _logger?.LogWarning("Skipping test - Docker not available");
-            return;
-        }
 
         var pipeline = await ParseTestPipelineAsync("powershell-script.yml");
         var jobRunner = CreateJobRunner();
@@ -346,17 +311,12 @@ public class EndToEndExecutionTests : IDisposable
 
     #region Failing Step Test
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task EndToEnd_FailingStep_StopsExecution()
     {
         // Arrange
-        if (!await IsDockerAvailableAsync())
-        {
-            _logger?.LogWarning("Skipping test - Docker not available");
-            return;
-        }
 
         var pipeline = await ParseTestPipelineAsync("failing-step.yml");
         var jobRunner = CreateJobRunner();
@@ -396,17 +356,12 @@ public class EndToEndExecutionTests : IDisposable
 
     #region Environment Variables Test
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task EndToEnd_EnvironmentVariables_CorrectPrecedence()
     {
         // Arrange
-        if (!await IsDockerAvailableAsync())
-        {
-            _logger?.LogWarning("Skipping test - Docker not available");
-            return;
-        }
 
         var pipeline = await ParseTestPipelineAsync("environment-variables.yml");
         var jobRunner = CreateJobRunner();
