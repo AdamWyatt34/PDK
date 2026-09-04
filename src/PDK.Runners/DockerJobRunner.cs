@@ -170,8 +170,8 @@ public class DockerJobRunner : IJobRunner
             var baseContext = BuildExecutionContext(job, containerId, workspacePath);
 
             // 6. Generate run ID for artifact context
-            var runId = ArtifactContext.GenerateRunId();
-            _logger.LogDebug("Generated run ID for artifacts: {RunId}", runId);
+            var runId = runContext.RunId;
+            _logger.LogDebug("Run ID for artifacts: {RunId}", runId);
 
             // 7. Update variable context with job name
             _variableResolver.UpdateContext(new VariableContext

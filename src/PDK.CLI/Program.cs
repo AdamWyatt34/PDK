@@ -1046,6 +1046,8 @@ static void ConfigureServices(ServiceCollection services)
     services.AddSingleton<IHostStepExecutor, HostCheckoutExecutor>();
     services.AddSingleton<IHostStepExecutor, HostDotnetExecutor>();
     services.AddSingleton<IHostStepExecutor, HostNpmExecutor>();
+    services.AddSingleton<IHostStepExecutor, HostUploadArtifactExecutor>();
+    services.AddSingleton<IHostStepExecutor, HostDownloadArtifactExecutor>();
     services.AddSingleton<HostStepExecutorFactory>();
 
     // Register process executor for host mode

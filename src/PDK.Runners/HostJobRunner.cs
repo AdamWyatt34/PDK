@@ -121,8 +121,8 @@ public class HostJobRunner : IJobRunner
             var baseContext = BuildExecutionContext(job, tempWorkspace);
 
             // 5. Generate run ID for artifact context
-            var runId = ArtifactContext.GenerateRunId();
-            _logger.LogDebug("Generated run ID for artifacts: {RunId}", runId);
+            var runId = runContext.RunId;
+            _logger.LogDebug("Run ID for artifacts: {RunId}", runId);
 
             // 6. Update variable context with job info
             _variableResolver.UpdateContext(new VariableContext

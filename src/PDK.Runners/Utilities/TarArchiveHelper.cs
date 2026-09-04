@@ -31,6 +31,7 @@ public static class TarArchiveHelper
         }
 
         Directory.CreateDirectory(targetDirectory);
+        var targetRoot = Path.GetFullPath(targetDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
 
         var fileCount = 0;
 
@@ -43,16 +44,22 @@ public static class TarArchiveHelper
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
+                // Symbolic and hard links are not materialised: following them could write outside the target
+                if (entry.TarHeader.TypeFlag is TarHeader.LF_SYMLINK or TarHeader.LF_LINK)
+                {
+                    continue;
+                }
+
                 if (entry.IsDirectory)
                 {
                     // Create directory
-                    var dirPath = Path.Combine(targetDirectory, entry.Name);
+                    var dirPath = SafePath(targetRoot, entry.Name);
                     Directory.CreateDirectory(dirPath);
                 }
                 else
                 {
                     // Extract file
-                    var filePath = Path.Combine(targetDirectory, entry.Name);
+                    var filePath = SafePath(targetRoot, entry.Name);
 
                     // Ensure parent directory exists
                     var fileDir = Path.GetDirectoryName(filePath);
@@ -69,6 +76,23 @@ public static class TarArchiveHelper
         }, cancellationToken);
 
         return fileCount;
+    }
+
+    /// <summary>
+    /// Resolves an archive entry name under the extraction root, rejecting absolute names and
+    /// <c>..</c> segments that would escape it (zip-slip).
+    /// </summary>
+    private static string SafePath(string targetRoot, string entryName)
+    {
+        var relative = entryName.Replace('\\', '/').TrimStart('/');
+        var candidate = Path.GetFullPath(Path.Combine(targetRoot, relative));
+        if (!candidate.StartsWith(targetRoot, StringComparison.Ordinal) &&
+            !string.Equals(candidate + Path.DirectorySeparatorChar, targetRoot, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException($"Archive entry '{entryName}' would be extracted outside of '{targetRoot}'.");
+        }
+
+        return candidate;
     }
 
     /// <summary>

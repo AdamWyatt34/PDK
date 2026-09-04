@@ -268,7 +268,7 @@ public class PipelineExecutor
         var jobResults = new List<JobExecutionResult>();
         var jobStatuses = new Dictionary<string, string>(StringComparer.Ordinal);
         var jobOutputs = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal);
-        var runId = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var runId = PDK.Core.Artifacts.ArtifactContext.GenerateRunId();
         var outputHandler = CreateOutputHandler(cancellationToken);
 
         for (int i = 0; i < jobsToRun.Count; i++)

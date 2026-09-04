@@ -646,7 +646,8 @@ public static class AzureStepMapper
         var name = GetInput(azureStep, "artifactName") ?? string.Empty;
         var path = GetInput(azureStep, "downloadPath") ?? GetInput(azureStep, "targetPath") ?? DefaultDownloadPath;
 
-        step.Artifact = CreateDownloadDefinition(name, path);
+        // DownloadBuildArtifacts@0 always creates <downloadPath>/<artifactName>/ (unlike DownloadPipelineArtifact@2)
+        step.Artifact = CreateDownloadDefinition(name, path) with { DownloadIntoNamedSubdirectory = true };
     }
 
     /// <summary>

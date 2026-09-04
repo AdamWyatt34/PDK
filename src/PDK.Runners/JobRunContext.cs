@@ -36,8 +36,8 @@ public sealed record JobRunContext
     /// <summary>Gets the event name presented to the pipeline (<c>github.event_name</c>). Default: push.</summary>
     public string EventName { get; init; } = "push";
 
-    /// <summary>Gets the run identifier shared by all jobs of one <c>pdk run</c>.</summary>
-    public string RunId { get; init; } = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
+    /// <summary>Gets the run identifier shared by all jobs of one <c>pdk run</c> (also the artifact store's run id).</summary>
+    public string RunId { get; init; } = PDK.Core.Artifacts.ArtifactContext.GenerateRunId();
 
     /// <summary>
     /// Gets whether unsupported steps (unmapped actions/tasks) fail the job instead of being skipped with a warning.

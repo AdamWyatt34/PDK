@@ -395,7 +395,12 @@ public sealed class JobExecutionSession
             ContinueOnError = step.ContinueOnError,
             Condition = step.Condition,
             WorkingDirectory = step.WorkingDirectory == null ? null : Expand(step.WorkingDirectory),
-            Artifact = step.Artifact,
+            Artifact = step.Artifact == null ? null : step.Artifact with
+            {
+                Name = Expand(step.Artifact.Name),
+                Patterns = step.Artifact.Patterns.Select(Expand).ToArray(),
+                TargetPath = step.Artifact.TargetPath == null ? null : Expand(step.Artifact.TargetPath)
+            },
             Needs = step.Needs,
             Enabled = step.Enabled,
             TimeoutMinutes = step.TimeoutMinutes,
