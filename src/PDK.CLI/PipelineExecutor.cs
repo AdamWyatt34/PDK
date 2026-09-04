@@ -8,6 +8,7 @@ using PDK.Core.Configuration;
 using PDK.Core.Filtering;
 using PDK.Core.Logging;
 using PDK.Core.Models;
+using PDK.Core.Performance;
 using PDK.Core.Progress;
 using PDK.CLI.Runners;
 using PDK.Core.Runners;
@@ -45,6 +46,7 @@ public class PipelineExecutor
     private readonly FilterConfirmationPrompt _confirmationPrompt;
     private readonly FilterOptionsBuilder _filterOptionsBuilder;
     private readonly ILoggerFactory _loggerFactory;
+    private readonly IPerformanceTracker? _performanceTracker;
 
     /// <summary>
     /// Initializes a new instance of <see cref="PipelineExecutor"/>.
@@ -69,6 +71,7 @@ public class PipelineExecutor
     /// <param name="confirmationPrompt">Filter confirmation prompt for user confirmation.</param>
     /// <param name="filterOptionsBuilder">Builder for converting ExecutionOptions to FilterOptions.</param>
     /// <param name="loggerFactory">Logger factory for creating loggers.</param>
+    /// <param name="performanceTracker">Optional performance tracker whose report is shown with --metrics.</param>
     public PipelineExecutor(
         PipelineParserFactory parserFactory,
         PDK.Runners.IContainerManager containerManager,
@@ -89,7 +92,8 @@ public class PipelineExecutor
         FilterPreviewUI previewUI,
         FilterConfirmationPrompt confirmationPrompt,
         FilterOptionsBuilder filterOptionsBuilder,
-        ILoggerFactory loggerFactory)
+        ILoggerFactory loggerFactory,
+        IPerformanceTracker? performanceTracker = null)
     {
         _parserFactory = parserFactory ?? throw new ArgumentNullException(nameof(parserFactory));
         _containerManager = containerManager ?? throw new ArgumentNullException(nameof(containerManager));
@@ -111,6 +115,7 @@ public class PipelineExecutor
         _confirmationPrompt = confirmationPrompt ?? throw new ArgumentNullException(nameof(confirmationPrompt));
         _filterOptionsBuilder = filterOptionsBuilder ?? throw new ArgumentNullException(nameof(filterOptionsBuilder));
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
+        _performanceTracker = performanceTracker;
     }
 
     /// <summary>
@@ -375,6 +380,11 @@ public class PipelineExecutor
             }
         }
 
+        if (options.ShowMetrics)
+        {
+            DisplayMetrics(jobResults, pipelineStartTime.Elapsed);
+        }
+
         _output.WriteLine();
         if (allJobsSucceeded)
         {
@@ -431,6 +441,44 @@ public class PipelineExecutor
         };
 
         return JobRunnerSupport.WithResolverVariables(context, _variableResolver);
+    }
+
+    /// <summary>
+    /// Shows the performance metrics (--metrics): container and image overhead in Docker mode and the slowest steps.
+    /// </summary>
+    private void DisplayMetrics(List<JobExecutionResult> jobResults, TimeSpan totalDuration)
+    {
+        var report = _performanceTracker?.GetReport();
+        var table = new Table().Border(TableBorder.Rounded).Title("Performance Metrics");
+        table.AddColumn("Metric");
+        table.AddColumn("Value");
+        table.AddRow("Total duration", StepStatusDisplay.FormatDuration(totalDuration));
+
+        var executed = jobResults.SelectMany(j => j.StepResults.Select(s => (Job: j.JobName, Step: s)))
+            .Where(x => !x.Step.Skipped)
+            .ToList();
+        var stepTime = TimeSpan.FromTicks(executed.Sum(x => x.Step.Duration.Ticks));
+        table.AddRow("Time in steps", StepStatusDisplay.FormatDuration(stepTime));
+
+        if (report != null && (report.ContainersCreated > 0 || report.ImagesPulled > 0 || report.ImagesCached > 0))
+        {
+            table.AddRow("Container overhead", StepStatusDisplay.FormatDuration(report.ContainerOverhead));
+            table.AddRow("Image pull time", StepStatusDisplay.FormatDuration(report.ImagePullTime));
+            table.AddRow("Containers created", report.ContainersCreated.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            table.AddRow("Images pulled / cached", $"{report.ImagesPulled} / {report.ImagesCached}");
+            if (report.PulledImages.Count > 0)
+            {
+                table.AddRow("Pulled images", Markup.Escape(string.Join(", ", report.PulledImages)));
+            }
+        }
+
+        foreach (var (jobName, step) in executed.OrderByDescending(x => x.Step.Duration).Take(10))
+        {
+            table.AddRow(Markup.Escape($"Step: {jobName} / {step.StepName}"), StepStatusDisplay.FormatDuration(step.Duration));
+        }
+
+        _console.WriteLine();
+        _console.Write(table);
     }
 
     /// <summary>

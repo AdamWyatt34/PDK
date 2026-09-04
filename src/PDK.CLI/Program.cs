@@ -15,6 +15,7 @@ using PDK.CLI.Logging;
 using PDK.Cli.Filtering;
 using PDK.Core.Diagnostics;
 using PDK.Core.Logging;
+using PDK.Core.Performance;
 using PDK.Core.Progress;
 using PDK.Core.Models;
 using PDK.Providers.AzureDevOps;
@@ -1052,6 +1053,9 @@ static void ConfigureServices(ServiceCollection services)
 
     // Register process executor for host mode
     services.AddSingleton<IProcessExecutor, ProcessExecutor>();
+
+    // Performance metrics (--metrics): one tracker per process, read by the pipeline executor
+    services.AddSingleton<IPerformanceTracker, PerformanceTracker>();
 
     // Register both job runners as concrete types (Sprint 10)
     services.AddSingleton<DockerJobRunner>();
