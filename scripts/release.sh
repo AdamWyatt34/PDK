@@ -3,7 +3,7 @@
 # Usage: ./release.sh
 # Interactive script for performing local releases
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -19,7 +19,7 @@ cd "$ROOT_DIR"
 BRANCH=$(git branch --show-current)
 if [ "$BRANCH" != "main" ]; then
     echo "Warning: Not on main branch (current: $BRANCH)"
-    read -p "Continue anyway? (y/N): " CONTINUE
+    read -r -p "Continue anyway? (y/N): " CONTINUE
     if [ "$CONTINUE" != "y" ] && [ "$CONTINUE" != "Y" ]; then
         echo "Release cancelled."
         exit 0
@@ -34,13 +34,14 @@ if [ -n "$(git status --porcelain)" ]; then
     exit 1
 fi
 
-# Get current version
-CURRENT_VERSION=$(grep -oP '<VersionPrefix>\K[^<]+' "$ROOT_DIR/Directory.Build.props" || echo "0.0.0")
+# Get current version (portable: BSD grep has no -P)
+CURRENT_VERSION=$(sed -n 's/.*<VersionPrefix>\([^<]*\)<\/VersionPrefix>.*/\1/p' "$ROOT_DIR/Directory.Build.props" | head -n 1)
+CURRENT_VERSION=${CURRENT_VERSION:-0.0.0}
 echo "Current version: $CURRENT_VERSION"
 echo ""
 
 # Prompt for version
-read -p "Enter version to release (e.g., 1.0.0): " VERSION
+read -r -p "Enter version to release (e.g., 1.0.0): " VERSION
 
 if [ -z "$VERSION" ]; then
     echo "Error: Version is required."
@@ -53,6 +54,13 @@ if ! [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     exit 1
 fi
 
+# The tag must not exist yet, locally or on the remote
+if git rev-parse -q --verify "refs/tags/v$VERSION" > /dev/null 2>&1 \
+   || git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null 2>&1; then
+    echo "Error: Tag v$VERSION already exists. Pick a version that has not been released."
+    exit 1
+fi
+
 # Confirm release
 echo ""
 echo "Release Plan:"
@@ -62,18 +70,27 @@ echo ""
 echo "Steps to be executed:"
 echo "  1. Update version in Directory.Build.props"
 echo "  2. Generate changelog from commits"
-echo "  3. Commit version and changelog"
-echo "  4. Build solution (Release)"
-echo "  5. Run tests with coverage"
-echo "  6. Pack as dotnet tool"
-echo "  7. Create Git tag (v$VERSION)"
+echo "  3. Build solution (Release)"
+echo "  4. Run tests with coverage"
+echo "  5. Pack as dotnet tool"
+echo "  6. Commit version and changelog"
+echo "  7. Create Git tag (v$VERSION) and push commit + tag"
 echo ""
-read -p "Continue with release? (y/N): " CONFIRM
+read -r -p "Continue with release? (y/N): " CONFIRM
 
 if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
     echo "Release cancelled."
     exit 0
 fi
+
+# Nothing is committed or pushed until the build, the tests and the package are known to be good.
+# If a step below fails, the version/changelog edits are left in the working tree.
+on_error() {
+    echo ""
+    echo "Release failed. The version and changelog edits are left uncommitted; discard them with:"
+    echo "  git checkout -- Directory.Build.props CHANGELOG.md"
+}
+trap on_error ERR
 
 echo ""
 echo "Step 1: Updating version..."
@@ -86,24 +103,17 @@ echo "--------------------------------"
 "$SCRIPT_DIR/generate-changelog.sh" "$VERSION"
 
 echo ""
-echo "Step 3: Committing changes..."
-echo "------------------------------"
-git add Directory.Build.props CHANGELOG.md
-git commit -m "chore: release v$VERSION"
-git push
-
-echo ""
-echo "Step 4: Building solution..."
+echo "Step 3: Building solution..."
 echo "-----------------------------"
 dotnet build --configuration Release
 
 echo ""
-echo "Step 5: Running tests..."
+echo "Step 4: Running tests..."
 echo "-------------------------"
 dotnet test --configuration Release --no-build --collect:"XPlat Code Coverage" --settings coverlet.runsettings
 
 echo ""
-echo "Step 6: Packing..."
+echo "Step 5: Packing..."
 echo "-------------------"
 rm -rf "$ROOT_DIR/publish"
 dotnet pack src/PDK.CLI/PDK.CLI.csproj --configuration Release --no-build --output "$ROOT_DIR/publish"
@@ -112,10 +122,19 @@ echo ""
 echo "Packages created:"
 ls -lh "$ROOT_DIR/publish/"
 
+trap - ERR
+
 echo ""
-echo "Step 7: Creating Git tag..."
-echo "----------------------------"
-git tag "v$VERSION"
+echo "Step 6: Committing changes..."
+echo "------------------------------"
+git add Directory.Build.props CHANGELOG.md
+git commit -m "chore: release v$VERSION"
+
+echo ""
+echo "Step 7: Creating Git tag and pushing..."
+echo "----------------------------------------"
+git tag -a "v$VERSION" -m "PDK v$VERSION"
+git push origin HEAD
 git push origin "v$VERSION"
 
 echo ""

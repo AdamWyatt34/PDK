@@ -38,7 +38,8 @@ $OverallSuccess = $true
 function Invoke-Step {
     param(
         [string]$StepName,
-        [string]$StepScript
+        [string]$StepScript,
+        [hashtable]$StepArguments = @{}
     )
 
     Write-Host ""
@@ -46,7 +47,8 @@ function Invoke-Step {
     Write-Host "----------------------------------------"
 
     try {
-        & $StepScript
+        $global:LASTEXITCODE = 0
+        & $StepScript @StepArguments
         $exitCode = $LASTEXITCODE
         if ($exitCode -eq 0) {
             $script:StepResults += @{ Name = $StepName; Passed = $true }
@@ -77,15 +79,11 @@ if ($Quick) {
 
     # Step 3: CI Comparison (optional)
     if ($CompareCI) {
+        $compareArguments = @{}
         if (-not [string]::IsNullOrEmpty($CIRunId)) {
-            # Create a temp script to call with parameters
-            $compareScript = {
-                & "$ScriptDir/compare-outputs.ps1" -CIRunId $CIRunId
-            }
-            Invoke-Step -StepName "CI Comparison" -StepScript "$ScriptDir/compare-outputs.ps1" | Out-Null
-        } else {
-            Invoke-Step -StepName "CI Comparison" -StepScript "$ScriptDir/compare-outputs.ps1" | Out-Null
+            $compareArguments.CIRunId = $CIRunId
         }
+        Invoke-Step -StepName "CI Comparison" -StepScript "$ScriptDir/compare-outputs.ps1" -StepArguments $compareArguments | Out-Null
     }
 }
 

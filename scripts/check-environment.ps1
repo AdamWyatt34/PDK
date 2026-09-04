@@ -5,9 +5,15 @@
 $ErrorActionPreference = "Continue"
 $script:ExitCode = 0
 
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ProjectRoot = Split-Path -Parent $ScriptDir
+
 Write-Host "Environment Parity Check"
 Write-Host "========================"
 Write-Host ""
+
+# Run from the project root so the project checks below work from any directory
+Set-Location $ProjectRoot
 
 function Write-OK {
     param([string]$Message)

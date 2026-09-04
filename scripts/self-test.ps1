@@ -18,17 +18,29 @@ $Timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $OutputDir = ".pdk-dogfood/runs/$Timestamp"
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
-# Create latest symlink (Windows uses junction for directories)
-$LatestPath = ".pdk-dogfood/runs/latest"
-if (Test-Path $LatestPath) {
-    Remove-Item $LatestPath -Force -Recurse
+# Create "latest" junction (Windows uses a directory junction instead of a symlink).
+# The target must be absolute: a relative junction target is resolved against the caller's
+# current directory, so it dangles as soon as the link is used from anywhere else.
+$RunsDir = Join-Path $ProjectRoot ".pdk-dogfood/runs"
+$LatestPath = Join-Path $RunsDir "latest"
+$LatestTarget = [System.IO.Path]::GetFullPath((Join-Path $RunsDir $Timestamp))
+$existingLatest = Get-Item -LiteralPath $LatestPath -Force -ErrorAction SilentlyContinue
+if ($existingLatest) {
+    if ($existingLatest.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+        # Remove the link itself; Remove-Item -Recurse would follow the junction and delete the previous run
+        [System.IO.Directory]::Delete($LatestPath)
+    } else {
+        Remove-Item -LiteralPath $LatestPath -Force -Recurse
+    }
 }
-# On Windows, create a directory junction instead of symlink
 try {
-    cmd /c mklink /J $LatestPath $Timestamp 2>$null | Out-Null
+    cmd /c mklink /J "$LatestPath" "$LatestTarget" 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "mklink failed with exit code $LASTEXITCODE"
+    }
 } catch {
     # Fallback: just note the latest directory
-    Set-Content -Path ".pdk-dogfood/runs/latest.txt" -Value $Timestamp
+    Set-Content -Path (Join-Path $RunsDir "latest.txt") -Value $Timestamp
 }
 
 Write-Host "Output directory: $OutputDir" -ForegroundColor Cyan
