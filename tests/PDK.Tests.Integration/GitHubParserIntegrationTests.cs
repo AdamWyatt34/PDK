@@ -51,7 +51,7 @@ public class GitHubParserIntegrationTests
 
         // Step 2: Setup .NET
         buildJob.Steps[1].Name.Should().Be("Setup .NET");
-        buildJob.Steps[1].Type.Should().Be(StepType.Dotnet);
+        buildJob.Steps[1].Type.Should().Be(StepType.Setup);
         buildJob.Steps[1].With.Should().ContainKey("dotnet-version");
 
         // Step 3: Restore dependencies
@@ -100,7 +100,7 @@ public class GitHubParserIntegrationTests
         var lintJob = pipeline.Jobs["lint"];
         lintJob.Steps.Should().HaveCount(4);
         lintJob.Steps[0].Type.Should().Be(StepType.Checkout);
-        lintJob.Steps[1].Type.Should().Be(StepType.Npm);
+        lintJob.Steps[1].Type.Should().Be(StepType.Setup);
         lintJob.Steps[2].Script.Should().Be("npm ci");
         lintJob.Steps[3].Name.Should().Be("Run linter");
 
@@ -149,14 +149,14 @@ public class GitHubParserIntegrationTests
         backendJob.Environment.Should().ContainKey("SERVICE");
         backendJob.Environment["SERVICE"].Should().Be("backend");
         backendJob.Steps.Should().HaveCount(4);
-        backendJob.Steps[1].Type.Should().Be(StepType.Dotnet);
+        backendJob.Steps[1].Type.Should().Be(StepType.Setup);
 
         // Verify frontend job
         var frontendJob = pipeline.Jobs["build-frontend"];
         frontendJob.Environment.Should().ContainKey("SERVICE");
         frontendJob.Environment["SERVICE"].Should().Be("frontend");
         frontendJob.Steps.Should().HaveCount(4);
-        frontendJob.Steps[1].Type.Should().Be(StepType.Npm);
+        frontendJob.Steps[1].Type.Should().Be(StepType.Setup);
         frontendJob.Steps[2].WorkingDirectory.Should().Be("./src/frontend");
         frontendJob.Steps[3].WorkingDirectory.Should().Be("./src/frontend");
 
@@ -204,7 +204,7 @@ public class GitHubParserIntegrationTests
         buildJob.Steps.Should().Contain(s => s.Type == StepType.Checkout);
 
         // Verify .NET setup step exists
-        buildJob.Steps.Should().Contain(s => s.Type == StepType.Dotnet);
+        buildJob.Steps.Should().Contain(s => s.Type == StepType.Setup);
     }
 
     [Fact]

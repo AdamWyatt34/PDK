@@ -29,7 +29,7 @@ public class ActionMapperTests
     }
 
     [Fact]
-    public void MapStep_WithSetupDotnetAction_ReturnsDotnetStepType()
+    public void MapStep_WithSetupDotnetAction_ReturnsSetupStepType()
     {
         // Arrange
         var gitHubStep = new GitHubStep
@@ -45,13 +45,14 @@ public class ActionMapperTests
         var result = ActionMapper.MapStep(gitHubStep, 0);
 
         // Assert
-        result.Type.Should().Be(StepType.Dotnet);
+        result.Type.Should().Be(StepType.Setup);
+        result.ActionReference.Should().Be("actions/setup-dotnet@v3");
         result.With.Should().ContainKey("dotnet-version");
         result.With["dotnet-version"].Should().Be("8.0");
     }
 
     [Fact]
-    public void MapStep_WithSetupNodeAction_ReturnsNpmStepType()
+    public void MapStep_WithSetupNodeAction_ReturnsSetupStepType()
     {
         // Arrange
         var gitHubStep = new GitHubStep
@@ -67,7 +68,8 @@ public class ActionMapperTests
         var result = ActionMapper.MapStep(gitHubStep, 0);
 
         // Assert
-        result.Type.Should().Be(StepType.Npm);
+        result.Type.Should().Be(StepType.Setup);
+        result.ActionReference.Should().Be("actions/setup-node@v3");
         result.Name.Should().Be("Setup Node.js");
     }
 
@@ -110,7 +112,7 @@ public class ActionMapperTests
     }
 
     [Fact]
-    public void MapStep_WithBashShell_ReturnsBashStepType()
+    public void MapStep_WithBashShell_ReturnsScriptStepType()
     {
         // Arrange
         var gitHubStep = new GitHubStep
@@ -123,7 +125,7 @@ public class ActionMapperTests
         var result = ActionMapper.MapStep(gitHubStep, 0);
 
         // Assert
-        result.Type.Should().Be(StepType.Bash);
+        result.Type.Should().Be(StepType.Script);
         result.Shell.Should().Be("bash");
     }
 

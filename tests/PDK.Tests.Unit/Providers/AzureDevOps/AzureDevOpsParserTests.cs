@@ -435,7 +435,7 @@ jobs:
     }
 
     [Fact]
-    public void Parse_WithSelfHostedPool_UsesPoolName()
+    public void Parse_WithSelfHostedPool_MapsToSelfHostedRunner()
     {
         // Arrange
         var yaml = @"
@@ -451,7 +451,7 @@ steps:
         var result = _parser.Parse(yaml);
 
         // Assert
-        result.Jobs["default"].RunsOn.Should().Be("MyAgentPool");
+        result.Jobs["default"].RunsOn.Should().Be("self-hosted");
     }
 
     [Fact]
