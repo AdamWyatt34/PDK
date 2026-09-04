@@ -194,6 +194,30 @@ public class ExecutionOptions
     /// </summary>
     public string? FilterPreset { get; set; }
 
+    // Job graph and execution policies
+
+    /// <summary>
+    /// Gets or sets whether the transitive dependencies of the selected job (--job) are NOT run first.
+    /// Default is false: dependencies run before the selected job, as they would on the CI server.
+    /// </summary>
+    public bool NoDependencies { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether unsupported actions/tasks fail the job instead of being skipped with a warning.
+    /// </summary>
+    public bool StrictUnsupportedSteps { get; set; }
+
+    /// <summary>
+    /// Gets or sets the event name presented to the pipeline (<c>github.event_name</c>, <c>Build.Reason</c>).
+    /// Default is "push".
+    /// </summary>
+    public string EventName { get; set; } = "push";
+
+    /// <summary>
+    /// Gets or sets whether job containers are kept after the run for inspection (Docker mode).
+    /// </summary>
+    public bool KeepContainers { get; set; }
+
     /// <summary>
     /// Gets whether any step filtering is active.
     /// </summary>

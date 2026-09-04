@@ -173,28 +173,121 @@ public class HostJobRunnerTests
     #region RunJobAsync - Failure Scenarios
 
     [Fact]
-    public async Task RunJobAsync_StepFails_StopsExecution()
+    public async Task RunJobAsync_StepFails_SkipsRemainingSteps()
     {
         // Arrange
         var job = CreateTestJob(3);
         var workspacePath = CreateTempWorkspace();
+        var executed = 0;
 
         _mockScriptExecutor
-            .SetupSequence(x => x.ExecuteAsync(
+            .Setup(x => x.ExecuteAsync(
                 It.IsAny<Step>(),
                 It.IsAny<HostExecutionContext>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessStepResult("Step 1"))
-            .ReturnsAsync(CreateFailureStepResult("Step 2"))
-            .ReturnsAsync(CreateSuccessStepResult("Step 3")); // Should not be called
+            .ReturnsAsync(() =>
+            {
+                executed++;
+                return executed == 2 ? CreateFailureStepResult("Step 2") : CreateSuccessStepResult($"Step {executed}");
+            });
 
         // Act
         var result = await _runner.RunJobAsync(job, workspacePath);
 
         // Assert
         result.Success.Should().BeFalse();
-        result.StepResults.Should().HaveCount(2); // Step 3 not executed
         result.ErrorMessage.Should().Contain("failed");
+        result.StepResults.Should().HaveCount(3);
+        executed.Should().Be(2, "the step after a failure must not run");
+        result.StepResults[1].Success.Should().BeFalse();
+        result.StepResults[2].Skipped.Should().BeTrue();
+        result.StepResults[2].SkipReason.Should().Contain("previous step failed");
+    }
+
+    [Fact]
+    public async Task RunJobAsync_StepWithAlwaysCondition_RunsAfterFailure()
+    {
+        // Arrange
+        var job = CreateTestJob(3);
+        job.Steps[2].Condition = new Condition { Expression = "always()" };
+        var workspacePath = CreateTempWorkspace();
+        var executed = 0;
+
+        _mockScriptExecutor
+            .Setup(x => x.ExecuteAsync(
+                It.IsAny<Step>(),
+                It.IsAny<HostExecutionContext>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                executed++;
+                return executed == 2 ? CreateFailureStepResult("Step 2") : CreateSuccessStepResult($"Step {executed}");
+            });
+
+        // Act
+        var result = await _runner.RunJobAsync(job, workspacePath);
+
+        // Assert
+        result.Success.Should().BeFalse();
+        executed.Should().Be(3);
+        result.StepResults[2].Skipped.Should().BeFalse();
+        result.StepResults[2].Success.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task RunJobAsync_StepWithFalseCondition_IsSkipped()
+    {
+        // Arrange
+        var job = CreateTestJob(2);
+        job.Steps[0].Condition = new Condition { Expression = "${{ github.event_name == 'pull_request' }}" };
+        var workspacePath = CreateTempWorkspace();
+        var executed = 0;
+
+        _mockScriptExecutor
+            .Setup(x => x.ExecuteAsync(
+                It.IsAny<Step>(),
+                It.IsAny<HostExecutionContext>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                executed++;
+                return CreateSuccessStepResult($"Step {executed}");
+            });
+
+        // Act
+        var result = await _runner.RunJobAsync(job, workspacePath);
+
+        // Assert
+        result.Success.Should().BeTrue();
+        executed.Should().Be(1);
+        result.StepResults[0].Skipped.Should().BeTrue();
+        result.StepResults[0].SkipReason.Should().Contain("evaluated to false");
+        result.StepResults[1].Success.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task RunJobAsync_UnsupportedStep_IsSkippedWithWarning_UnlessStrict()
+    {
+        // Arrange
+        var job = CreateTestJob(1);
+        job.Steps[0].Type = StepType.Unknown;
+        job.Steps[0].ActionReference = "some/unknown-action@v1";
+        var workspacePath = CreateTempWorkspace();
+
+        // Act
+        var lenient = await _runner.RunJobAsync(job, workspacePath);
+        var strict = await _runner.RunJobAsync(
+            job,
+            new JobRunContext { WorkspacePath = workspacePath, StrictUnsupportedSteps = true });
+
+        // Assert
+        lenient.Success.Should().BeTrue();
+        lenient.StepResults[0].Skipped.Should().BeTrue();
+        lenient.StepResults[0].SkipReason.Should().Contain("some/unknown-action@v1");
+
+        strict.Success.Should().BeFalse();
+        strict.StepResults[0].Skipped.Should().BeFalse();
+        strict.StepResults[0].ErrorOutput.Should().Contain("strict mode");
     }
 
     [Fact]
@@ -218,8 +311,11 @@ public class HostJobRunnerTests
         var result = await _runner.RunJobAsync(job, workspacePath);
 
         // Assert
-        result.Success.Should().BeFalse(); // Still fails overall
+        result.Success.Should().BeTrue("a continue-on-error failure does not fail the job");
         result.StepResults.Should().HaveCount(3); // All steps executed
+        result.StepResults[1].Success.Should().BeFalse();
+        result.StepResults[1].AllowedFailure.Should().BeTrue();
+        result.StepResults[2].Skipped.Should().BeFalse();
     }
 
     [Fact]
@@ -244,16 +340,54 @@ public class HostJobRunnerTests
     #region RunJobAsync - Variable Expansion
 
     [Fact]
-    public async Task RunJobAsync_ExpandsVariablesInScript()
+    public async Task RunJobAsync_ExportsVariablesAndSecretsToStepEnvironment()
     {
         // Arrange
         var job = CreateTestJob(1);
         job.Steps[0].Script = "echo ${MY_VAR}";
         var workspacePath = CreateTempWorkspace();
 
+        _mockVariableResolver
+            .Setup(x => x.GetAllVariables())
+            .Returns(new Dictionary<string, string> { ["MY_VAR"] = "expanded_value", ["API_TOKEN"] = "s3cret" });
+        _mockVariableResolver.Setup(x => x.GetSource("MY_VAR")).Returns(VariableSource.Configuration);
+        _mockVariableResolver.Setup(x => x.GetSource("API_TOKEN")).Returns(VariableSource.Secret);
+
+        Step? capturedStep = null;
+        HostExecutionContext? capturedContext = null;
+        _mockScriptExecutor
+            .Setup(x => x.ExecuteAsync(
+                It.IsAny<Step>(),
+                It.IsAny<HostExecutionContext>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<Step, HostExecutionContext, CancellationToken>((s, c, _) => { capturedStep = s; capturedContext = c; })
+            .ReturnsAsync(CreateSuccessStepResult("Step 1"));
+
+        // Act
+        await _runner.RunJobAsync(job, workspacePath);
+
+        // Assert: scripts are not rewritten, the shell resolves exported variables instead
+        capturedStep.Should().NotBeNull();
+        capturedStep!.Script.Should().Be("echo ${MY_VAR}");
+        capturedContext.Should().NotBeNull();
+        capturedContext!.Environment.Should().Contain("MY_VAR", "expanded_value");
+        capturedContext.Environment.Should().Contain("API_TOKEN", "s3cret");
+        capturedContext.Environment.Should().ContainKey("GITHUB_OUTPUT");
+        capturedContext.Environment.Should().ContainKey("GITHUB_WORKSPACE");
+        capturedContext.Environment.Should().Contain("CI", "true");
+    }
+
+    [Fact]
+    public async Task RunJobAsync_ExpandsPdkVariablesInStepInputs()
+    {
+        // Arrange
+        var job = CreateTestJob(1);
+        job.Steps[0].With["path"] = "${OUT_DIR}";
+        var workspacePath = CreateTempWorkspace();
+
         _mockVariableExpander
-            .Setup(x => x.Expand("echo ${MY_VAR}", It.IsAny<IVariableResolver>()))
-            .Returns("echo expanded_value");
+            .Setup(x => x.Expand("${OUT_DIR}", It.IsAny<IVariableResolver>()))
+            .Returns("dist");
 
         Step? capturedStep = null;
         _mockScriptExecutor
@@ -269,7 +403,42 @@ public class HostJobRunnerTests
 
         // Assert
         capturedStep.Should().NotBeNull();
-        capturedStep!.Script.Should().Be("echo expanded_value");
+        capturedStep!.With.Should().Contain("path", "dist");
+    }
+
+    [Fact]
+    public async Task RunJobAsync_ExpandsExpressionsAndCollectsOutputs()
+    {
+        // Arrange
+        var job = CreateTestJob(2);
+        job.Steps[0].Id = "first";
+        job.Steps[1].Script = "echo ${{ steps.first.outputs.version }}";
+        var workspacePath = CreateTempWorkspace();
+
+        var scripts = new List<string?>();
+        _mockScriptExecutor
+            .Setup(x => x.ExecuteAsync(
+                It.IsAny<Step>(),
+                It.IsAny<HostExecutionContext>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<Step, HostExecutionContext, CancellationToken>((s, c, _) =>
+            {
+                scripts.Add(s.Script);
+                if (s.Id == "first")
+                {
+                    File.WriteAllText(c.Environment["GITHUB_OUTPUT"], "version=1.2.3\n");
+                }
+
+                return Task.FromResult(CreateSuccessStepResult(s.Name));
+            });
+
+        // Act
+        var result = await _runner.RunJobAsync(job, workspacePath);
+
+        // Assert
+        result.Success.Should().BeTrue();
+        scripts[1].Should().Be("echo 1.2.3");
+        result.Outputs.Should().Contain("first.version", "1.2.3");
     }
 
     [Fact]

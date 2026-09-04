@@ -271,6 +271,26 @@ var filterPresetOption = new Option<string?>(
     aliases: ["--preset"],
     description: "Load filter preset from configuration file");
 
+var noDepsOption = new Option<bool>(
+    aliases: ["--no-deps"],
+    description: "With --job: run only the selected job, not the jobs it depends on",
+    getDefaultValue: () => false);
+
+var strictOption = new Option<bool>(
+    aliases: ["--strict"],
+    description: "Fail the job when it contains an action or task PDK cannot run (default: skip with a warning)",
+    getDefaultValue: () => false);
+
+var eventOption = new Option<string>(
+    aliases: ["--event"],
+    description: "Event name presented to the pipeline (github.event_name / Build.Reason), e.g. push, pull_request",
+    getDefaultValue: () => "push");
+
+var keepContainersOption = new Option<bool>(
+    aliases: ["--keep-containers"],
+    description: "Keep job containers after the run for inspection (Docker mode)",
+    getDefaultValue: () => false);
+
 runCommand.AddOption(fileOption);
 runCommand.AddOption(jobOption);
 runCommand.AddOption(stepOption);
@@ -308,6 +328,10 @@ runCommand.AddOption(includeDepsOption);
 runCommand.AddOption(previewFilterOption);
 runCommand.AddOption(confirmFilterOption);
 runCommand.AddOption(filterPresetOption);
+runCommand.AddOption(noDepsOption);
+runCommand.AddOption(strictOption);
+runCommand.AddOption(eventOption);
+runCommand.AddOption(keepContainersOption);
 
 runCommand.SetHandler(async context =>
 {
@@ -349,6 +373,10 @@ runCommand.SetHandler(async context =>
     var previewFilter = context.ParseResult.GetValueForOption(previewFilterOption);
     var confirmFilter = context.ParseResult.GetValueForOption(confirmFilterOption);
     var filterPreset = context.ParseResult.GetValueForOption(filterPresetOption);
+    var noDeps = context.ParseResult.GetValueForOption(noDepsOption);
+    var strict = context.ParseResult.GetValueForOption(strictOption);
+    var eventName = context.ParseResult.GetValueForOption(eventOption) ?? "push";
+    var keepContainers = context.ParseResult.GetValueForOption(keepContainersOption);
 
     // --dry-run-json implies --dry-run
     if (!string.IsNullOrEmpty(dryRunJson))
@@ -396,7 +424,7 @@ runCommand.SetHandler(async context =>
             AnsiConsole.MarkupLine("[yellow]         [/] Sensitive data may appear in logs and console output.");
         }
 
-        // Build logging options from CLI flags
+        // Build logging options from CLI flags and apply them to the logging pipeline
         var loggingOptions = LoggingOptionsBuilder.FromCliFlags(
             verbose: verbose,
             trace: trace,
@@ -405,6 +433,7 @@ runCommand.SetHandler(async context =>
             logFile: logFile,
             logJson: logJson,
             noRedact: noRedact);
+        serviceProvider.GetRequiredService<PdkLoggingController>().Apply(loggingOptions);
 
         // Determine runner type from CLI options
         var runnerType = DetermineRunnerType(host, docker, runner);
@@ -535,7 +564,11 @@ runCommand.SetHandler(async context =>
                 IncludeDependencies = includeDeps,
                 PreviewFilter = previewFilter,
                 ConfirmFilter = confirmFilter,
-                FilterPreset = filterPreset
+                FilterPreset = filterPreset,
+                NoDependencies = noDeps,
+                StrictUnsupportedSteps = strict,
+                EventName = eventName,
+                KeepContainers = keepContainers
             };
 
             var watchModeOptions = new WatchModeOptions
@@ -581,7 +614,11 @@ runCommand.SetHandler(async context =>
             IncludeDependencies = includeDeps,
             PreviewFilter = previewFilter,
             ConfirmFilter = confirmFilter,
-            FilterPreset = filterPreset
+            FilterPreset = filterPreset,
+            NoDependencies = noDeps,
+            StrictUnsupportedSteps = strict,
+            EventName = eventName,
+            KeepContainers = keepContainers
         }, cancellationToken);
         context.ExitCode = runResult.ExitCode;
     }
@@ -909,11 +946,12 @@ finally
 
 static void ConfigureServices(ServiceCollection services)
 {
-    // Configure logging with Serilog (file + structured logging)
-    services.AddLogging(builder =>
-    {
-        builder.ConfigurePdkLogging();
-    });
+    // Logging: one Serilog pipeline whose level, sinks and redaction the run command adjusts
+    // after parsing its flags (--verbose/--trace/--quiet/--silent, --log-file, --log-json, --no-redact)
+    var secretMasker = new SecretMasker();
+    var loggingController = new PdkLoggingController(secretMasker);
+    services.AddSingleton(loggingController);
+    services.AddLogging(builder => loggingController.Configure(builder));
 
     // Register UI services
     services.AddSingleton<IAnsiConsole>(AnsiConsole.Console);
@@ -922,8 +960,8 @@ static void ConfigureServices(ServiceCollection services)
     services.AddSingleton<IProgressReporter>(sp =>
         new ConsoleProgressReporter(sp.GetRequiredService<IAnsiConsole>()));
 
-    // Register secret masker
-    services.AddSingleton<ISecretMasker, SecretMasker>();
+    // Register secret masker (shared with the logging pipeline)
+    services.AddSingleton<ISecretMasker>(secretMasker);
 
     // Register configuration services (Sprint 7)
     services.AddSingleton<ConfigurationValidator>();

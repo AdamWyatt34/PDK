@@ -64,6 +64,11 @@ public record JobSummary
     public bool Success { get; init; }
 
     /// <summary>
+    /// Gets whether the job was skipped (condition false or a dependency did not succeed).
+    /// </summary>
+    public bool Skipped { get; init; }
+
+    /// <summary>
     /// Gets the execution duration.
     /// </summary>
     public TimeSpan Duration { get; init; }
@@ -108,6 +113,11 @@ public record ExecutionSummaryData
     /// Gets the number of failed jobs.
     /// </summary>
     public int FailedJobs { get; init; }
+
+    /// <summary>
+    /// Gets the number of skipped jobs.
+    /// </summary>
+    public int SkippedJobs { get; init; }
 
     /// <summary>
     /// Gets the total number of steps across all jobs.
@@ -182,7 +192,7 @@ public sealed class ExecutionSummaryDisplay
                 : $"Status: [{statusColor}]{statusSymbol} {statusText}[/]",
             $"Duration: {StepStatusDisplay.FormatDuration(data.TotalDuration)}",
             "",
-            $"Jobs:  {data.TotalJobs} total, {data.SuccessfulJobs} succeeded, {data.FailedJobs} failed",
+            $"Jobs:  {data.TotalJobs} total, {data.SuccessfulJobs} succeeded, {data.FailedJobs} failed, {data.SkippedJobs} skipped",
             $"Steps: {data.TotalSteps} total, {data.SuccessfulSteps} succeeded, {data.FailedSteps} failed, {data.SkippedSteps} skipped"
         };
 
@@ -228,9 +238,11 @@ public sealed class ExecutionSummaryDisplay
 
         foreach (var job in data.Jobs)
         {
-            var jobStatus = job.Success
-                ? StepStatusDisplay.StepStatus.Success
-                : StepStatusDisplay.StepStatus.Failed;
+            var jobStatus = job.Skipped
+                ? StepStatusDisplay.StepStatus.Skipped
+                : job.Success
+                    ? StepStatusDisplay.StepStatus.Success
+                    : StepStatusDisplay.StepStatus.Failed;
 
             var jobLine = StepStatusDisplay.FormatStatusWithDuration(
                 jobStatus,

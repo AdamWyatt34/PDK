@@ -60,8 +60,8 @@ public class VariableResolver : IVariableResolver
             return stored.Value;
         }
 
-        // Fall back to built-in variables
-        return _builtInVariables.GetValue(name);
+        // Fall back to built-in variables, then to the host environment (read-only, never exported)
+        return _builtInVariables.GetValue(name) ?? Environment.GetEnvironmentVariable(name);
     }
 
     /// <inheritdoc/>
@@ -78,7 +78,9 @@ public class VariableResolver : IVariableResolver
             return false;
         }
 
-        return _variables.ContainsKey(name) || _builtInVariables.IsBuiltIn(name);
+        return _variables.ContainsKey(name)
+            || _builtInVariables.IsBuiltIn(name)
+            || Environment.GetEnvironmentVariable(name) != null;
     }
 
     /// <inheritdoc/>
@@ -99,7 +101,7 @@ public class VariableResolver : IVariableResolver
             return VariableSource.BuiltIn;
         }
 
-        return null;
+        return Environment.GetEnvironmentVariable(name) != null ? VariableSource.Environment : null;
     }
 
     /// <inheritdoc/>
@@ -214,11 +216,10 @@ public class VariableResolver : IVariableResolver
                     SetVariable(strippedName, value, VariableSource.Environment);
                 }
             }
-            else
-            {
-                // Store all environment variables for potential resolution
-                SetVariable(name, value, VariableSource.Environment);
-            }
+
+            // Other host environment variables are resolvable through Resolve() but are never
+            // stored: storing them would export the whole host environment into every step
+            // (and into containers) and expose it through the vars/variables contexts.
         }
     }
 

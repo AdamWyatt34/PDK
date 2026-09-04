@@ -51,4 +51,10 @@ public record JobExecutionResult
     /// Gets the reason the job was skipped, when <see cref="Skipped"/> is true.
     /// </summary>
     public string? SkipReason { get; init; }
+
+    /// <summary>
+    /// Gets the outputs produced by the job's steps (<c>$GITHUB_OUTPUT</c>, <c>##vso[task.setvariable;isOutput=true]</c>),
+    /// keyed as <c>stepId.name</c> and also as <c>name</c> for the last step that produced it.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Outputs { get; init; } = new Dictionary<string, string>();
 }

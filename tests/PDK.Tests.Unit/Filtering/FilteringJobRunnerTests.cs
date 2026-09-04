@@ -51,7 +51,7 @@ public class FilteringJobRunnerTests
         var runner = CreateRunner(filter);
 
         _mockInnerRunner
-            .Setup(x => x.RunJobAsync(It.IsAny<Job>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(x => x.RunJobAsync(It.IsAny<Job>(), It.IsAny<JobRunContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new JobExecutionResult
             {
                 JobName = job.Name!,
@@ -71,7 +71,7 @@ public class FilteringJobRunnerTests
         _mockInnerRunner.Verify(
             x => x.RunJobAsync(
                 It.Is<Job>(j => j.Steps.Count == 3),
-                It.IsAny<string>(),
+                It.IsAny<JobRunContext>(),
                 It.IsAny<CancellationToken>()),
             Times.Once);
     }
@@ -84,7 +84,7 @@ public class FilteringJobRunnerTests
         var runner = CreateRunner(filter);
 
         _mockInnerRunner
-            .Setup(x => x.RunJobAsync(It.IsAny<Job>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(x => x.RunJobAsync(It.IsAny<Job>(), It.IsAny<JobRunContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new JobExecutionResult
             {
                 JobName = job.Name!,
@@ -105,7 +105,7 @@ public class FilteringJobRunnerTests
         _mockInnerRunner.Verify(
             x => x.RunJobAsync(
                 It.Is<Job>(j => j.Steps.Count == 2),
-                It.IsAny<string>(),
+                It.IsAny<JobRunContext>(),
                 It.IsAny<CancellationToken>()),
             Times.Once);
     }
@@ -125,7 +125,7 @@ public class FilteringJobRunnerTests
 
         // Verify inner runner was not called
         _mockInnerRunner.Verify(
-            x => x.RunJobAsync(It.IsAny<Job>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            x => x.RunJobAsync(It.IsAny<Job>(), It.IsAny<JobRunContext>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -137,7 +137,7 @@ public class FilteringJobRunnerTests
         var runner = CreateRunner(filter);
 
         _mockInnerRunner
-            .Setup(x => x.RunJobAsync(It.IsAny<Job>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(x => x.RunJobAsync(It.IsAny<Job>(), It.IsAny<JobRunContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new JobExecutionResult
             {
                 JobName = job.Name!,
@@ -161,7 +161,7 @@ public class FilteringJobRunnerTests
         var runner = CreateRunner(filter);
 
         _mockInnerRunner
-            .Setup(x => x.RunJobAsync(It.IsAny<Job>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(x => x.RunJobAsync(It.IsAny<Job>(), It.IsAny<JobRunContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new JobExecutionResult
             {
                 JobName = job.Name!,
@@ -188,7 +188,7 @@ public class FilteringJobRunnerTests
         var runner = CreateRunner(filter);
 
         _mockInnerRunner
-            .Setup(x => x.RunJobAsync(It.IsAny<Job>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(x => x.RunJobAsync(It.IsAny<Job>(), It.IsAny<JobRunContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new JobExecutionResult
             {
                 JobName = job.Name!,

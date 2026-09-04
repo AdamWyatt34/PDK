@@ -50,13 +50,26 @@ public class VariableExpanderTests
     }
 
     [Fact]
-    public void Expand_ReturnsEmptyString_ForUndefinedVariable()
+    public void Expand_LeavesUndefinedVariableLiteral()
     {
         // Arrange
         _mockResolver.Setup(r => r.Resolve("UNDEFINED")).Returns((string?)null);
 
         // Act
         var result = _expander.Expand("Value: ${UNDEFINED}", _mockResolver.Object);
+
+        // Assert
+        result.Should().Be("Value: ${UNDEFINED}");
+    }
+
+    [Fact]
+    public void Expand_UsesDefault_ForUndefinedVariableWithDefaultModifier()
+    {
+        // Arrange
+        _mockResolver.Setup(r => r.Resolve("UNDEFINED")).Returns((string?)null);
+
+        // Act
+        var result = _expander.Expand("Value: ${UNDEFINED:-}", _mockResolver.Object);
 
         // Assert
         result.Should().Be("Value: ");

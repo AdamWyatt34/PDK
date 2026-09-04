@@ -63,11 +63,21 @@ public class FilteringJobRunner : IJobRunner
     }
 
     /// <inheritdoc/>
-    public async Task<JobExecutionResult> RunJobAsync(
+    public Task<JobExecutionResult> RunJobAsync(
         Job job,
         string workspacePath,
         CancellationToken cancellationToken = default)
+        => RunJobAsync(job, JobRunContext.ForWorkspace(workspacePath), cancellationToken);
+
+    /// <inheritdoc/>
+    public async Task<JobExecutionResult> RunJobAsync(
+        Job job,
+        JobRunContext runContext,
+        CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(job);
+        ArgumentNullException.ThrowIfNull(runContext);
+
         var startTime = DateTimeOffset.Now;
         var jobName = job.Name ?? job.Id ?? "Unknown";
 
@@ -136,7 +146,7 @@ public class FilteringJobRunner : IJobRunner
         var filteredJob = CreateFilteredJob(job, stepsToExecute.Select(x => x.Step).ToList());
 
         // Execute the filtered job
-        var executionResult = await _innerRunner.RunJobAsync(filteredJob, workspacePath, cancellationToken);
+        var executionResult = await _innerRunner.RunJobAsync(filteredJob, runContext, cancellationToken);
 
         // Merge results: interleave skipped and executed steps in original order
         var mergedResults = MergeResults(executionResult.StepResults, skippedStepResults, stepsToExecute);
@@ -151,7 +161,8 @@ public class FilteringJobRunner : IJobRunner
             Duration = finalEndTime - startTime,
             StartTime = startTime,
             EndTime = finalEndTime,
-            ErrorMessage = executionResult.ErrorMessage
+            ErrorMessage = executionResult.ErrorMessage,
+            Outputs = executionResult.Outputs
         };
     }
 
@@ -167,7 +178,11 @@ public class FilteringJobRunner : IJobRunner
             Environment = originalJob.Environment,
             DependsOn = originalJob.DependsOn,
             Condition = originalJob.Condition,
-            Timeout = originalJob.Timeout
+            Timeout = originalJob.Timeout,
+            Container = originalJob.Container,
+            Matrix = originalJob.Matrix,
+            Variables = originalJob.Variables,
+            Stage = originalJob.Stage
         };
     }
 
@@ -178,6 +193,8 @@ public class FilteringJobRunner : IJobRunner
         {
             StepName = stepName,
             Success = true, // Skipped steps are considered successful
+            Skipped = true,
+            SkipReason = filterResult.Reason,
             ExitCode = 0,
             Output = $"[SKIPPED] {filterResult.Reason}",
             ErrorOutput = string.Empty,
