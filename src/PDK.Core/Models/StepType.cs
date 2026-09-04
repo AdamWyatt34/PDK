@@ -73,5 +73,11 @@ public enum StepType
     /// <summary>
     /// Artifact download step.
     /// </summary>
-    DownloadArtifact
+    DownloadArtifact,
+
+    /// <summary>
+    /// Tool setup step (e.g. <c>actions/setup-dotnet</c>, <c>UseDotNet@2</c>).
+    /// The runner image or host is expected to provide the tool, so the step is a logged no-op.
+    /// </summary>
+    Setup
 }

@@ -40,4 +40,15 @@ public record JobExecutionResult
     /// Gets the error message if the job failed, otherwise null.
     /// </summary>
     public string? ErrorMessage { get; init; }
+
+    /// <summary>
+    /// Gets a value indicating whether the job was skipped without running any step
+    /// (a dependency failed, or the job condition evaluated to false).
+    /// </summary>
+    public bool Skipped { get; init; }
+
+    /// <summary>
+    /// Gets the reason the job was skipped, when <see cref="Skipped"/> is true.
+    /// </summary>
+    public string? SkipReason { get; init; }
 }
