@@ -218,6 +218,13 @@ public partial class ExecutionPlanBuilder
 
     private string MaskIfSecret(string name, string value)
     {
+        // Anything the resolver knows as a secret (stored secrets, --secret, PDK_SECRET_*) is masked
+        // regardless of its name; the name heuristics only add a safety net for plain variables.
+        if (_variableResolver?.GetSource(name) == VariableSource.Secret)
+        {
+            return "***MASKED***";
+        }
+
         // Check if the key looks like a secret
         if (_secretNames.Contains(name) ||
             name.Contains("SECRET", StringComparison.OrdinalIgnoreCase) ||
