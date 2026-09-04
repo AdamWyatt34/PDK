@@ -1,0 +1,26 @@
+<Project>
+  <!-- Inherit the repository-wide build settings, then relax analyzers that are only noise in test code. -->
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+  <PropertyGroup>
+    <!--
+      Test-only suppressions (deliberately kept out of the production build):
+      CA1707 - Underscore in identifiers (test method naming convention)
+      CA1816 - GC.SuppressFinalize (test infrastructure)
+      CS1998 - Async method lacks await (test infrastructure)
+      CA1062 - Validate parameters (test infrastructure)
+      CA1031 - Catch generic exception (test cleanup)
+      CA2201 - Do not raise reserved exception types (test infrastructure)
+      CA1508 - Dead conditional code (test infrastructure)
+      CA2000 - Dispose objects (test infrastructure)
+      CA1849 - Prefer async methods (test infrastructure)
+      CS0219 - Variable assigned but never used (test setup)
+      CA1051 - Visible instance fields (test base classes)
+      CS8625 - Null to non-nullable (test null scenarios)
+      CS8602 - Null dereference (test assertions)
+      CA1311 - Culture in ToLower/ToUpper (test infrastructure)
+      CA1806 - Unused created objects (testing constructors)
+    -->
+    <NoWarn>$(NoWarn);CA1707;CA1816;CS1998;CA1062;CA1031;CA2201;CA1508;CA2000;CA1849;CS0219;CA1051;CS8625;CS8602;CA1311;CA1806</NoWarn>
+  </PropertyGroup>
+</Project>
