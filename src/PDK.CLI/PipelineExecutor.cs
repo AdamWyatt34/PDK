@@ -271,75 +271,82 @@ public class PipelineExecutor
         var runId = PDK.Core.Artifacts.ArtifactContext.GenerateRunId();
         var outputHandler = CreateOutputHandler(cancellationToken);
 
-        for (int i = 0; i < jobsToRun.Count; i++)
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var (jobId, job) = jobsToRun[i];
-            var jobNumber = i + 1;
-
-            var runContext = BuildJobRunContext(pipeline, job, options, config, workspacePath, runId, jobStatuses, jobOutputs, outputHandler);
-
-            // Evaluate the job condition against its dependencies' results
-            var decision = JobConditionEvaluator.Evaluate(job, runContext);
-            if (!decision.Run)
+            for (int i = 0; i < jobsToRun.Count; i++)
             {
-                var now = DateTimeOffset.Now;
-                var earlyResult = new JobExecutionResult
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var (jobId, job) = jobsToRun[i];
+                var jobNumber = i + 1;
+
+                var runContext = BuildJobRunContext(pipeline, job, options, config, workspacePath, runId, jobStatuses, jobOutputs, outputHandler);
+
+                // Evaluate the job condition against its dependencies' results
+                var decision = JobConditionEvaluator.Evaluate(job, runContext);
+                if (!decision.Run)
                 {
-                    JobName = job.Name,
-                    Success = !decision.Failed,
-                    Skipped = !decision.Failed,
-                    SkipReason = decision.Failed ? null : decision.Reason,
-                    ErrorMessage = decision.Failed ? decision.Reason : null,
-                    StepResults = [],
-                    Duration = TimeSpan.Zero,
-                    StartTime = now,
-                    EndTime = now
-                };
+                    var now = DateTimeOffset.Now;
+                    var earlyResult = new JobExecutionResult
+                    {
+                        JobName = job.Name,
+                        Success = !decision.Failed,
+                        Skipped = !decision.Failed,
+                        SkipReason = decision.Failed ? null : decision.Reason,
+                        ErrorMessage = decision.Failed ? decision.Reason : null,
+                        StepResults = [],
+                        Duration = TimeSpan.Zero,
+                        StartTime = now,
+                        EndTime = now
+                    };
 
-                jobResults.Add(earlyResult);
-                jobStatuses[jobId] = decision.Failed ? "failure" : "skipped";
+                    jobResults.Add(earlyResult);
+                    jobStatuses[jobId] = decision.Failed ? "failure" : "skipped";
 
-                if (decision.Failed)
+                    if (decision.Failed)
+                    {
+                        allJobsSucceeded = false;
+                        _output.WriteError($"Job '{job.Name}' failed: {decision.Reason}");
+                    }
+                    else
+                    {
+                        _output.WriteWarning($"Skipping job '{job.Name}': {decision.Reason}");
+                    }
+
+                    continue;
+                }
+
+                // Report job start
+                await _progressReporter.ReportJobStartAsync(job.Name, jobNumber, totalJobs, cancellationToken);
+
+                var stopwatch = Stopwatch.StartNew();
+
+                // Execute the job
+                var result = await jobRunner.RunJobAsync(job, runContext, cancellationToken);
+                jobResults.Add(result);
+                jobStatuses[jobId] = result.Success ? "success" : "failure";
+                jobOutputs[jobId] = result.Outputs;
+
+                stopwatch.Stop();
+
+                // Report job completion
+                await _progressReporter.ReportJobCompleteAsync(job.Name, result.Success, stopwatch.Elapsed, cancellationToken);
+
+                if (!result.Success)
                 {
                     allJobsSucceeded = false;
-                    _output.WriteError($"Job '{job.Name}' failed: {decision.Reason}");
-                }
-                else
-                {
-                    _output.WriteWarning($"Skipping job '{job.Name}': {decision.Reason}");
-                }
 
-                continue;
-            }
-
-            // Report job start
-            await _progressReporter.ReportJobStartAsync(job.Name, jobNumber, totalJobs, cancellationToken);
-
-            var stopwatch = Stopwatch.StartNew();
-
-            // Execute the job
-            var result = await jobRunner.RunJobAsync(job, runContext, cancellationToken);
-            jobResults.Add(result);
-            jobStatuses[jobId] = result.Success ? "success" : "failure";
-            jobOutputs[jobId] = result.Outputs;
-
-            stopwatch.Stop();
-
-            // Report job completion
-            await _progressReporter.ReportJobCompleteAsync(job.Name, result.Success, stopwatch.Elapsed, cancellationToken);
-
-            if (!result.Success)
-            {
-                allJobsSucceeded = false;
-
-                // Display job error message if available
-                if (!string.IsNullOrEmpty(result.ErrorMessage))
-                {
-                    _output.WriteError($"  {result.ErrorMessage}");
+                    // Display job error message if available
+                    if (!string.IsNullOrEmpty(result.ErrorMessage))
+                    {
+                        _output.WriteError($"  {result.ErrorMessage}");
+                    }
                 }
             }
+        }
+        finally
+        {
+            CleanupRuntimeDirectory(workspacePath, runId);
         }
 
         pipelineStartTime.Stop();
@@ -424,6 +431,32 @@ public class PipelineExecutor
         };
 
         return JobRunnerSupport.WithResolverVariables(context, _variableResolver);
+    }
+
+    /// <summary>
+    /// Removes the per-run scratch directory (<c>.pdk/runtime/&lt;runId&gt;</c>) the job runners used for
+    /// GITHUB_OUTPUT/GITHUB_ENV files, and the parent when it is empty.
+    /// </summary>
+    private void CleanupRuntimeDirectory(string workspacePath, string runId)
+    {
+        try
+        {
+            var runtimeRoot = Path.Combine(workspacePath, ".pdk", "runtime");
+            var runDirectory = Path.Combine(runtimeRoot, runId);
+            if (Directory.Exists(runDirectory))
+            {
+                Directory.Delete(runDirectory, recursive: true);
+            }
+
+            if (Directory.Exists(runtimeRoot) && !Directory.EnumerateFileSystemEntries(runtimeRoot).Any())
+            {
+                Directory.Delete(runtimeRoot);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogDebug(ex, "Could not remove the runtime directory for run {RunId}", runId);
+        }
     }
 
     /// <summary>
