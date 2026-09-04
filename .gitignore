@@ -54,3 +54,6 @@ BenchmarkDotNet.Artifacts/
 # Node / web sample outputs
 node_modules/
 dist/
+
+# Claude Code agent worktrees
+.claude/worktrees/

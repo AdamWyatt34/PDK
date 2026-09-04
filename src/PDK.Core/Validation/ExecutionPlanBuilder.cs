@@ -100,7 +100,12 @@ public partial class ExecutionPlanBuilder
 
     private StepPlanNode BuildStepPlan(Step step, int index, string runnerType)
     {
-        var executorName = _executorValidator?.GetExecutorName(step.Type, runnerType) ?? GetDefaultExecutorName(step.Type);
+        var executorName = step.Type switch
+        {
+            StepType.Setup => "(no-op: tool setup is provided by the runner environment)",
+            StepType.Unknown => "(skipped: unsupported action or task)",
+            _ => _executorValidator?.GetExecutorName(step.Type, runnerType) ?? GetDefaultExecutorName(step.Type)
+        };
 
         return new StepPlanNode
         {
@@ -276,6 +281,8 @@ public partial class ExecutionPlanBuilder
             StepType.FileOperation => "fileoperation",
             StepType.UploadArtifact => "uploadartifact",
             StepType.DownloadArtifact => "downloadartifact",
+            StepType.Setup => "setup",
+            StepType.Unknown => "unsupported",
             _ => "unknown"
         };
     }

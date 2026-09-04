@@ -91,16 +91,17 @@ public class SchemaValidationPhase : IValidationPhase
     {
         var stepName = step.Name ?? $"Step {stepIndex}";
 
-        // Validate step has a type (not Unknown)
+        // Unsupported actions/tasks are skipped with a warning at run time (or fail with --strict)
         if (step.Type == StepType.Unknown)
         {
-            errors.Add(DryRunValidationError.SchemaError(
+            var what = string.IsNullOrEmpty(step.ActionReference) ? "unknown type" : $"unsupported action or task '{step.ActionReference}'";
+            errors.Add(DryRunValidationError.Warning(
                 ErrorCodes.UnsupportedStepType,
-                $"Step '{stepName}' in job '{jobId}' has unknown type",
+                $"Step '{stepName}' in job '{jobId}' has {what} and will be skipped",
+                ValidationCategory.Schema,
                 jobId: jobId,
                 stepName: stepName,
-                stepIndex: stepIndex,
-                suggestions: "Use a supported step type: checkout, script, dotnet, npm, docker, etc."));
+                "Replace it with an equivalent run/script step for local execution, or run with --strict to fail instead"));
         }
 
         // Validate script steps have content
