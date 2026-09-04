@@ -20,6 +20,14 @@ on:
         required: false
         default: 'all'
 
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: 1
+
 jobs:
   benchmark:
     name: Run Benchmarks
@@ -39,7 +47,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.nuget/packages
-          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', 'Directory.Packages.props') }}
           restore-keys: |
             ${{ runner.os }}-nuget-
 
@@ -50,13 +58,15 @@ jobs:
         run: dotnet build --configuration Release --no-restore
 
       - name: Run Benchmarks
+        working-directory: tests/PDK.Tests.Performance
+        env:
+          # Workflow inputs are free text: consume them through the environment, never by interpolating into the script.
+          BENCHMARK_FILTER: ${{ github.event.inputs.benchmark_filter || 'all' }}
         run: |
-          cd tests/PDK.Tests.Performance
-          FILTER="${{ github.event.inputs.benchmark_filter || 'all' }}"
-          if [ "$FILTER" = "all" ]; then
+          if [ "$BENCHMARK_FILTER" = "all" ]; then
             dotnet run -c Release -- --filter "*" --exporters json markdown
           else
-            dotnet run -c Release -- --filter "*$FILTER*" --exporters json markdown
+            dotnet run -c Release -- --filter "*${BENCHMARK_FILTER}*" --exporters json markdown
           fi
         continue-on-error: true
 
@@ -68,9 +78,13 @@ jobs:
             tests/PDK.Tests.Performance/BenchmarkDotNet.Artifacts/**/*.md
             tests/PDK.Tests.Performance/BenchmarkDotNet.Artifacts/**/*.json
           retention-days: 30
+          if-no-files-found: warn
 
       - name: Comment PR with Results
-        if: github.event_name == 'pull_request'
+        # Only pull requests from this repository get a token that may comment (forks and Dependabot do not),
+        # and a failed comment must never fail the benchmark job itself.
+        if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
         uses: actions/github-script@v7
         with:
           script: |
@@ -86,7 +100,7 @@ jobs:
               const mdFiles = files.filter(f => f.endsWith('.md'));
 
               if (mdFiles.length > 0) {
-                const reportPath = `${artifactsPath}/${mdFiles[0]}`;
+                const reportPath = path.join(artifactsPath, mdFiles[0]);
                 const report = fs.readFileSync(reportPath, 'utf8');
 
                 // Truncate if too long
@@ -101,7 +115,7 @@ jobs:
               reportContent += 'Benchmark artifacts directory not found.';
             }
 
-            github.rest.issues.createComment({
+            await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -113,6 +127,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: benchmark
     if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
@@ -123,11 +139,8 @@ jobs:
         with:
           name: benchmark-results-${{ github.run_id }}
           path: benchmark-results
+        # No artifact exists when the benchmark run produced no results; the comparison then only warns.
+        continue-on-error: true
 
       - name: Check for Regressions
-        run: |
-          echo "Checking benchmark results for regressions..."
-          # Parse JSON results and compare with baselines
-          # This would use a custom script to compare results
-          # For now, just report success
-          echo "No significant regressions detected."
+        run: node scripts/compare-benchmarks.js --results benchmark-results --baseline tests/PDK.Tests.Performance/Baselines/BaselineData.json --threshold 25
