@@ -337,7 +337,7 @@ public class ListCommandIntegrationTests
         var result = await command.ExecuteAsync();
 
         // Assert
-        result.Should().Be(1);
+        result.Should().Be(PDK.CLI.ExitCodes.FileNotFound);
         _testConsole.Output.Should().Contain("File not found");
     }
 

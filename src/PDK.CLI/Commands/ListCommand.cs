@@ -84,7 +84,7 @@ public sealed class ListCommand
                 {
                     _output.WriteError($"File not found: {File.FullName}");
                     ShowFileNotFoundSuggestions();
-                    return 1;
+                    return ExitCodes.FileNotFound;
                 }
                 filePath = File.FullName;
             }
@@ -93,7 +93,7 @@ public sealed class ListCommand
                 var detectedFile = AutoDetectPipeline();
                 if (detectedFile == null)
                 {
-                    return 1; // Error already displayed in AutoDetectPipeline
+                    return ExitCodes.FileNotFound; // Error already displayed in AutoDetectPipeline
                 }
                 filePath = detectedFile;
             }

@@ -198,8 +198,12 @@ public sealed class WatchModeService : IWatchModeService
 
         try
         {
-            await _pipelineExecutor.Execute(_currentOptions);
-            return true;
+            var result = await _pipelineExecutor.Execute(_currentOptions, cancellationToken);
+            if (!result.Success)
+            {
+                _logger.LogWarning("Pipeline execution failed: {Message}", result.Message ?? "one or more jobs failed");
+            }
+            return result.Success;
         }
         catch (OperationCanceledException)
         {

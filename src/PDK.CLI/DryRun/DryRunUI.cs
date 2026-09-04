@@ -79,7 +79,8 @@ public class DryRunUI
     private void DisplayJob(JobPlanNode job)
     {
         // Job header with execution order
-        var orderPrefix = job.ExecutionOrder > 0 ? $"[{job.ExecutionOrder}] " : "";
+        // Double brackets: "[1]" would otherwise be parsed as a Spectre markup colour tag.
+        var orderPrefix = job.ExecutionOrder > 0 ? $"[[{job.ExecutionOrder}]] " : "";
         _console.MarkupLine($"[cyan bold]{orderPrefix}Job: {Markup.Escape(job.JobName)}[/] [dim]({Markup.Escape(job.RunsOn)})[/]");
 
         // Dependencies
@@ -118,8 +119,8 @@ public class DryRunUI
     {
         // Step with type and executor
         var stepColor = GetStepTypeColor(step.TypeName);
-        _console.MarkupLine($"    [{stepColor}][{step.Index}][/] {Markup.Escape(step.StepName)}");
-        _console.MarkupLine($"        [dim]Type:[/] {step.TypeName} [dim]->[/] {Markup.Escape(step.ExecutorName)}");
+        _console.MarkupLine($"    [{stepColor}][[{step.Index}]][/] {Markup.Escape(step.StepName)}");
+        _console.MarkupLine($"        [dim]Type:[/] {Markup.Escape(step.TypeName)} [dim]->[/] {Markup.Escape(step.ExecutorName)}");
 
         // Shell if applicable
         if (!string.IsNullOrEmpty(step.Shell))

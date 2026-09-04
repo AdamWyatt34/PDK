@@ -117,7 +117,9 @@ public class PipelineExecutor
     /// Executes a pipeline based on the provided options.
     /// </summary>
     /// <param name="options">Execution options including file path, job selection, etc.</param>
-    public async Task Execute(ExecutionOptions options)
+    /// <param name="cancellationToken">Token that cancels the run (Ctrl+C).</param>
+    /// <returns>The outcome of the run, including the process exit code to use.</returns>
+    public async Task<PipelineRunResult> Execute(ExecutionOptions options, CancellationToken cancellationToken = default)
     {
         // Create correlation scope for this pipeline execution (REQ-11-005.5)
         using var correlationScope = CorrelationContext.CreateScope();
@@ -138,7 +140,7 @@ public class PipelineExecutor
         if (options.ValidateOnly)
         {
             _output.WriteSuccess("Pipeline validation successful");
-            return;
+            return PipelineRunResult.Succeeded();
         }
 
         // Initialize configuration, variables, and secrets (Sprint 7)
@@ -146,15 +148,32 @@ public class PipelineExecutor
         var config = await InitializeVariablesAndSecretsAsync(options, workspacePath);
 
         // Determine which jobs to run
-        var jobsToRun = string.IsNullOrEmpty(options.JobName)
-            ? pipeline.Jobs.Values.ToList()
-            : [pipeline.Jobs[options.JobName]];
+        List<Job> jobsToRun;
+        if (string.IsNullOrEmpty(options.JobName))
+        {
+            jobsToRun = pipeline.Jobs.Values.ToList();
+        }
+        else
+        {
+            var selectedJob = FindJob(pipeline, options.JobName);
+            if (selectedJob == null)
+            {
+                _output.WriteError($"Job '{options.JobName}' was not found in the pipeline.");
+                var available = pipeline.Jobs.Keys.Where(id => !string.IsNullOrEmpty(id)).ToList();
+                if (available.Count > 0)
+                {
+                    _output.WriteInfo($"Available jobs: {string.Join(", ", available)}");
+                }
+                return PipelineRunResult.Failed(ExitCodes.InvalidArguments, $"Job '{options.JobName}' not found");
+            }
+            jobsToRun = [selectedJob];
+        }
 
         // Step filtering (Sprint 11 - REQ-11-007, REQ-11-008)
         IStepFilter? stepFilter = null;
         var filterOptions = _filterOptionsBuilder.Build(options, config);
 
-        if (filterOptions.HasFilters)
+        if (filterOptions.HasFilters || options.PreviewFilter || options.ConfirmFilter)
         {
             _logger.LogInformation("Step filtering active. Validating filter options...");
 
@@ -171,8 +190,7 @@ public class PipelineExecutor
                         _output.WriteInfo($"    Did you mean: {string.Join(", ", error.Suggestions)}?");
                     }
                 }
-                Environment.Exit(1);
-                return;
+                return PipelineRunResult.Failed(ExitCodes.InvalidArguments, "Filter validation failed");
             }
 
             // Display any warnings
@@ -192,7 +210,7 @@ public class PipelineExecutor
             if (filterOptions.PreviewOnly)
             {
                 _output.WriteInfo("Preview-only mode. Exiting without execution.");
-                return;
+                return PipelineRunResult.Succeeded();
             }
 
             // If confirmation required, prompt user
@@ -201,7 +219,7 @@ public class PipelineExecutor
                 if (!_confirmationPrompt.Confirm(preview))
                 {
                     _output.WriteInfo("Execution cancelled by user.");
-                    return;
+                    return PipelineRunResult.Succeeded();
                 }
             }
         }
@@ -209,7 +227,7 @@ public class PipelineExecutor
         // Select runner (Sprint 10 - REQ-10-012)
         // Note: We select once for the first job's capabilities check
         var firstJob = jobsToRun.FirstOrDefault();
-        var selection = await _runnerSelector.SelectRunnerAsync(options.RunnerType, firstJob);
+        var selection = await _runnerSelector.SelectRunnerAsync(options.RunnerType, firstJob, cancellationToken);
         DisplayRunnerSelection(selection, options.Verbose);
 
         // Create the runner
@@ -231,22 +249,24 @@ public class PipelineExecutor
 
         for (int i = 0; i < jobsToRun.Count; i++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var job = jobsToRun[i];
             var jobNumber = i + 1;
 
             // Report job start
-            await _progressReporter.ReportJobStartAsync(job.Name, jobNumber, totalJobs);
+            await _progressReporter.ReportJobStartAsync(job.Name, jobNumber, totalJobs, cancellationToken);
 
             var stopwatch = Stopwatch.StartNew();
 
             // Execute the job
-            var result = await jobRunner.RunJobAsync(job, workspacePath);
+            var result = await jobRunner.RunJobAsync(job, workspacePath, cancellationToken);
             jobResults.Add(result);
 
             stopwatch.Stop();
 
             // Report job completion
-            await _progressReporter.ReportJobCompleteAsync(job.Name, result.Success, stopwatch.Elapsed);
+            await _progressReporter.ReportJobCompleteAsync(job.Name, result.Success, stopwatch.Elapsed, cancellationToken);
 
             if (!result.Success)
             {
@@ -290,12 +310,28 @@ public class PipelineExecutor
         if (allJobsSucceeded)
         {
             _output.WriteSuccess("Pipeline execution complete!");
+            return PipelineRunResult.Succeeded(jobResults);
         }
-        else
+
+        _output.WriteError("Pipeline execution failed!");
+        return PipelineRunResult.Failed(ExitCodes.Failure, "One or more jobs failed", jobResults);
+    }
+
+    /// <summary>
+    /// Finds a job by id or display name, case-insensitively.
+    /// </summary>
+    private static Job? FindJob(Pipeline pipeline, string jobName)
+    {
+        if (pipeline.Jobs.TryGetValue(jobName, out var exact))
         {
-            _output.WriteError("Pipeline execution failed!");
-            Environment.Exit(1);
+            return exact;
         }
+
+        return pipeline.Jobs
+            .FirstOrDefault(kv =>
+                string.Equals(kv.Key, jobName, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(kv.Value.Name, jobName, StringComparison.OrdinalIgnoreCase))
+            .Value;
     }
 
     /// <summary>
