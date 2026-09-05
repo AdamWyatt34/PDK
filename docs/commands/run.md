@@ -102,7 +102,7 @@ Dry-run mode is incompatible with `--watch` and `--interactive`. See [Dry Run Mo
 | `-v, --verbose` | flag | false | Debug-level logging, mirrored to stderr; also shows performance metrics |
 | `--trace` | flag | false | Trace-level logging (most verbose), mirrored to stderr |
 | `-q, --quiet` | flag | false | Suppress step output; log only warnings and errors |
-| `--silent` | flag | false | Show only errors |
+| `--silent` | flag | false | Show only errors (no progress lines and no execution summary) |
 | `--log-file <path>` | string | - | Additionally write the text log to this file |
 | `--log-json <path>` | string | - | Additionally write the log as compact JSON (one event per line) |
 | `--no-redact` | flag | false | Disable secret redaction in the log sinks (see note) |

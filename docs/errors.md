@@ -83,9 +83,9 @@ Pipeline structure is invalid.
 
 ### PDK-E-PARSER-006
 
-Unknown or unsupported CI/CD provider.
-**Cause:** neither parser recognises the file: GitHub needs a top-level `jobs:` mapping plus `on:` or `runs-on`; Azure needs a `.yml`/`.yaml` file with a top-level `steps`, `jobs`, `stages`, `pool`, `trigger`, ... key. Azure templates (`extends`, `template:`) and `${{ if }}`/`${{ each }}`/`${{ insert }}` insertions are also rejected (with a dedicated message).
-**What to do:** check the file shape; expand templates inline for the local run.
+Unknown or unsupported CI/CD provider ("`<file>` is not a GitHub Actions workflow or an Azure DevOps pipeline").
+**Cause:** the file is valid YAML but neither parser recognises it: GitHub needs a top-level `jobs:` mapping plus an `on:` trigger (or jobs with `runs-on`); Azure needs a `.yml`/`.yaml` file with a top-level `steps`, `jobs`, `stages`, `pool`, `trigger`, ... key. Azure templates (`extends`, `template:`) and `${{ if }}`/`${{ each }}`/`${{ insert }}` insertions are rejected with a dedicated message.
+**What to do:** check the file shape (auto-detection may have picked up the wrong file; use `--file`); expand templates inline for the local run. A file that is not valid YAML is reported as `PDK-E-PARSER-001` with the line and column instead, and a missing file exits with code 3.
 
 ### PDK-E-PARSER-007
 
@@ -159,7 +159,7 @@ A file was not found.
 
 ### PDK-E-FILE-002
 
-Access to a file was denied.
+Access to a file was denied (also "Pipeline file could not be read").
 **Cause:** missing read (or write) permission.
 **What to do:** fix the permissions of the file or directory.
 
@@ -454,5 +454,5 @@ Circular job dependency detected.
 ### PDK-E-UNKNOWN-001
 
 An unclassified error.
-**Cause:** an unexpected exception (for example "No parser found for file" when no provider recognises the pipeline file).
+**Cause:** an unexpected exception that no other code describes.
 **What to do:** read the message, run with `--verbose` for the stack trace, and report the problem with the pipeline file if it looks like a bug.

@@ -90,8 +90,12 @@ public interface IPipelineParserFactory
 
 ## Parser Factory
 
-The factory selects the first parser whose `CanParse` accepts the file and throws
-"No parser found for file" (`PDK-E-UNKNOWN-001`) otherwise.
+The factory (`src/PDK.CLI/PipelineParserFactory.cs`) selects the first parser whose `CanParse`
+accepts the file. When none does it explains why: a missing file is a `FileNotFoundException` (exit
+code 3), an unreadable file is `PDK-E-FILE-002`, invalid YAML is `PDK-E-PARSER-001` with the line and
+column, and a valid YAML file that matches neither provider is `PDK-E-PARSER-006`
+("... is not a GitHub Actions workflow or an Azure DevOps pipeline") with hints about the expected
+shape.
 
 ### Detection Logic
 
