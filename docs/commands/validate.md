@@ -19,6 +19,7 @@ For a more comprehensive validation that includes execution planning, unsupporte
 | Option | Type | Required | Description |
 |--------|------|----------|-------------|
 | `-f, --file <path>` | string | No | Path to the pipeline file (auto-detected when omitted, see below) |
+| `--param <NAME=VALUE>` | string[] | No | Pipeline parameter / input value used while expanding the pipeline (repeatable; see [run](run.md#parameters)) |
 
 ## Output
 

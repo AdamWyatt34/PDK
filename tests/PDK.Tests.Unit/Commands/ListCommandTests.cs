@@ -543,7 +543,7 @@ public class ListCommandTests
             .Returns(_mockParser.Object);
 
         _mockParser
-            .Setup(x => x.ParseFile(It.IsAny<string>()))
+            .Setup(x => x.ParseFile(It.IsAny<string>(), It.IsAny<PipelineParseOptions>()))
             .ThrowsAsync(new Exception("YAML parse error"));
 
         _command.File = CreateTempFile();
@@ -835,7 +835,7 @@ public class ListCommandTests
             .Returns(_mockParser.Object);
 
         _mockParser
-            .Setup(x => x.ParseFile(It.IsAny<string>()))
+            .Setup(x => x.ParseFile(It.IsAny<string>(), It.IsAny<PipelineParseOptions>()))
             .ReturnsAsync(pipeline);
     }
 

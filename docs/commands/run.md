@@ -130,7 +130,7 @@ Variables and secrets are exported to every step by name and are available in ex
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--param <NAME=VALUE>` | string[] | - | Set a pipeline parameter (repeatable): an Azure `parameters:` entry (`${{ parameters.NAME }}`) or a GitHub `workflow_dispatch` input (`inputs.NAME`) |
+| `--param <NAME=VALUE>` | string[] | - | Set a pipeline parameter (repeatable; alias `--input`): an Azure `parameters:` entry (`${{ parameters.NAME }}`) or a GitHub `workflow_dispatch` input (`inputs.NAME`). Also accepted by `pdk list` and `pdk validate` |
 
 Azure parameters are converted to their declared type (`--param runTests=false` is a boolean);
 `object`, `stepList` and the other structured types take JSON or flow YAML
@@ -155,9 +155,6 @@ concurrent jobs interleaves, every step name and output line is prefixed with it
 (`build › Restore`, `[build] Restoring packages...`). Jobs within one run share the workspace, so only
 enable it for jobs that do not write the same files. `--no-reuse` is still accepted for compatibility
 but has no effect: every job already runs in a fresh container.
-
-`--param NAME=VALUE` (alias `--input`) supplies Azure Pipelines `parameters:` values and GitHub
-`workflow_dispatch` inputs (`${{ inputs.name }}`); repeat it for several values.
 
 ## Execution semantics
 

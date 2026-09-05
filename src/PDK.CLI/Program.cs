@@ -735,15 +735,23 @@ var formatOption = new Option<OutputFormat>(
 listCommand.AddOption(listFileOption);
 listCommand.AddOption(detailsOption);
 listCommand.AddOption(formatOption);
+listCommand.AddOption(paramOption);
 
 listCommand.SetHandler(async (InvocationContext context) =>
 {
     try
     {
+        if (!TryParseParameters(context.ParseResult.GetValueForOption(paramOption), out var listParameters))
+        {
+            context.ExitCode = ExitCodes.InvalidArguments;
+            return;
+        }
+
         var cmd = serviceProvider.GetRequiredService<ListCommand>();
         cmd.File = context.ParseResult.GetValueForOption(listFileOption);
         cmd.Details = context.ParseResult.GetValueForOption(detailsOption);
         cmd.Format = context.ParseResult.GetValueForOption(formatOption);
+        cmd.Parameters = listParameters;
         context.ExitCode = await cmd.ExecuteAsync();
     }
     catch (Exception ex)
@@ -757,6 +765,7 @@ listCommand.SetHandler(async (InvocationContext context) =>
 // Validate command
 var validateCommand = new Command("validate", "Validate a pipeline file");
 validateCommand.AddOption(fileOption);
+validateCommand.AddOption(paramOption);
 
 validateCommand.SetHandler(async (InvocationContext context) =>
 {
@@ -768,11 +777,21 @@ validateCommand.SetHandler(async (InvocationContext context) =>
         return;
     }
 
+    if (!TryParseParameters(context.ParseResult.GetValueForOption(paramOption), out var validateParameters))
+    {
+        context.ExitCode = ExitCodes.InvalidArguments;
+        return;
+    }
+
     try
     {
         var parserFactory = serviceProvider.GetRequiredService<PipelineParserFactory>();
         var parser = parserFactory.GetParser(located.File.FullName);
-        var pipeline = await parser.ParseFile(located.File.FullName);
+        var pipeline = await parser.ParseFile(located.File.FullName, new PDK.Core.Models.PipelineParseOptions
+        {
+            Parameters = validateParameters,
+            WorkspacePath = Directory.GetCurrentDirectory()
+        });
 
         AnsiConsole.MarkupLine($"[green]\u2713[/] Pipeline is valid");
         AnsiConsole.MarkupLine($"  Provider: {pipeline.Provider}");
@@ -1169,6 +1188,23 @@ static void ConfigureServices(ServiceCollection services)
 
     // Register step filtering services (Sprint 11 - REQ-11-007, REQ-11-008)
     services.AddStepFiltering();
+}
+
+/// <summary>
+/// Parses <c>--param NAME=VALUE</c> values, reporting malformed entries.
+/// </summary>
+static bool TryParseParameters(string[]? values, out Dictionary<string, string> parameters)
+{
+    var malformed = (values ?? []).Where(p => p.IndexOf('=') <= 0).ToList();
+    if (malformed.Count > 0)
+    {
+        AnsiConsole.MarkupLine($"[red]Error:[/] Expected NAME=VALUE for --param, got: {Markup.Escape(string.Join(", ", malformed))}");
+        parameters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        return false;
+    }
+
+    parameters = new Dictionary<string, string>(ParseKeyValuePairs(values), StringComparer.OrdinalIgnoreCase);
+    return true;
 }
 
 /// <summary>

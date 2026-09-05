@@ -53,6 +53,11 @@ public sealed class ListCommand
     public OutputFormat Format { get; set; } = OutputFormat.Table;
 
     /// <summary>
+    /// Gets or sets the pipeline parameter values (<c>--param NAME=VALUE</c>) used while expanding the pipeline.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Parameters { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Initializes a new instance of <see cref="ListCommand"/>.
     /// </summary>
     /// <param name="parserFactory">Factory for getting pipeline parsers.</param>
@@ -100,7 +105,11 @@ public sealed class ListCommand
 
             // Parse pipeline
             var parser = _parserFactory.GetParser(filePath);
-            var pipeline = await parser.ParseFile(filePath);
+            var pipeline = await parser.ParseFile(filePath, new PipelineParseOptions
+            {
+                Parameters = Parameters,
+                WorkspacePath = Directory.GetCurrentDirectory()
+            });
 
             if (pipeline.Jobs.Count == 0)
             {

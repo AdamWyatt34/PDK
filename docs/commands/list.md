@@ -22,6 +22,7 @@ and for choosing values for `--job` and the step filtering options.
 | `-f, --file <path>` | string | Auto-detect | Path to the pipeline file |
 | `-d, --details` | flag | false | Show detailed step information |
 | `--format <format>` | string | Table | Output format: `Table`, `Json`, `Minimal` |
+| `--param <NAME=VALUE>` | string[] | - | Pipeline parameter / input value used while expanding the pipeline (repeatable; see [run](run.md#parameters)) |
 
 ## Output Formats
 
