@@ -247,6 +247,7 @@ After releasing:
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 2.0.0 | 2026-09-05 | Expression engine, job graph, GitLab CI, Azure templates and matrices, parallel jobs; breaking changes to exit codes, step filtering, environment import and the secret store |
 | 1.0.0 | 2025-12-26 | Initial release |
 
 ## Maintainer Responsibilities
