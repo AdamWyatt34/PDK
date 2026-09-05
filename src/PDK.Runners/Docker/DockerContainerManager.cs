@@ -804,8 +804,10 @@ public class DockerContainerManager : IContainerManager
     }
 
     /// <summary>
-    /// Removes containers left behind by earlier PDK runs: containers labelled <c>pdk=true</c> in the
-    /// <c>exited</c>, <c>created</c> or <c>dead</c> state. Running containers are never touched.
+    /// Removes containers left behind by PDK processes that no longer run on this machine, whatever their
+    /// state (a killed run leaves its job container running). Containers of a live PDK process, containers
+    /// kept with <c>--keep-containers</c> and containers created from another host are never touched;
+    /// containers without ownership labels (earlier PDK versions) are removed only once they have exited.
     /// </summary>
     /// <param name="cancellationToken">Token to cancel the operation.</param>
     /// <returns>The number of containers removed.</returns>
@@ -820,13 +822,7 @@ public class DockerContainerManager : IContainerManager
                     All = true,
                     Filters = new Dictionary<string, IDictionary<string, bool>>
                     {
-                        ["label"] = new Dictionary<string, bool> { [$"{PdkLabel}=true"] = true },
-                        ["status"] = new Dictionary<string, bool>
-                        {
-                            ["exited"] = true,
-                            ["created"] = true,
-                            ["dead"] = true
-                        }
+                        ["label"] = new Dictionary<string, bool> { [$"{PdkLabel}=true"] = true }
                     }
                 },
                 cancellationToken).ConfigureAwait(false);
@@ -849,6 +845,11 @@ public class DockerContainerManager : IContainerManager
             if (_createdContainers.ContainsKey(container.ID))
             {
                 continue; // Belongs to this session; its owner will clean it up.
+            }
+
+            if (!ContainerOwnership.IsOrphan(container.Labels, container.State, Environment.MachineName, ContainerOwnership.ProbeProcess))
+            {
+                continue; // A live PDK process owns it, it is kept on request, or it was created elsewhere.
             }
 
             try
@@ -1111,6 +1112,7 @@ public class DockerContainerManager : IContainerManager
             [JobLabel] = options.JobName ?? options.Name,
             [CreatedLabel] = DateTimeOffset.UtcNow.ToString("O")
         };
+        ContainerOwnership.Stamp(labels, options.KeepContainer);
 
         return new CreateContainerParameters
         {

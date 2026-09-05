@@ -421,4 +421,40 @@ public class ProcessExecutorTests
     }
 
     #endregion
+
+    [Fact]
+    public void PickToolPath_SkipsTheWslLauncherForBash()
+    {
+        var output = "C:\\Windows\\System32\\bash.exe\r\nC:\\Program Files\\Git\\usr\\bin\\bash.exe\r\n";
+
+        ProcessExecutor.PickToolPath(output, "bash", "C:\\Windows\\system32")
+            .Should().Be("C:\\Program Files\\Git\\usr\\bin\\bash.exe");
+    }
+
+    [Fact]
+    public void PickToolPath_KeepsTheWslLauncherWhenItIsTheOnlyBash()
+    {
+        ProcessExecutor.PickToolPath("C:\\Windows\\System32\\bash.exe\r\n", "bash", "C:\\Windows\\system32")
+            .Should().Be("C:\\Windows\\System32\\bash.exe");
+    }
+
+    [Fact]
+    public void PickToolPath_DoesNotSkipSystemDirectoryToolsOtherThanBash()
+    {
+        var powershell = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+
+        ProcessExecutor.PickToolPath(powershell + "\r\n", "powershell", "C:\\Windows\\system32").Should().Be(powershell);
+    }
+
+    [Fact]
+    public void PickToolPath_UsesTheFirstCandidateOnUnix()
+    {
+        ProcessExecutor.PickToolPath("/usr/bin/bash\n", "bash", string.Empty).Should().Be("/usr/bin/bash");
+    }
+
+    [Fact]
+    public void PickToolPath_EmptyOutput_ReturnsNull()
+    {
+        ProcessExecutor.PickToolPath("  \r\n", "bash", "C:\\Windows\\system32").Should().BeNull();
+    }
 }

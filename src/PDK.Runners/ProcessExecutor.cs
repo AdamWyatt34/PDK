@@ -238,6 +238,14 @@ public class ProcessExecutor : IProcessExecutor
         string toolName,
         CancellationToken cancellationToken = default)
     {
+        return await ResolveToolPathAsync(toolName, cancellationToken).ConfigureAwait(false) != null;
+    }
+
+    /// <inheritdoc/>
+    public async Task<string?> ResolveToolPathAsync(
+        string toolName,
+        CancellationToken cancellationToken = default)
+    {
         if (string.IsNullOrWhiteSpace(toolName))
         {
             throw new ArgumentException("Tool name cannot be null or empty.", nameof(toolName));
@@ -262,7 +270,7 @@ public class ProcessExecutor : IProcessExecutor
         try
         {
             var result = await ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
-            return result.ExitCode == 0 && !string.IsNullOrWhiteSpace(result.StandardOutput);
+            return result.ExitCode == 0 ? PickToolPath(result.StandardOutput, toolName, Environment.SystemDirectory) : null;
         }
         catch (OperationCanceledException)
         {
@@ -271,8 +279,53 @@ public class ProcessExecutor : IProcessExecutor
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "Tool probe for {Tool} failed: {Message}", toolName, ex.Message);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Picks the executable to run from a tool probe's output (one candidate per line, in PATH order).
+    /// For <c>bash</c> the WSL launcher in the Windows system directory is skipped in favour of a bash
+    /// found on PATH (the one installed with Git for Windows): the launcher is not a usable shell
+    /// without a Linux distribution, yet it is what a bare <c>bash</c> resolves to on Windows.
+    /// </summary>
+    /// <param name="probeOutput">The probe output.</param>
+    /// <param name="toolName">The tool that was probed.</param>
+    /// <param name="systemDirectory">The Windows system directory (empty elsewhere).</param>
+    /// <returns>The chosen path, or null when the output names no candidate.</returns>
+    internal static string? PickToolPath(string probeOutput, string toolName, string systemDirectory)
+    {
+        var candidates = probeOutput
+            .Split('\n')
+            .Select(line => line.Trim())
+            .Where(line => line.Length > 0)
+            .ToList();
+
+        if (candidates.Count == 0)
+        {
+            return null;
+        }
+
+        var usable = candidates.FirstOrDefault(candidate => !IsWslLauncher(candidate, toolName, systemDirectory));
+        return usable ?? candidates[0];
+    }
+
+    private static bool IsWslLauncher(string path, string toolName, string systemDirectory)
+    {
+        if (string.IsNullOrEmpty(systemDirectory))
+        {
             return false;
         }
+
+        if (!string.Equals(toolName, "bash", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(toolName, "bash.exe", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var normalizedPath = path.Replace('\\', '/');
+        var normalizedSystemDirectory = systemDirectory.Replace('\\', '/').TrimEnd('/');
+        return string.Equals(normalizedPath, normalizedSystemDirectory + "/bash.exe", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

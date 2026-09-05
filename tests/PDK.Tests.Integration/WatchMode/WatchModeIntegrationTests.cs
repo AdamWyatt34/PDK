@@ -66,7 +66,8 @@ public class WatchModeIntegrationTests : IDisposable
 
         // Assert
         var result = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        result.ChangeType.Should().Be(FileChangeType.Created);
+        // macOS (FSEvents) may report the creation and the first write as a single Modified notification.
+        result.ChangeType.Should().BeOneOf(FileChangeType.Created, FileChangeType.Modified);
         result.RelativePath.Should().Be("test.yml");
     }
 

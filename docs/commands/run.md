@@ -209,6 +209,11 @@ pdk run --runner auto
 pdk run --docker --keep-containers
 ```
 
+Before it creates a job container, Docker mode removes containers left behind by earlier `pdk` processes
+that are no longer running on this machine. Containers kept with `--keep-containers` carry the label
+`pdk.keep=true` and are never removed automatically; delete them with
+`docker rm -f $(docker ps -aq --filter label=pdk.keep=true)` when you are done.
+
 ### Watch Mode
 
 ```bash

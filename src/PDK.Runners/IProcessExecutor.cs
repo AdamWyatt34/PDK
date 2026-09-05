@@ -85,4 +85,20 @@ public interface IProcessExecutor
     Task<bool> IsToolAvailableAsync(
         string toolName,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Resolves a tool to the executable that the platform's PATH lookup would run for it
+    /// (<c>where.exe</c> on Windows, <c>command -v</c> elsewhere). Interpreters are started by this path
+    /// rather than by name because Windows' process creation searches the system directory before PATH.
+    /// The default implementation returns the name itself when the tool is available.
+    /// </summary>
+    /// <param name="toolName">The tool name (e.g. "bash", "pwsh").</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>The executable path or name, or null when the tool is not available.</returns>
+    async Task<string?> ResolveToolPathAsync(
+        string toolName,
+        CancellationToken cancellationToken = default)
+    {
+        return await IsToolAvailableAsync(toolName, cancellationToken).ConfigureAwait(false) ? toolName : null;
+    }
 }

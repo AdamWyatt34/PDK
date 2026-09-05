@@ -146,6 +146,14 @@ public class HostScriptExecutor : IHostStepExecutor
 
         foreach (var candidate in ScriptShellSupport.GetExecutableCandidates(shell))
         {
+            // Start the interpreter by the path PATH lookup yields: on Windows, process creation searches the
+            // system directory before PATH, which would turn a bare "bash" into the WSL launcher.
+            var resolved = await context.ProcessExecutor.ResolveToolPathAsync(candidate, cancellationToken).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(resolved))
+            {
+                return (resolved, ScriptShellSupport.ShellForExecutable(shell, resolved), null);
+            }
+
             if (await context.ProcessExecutor.IsToolAvailableAsync(candidate, cancellationToken).ConfigureAwait(false))
             {
                 return (candidate, ScriptShellSupport.ShellForExecutable(shell, candidate), null);

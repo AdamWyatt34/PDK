@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -910,7 +911,7 @@ public class DockerContainerManagerTests : IDisposable
         removed.Should().Be(2);
         captured!.All.Should().BeTrue();
         captured.Filters["label"].Should().ContainKey("pdk=true");
-        captured.Filters["status"].Keys.Should().BeEquivalentTo("exited", "created", "dead");
+        captured.Filters.Should().NotContainKey("status", "running containers of dead PDK processes are orphans too");
         _mockContainers.Verify(x => x.RemoveContainerAsync("old-1", It.Is<ContainerRemoveParameters>(p => p.Force == true), It.IsAny<CancellationToken>()), Times.Once);
         _mockContainers.Verify(x => x.RemoveContainerAsync("old-2", It.IsAny<ContainerRemoveParameters>(), It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -933,6 +934,68 @@ public class DockerContainerManagerTests : IDisposable
 
         removed.Should().Be(1);
         _mockContainers.Verify(x => x.RemoveContainerAsync("old-1", It.IsAny<ContainerRemoveParameters>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task RemoveOrphanedContainersAsync_JudgesByTheOwningProcess()
+    {
+        var live = new Dictionary<string, string> { ["pdk"] = "true" };
+        ContainerOwnership.Stamp(live, keep: false);
+        var dead = new Dictionary<string, string>
+        {
+            ["pdk"] = "true",
+            [ContainerOwnership.HostLabel] = Environment.MachineName,
+            [ContainerOwnership.ProcessLabel] = "2000000000"
+        };
+        var kept = new Dictionary<string, string> { ["pdk"] = "true", [ContainerOwnership.KeepLabel] = "true" };
+        var elsewhere = new Dictionary<string, string>
+        {
+            ["pdk"] = "true",
+            [ContainerOwnership.HostLabel] = "another-host",
+            [ContainerOwnership.ProcessLabel] = "1"
+        };
+        var legacyRunning = new Dictionary<string, string> { ["pdk"] = "true" };
+
+        _mockContainers
+            .Setup(x => x.ListContainersAsync(It.IsAny<ContainersListParameters>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ContainerListResponse>
+            {
+                new() { ID = "live-created", State = "created", Labels = live },
+                new() { ID = "dead-running", State = "running", Labels = dead },
+                new() { ID = "kept-exited", State = "exited", Labels = kept },
+                new() { ID = "remote-exited", State = "exited", Labels = elsewhere },
+                new() { ID = "legacy-running", State = "running", Labels = legacyRunning }
+            });
+        var removedIds = new List<string>();
+        _mockContainers
+            .Setup(x => x.RemoveContainerAsync(It.IsAny<string>(), It.IsAny<ContainerRemoveParameters>(), It.IsAny<CancellationToken>()))
+            .Callback<string, ContainerRemoveParameters, CancellationToken>((id, _, _) => removedIds.Add(id))
+            .Returns(Task.CompletedTask);
+
+        var removed = await _manager.RemoveOrphanedContainersAsync();
+
+        removed.Should().Be(1);
+        removedIds.Should().Equal("dead-running");
+    }
+
+    [Fact]
+    public async Task CreateContainerAsync_LabelsTheContainerWithItsOwner()
+    {
+        CreateContainerParameters? captured = null;
+        _mockContainers
+            .Setup(x => x.CreateContainerAsync(It.IsAny<CreateContainerParameters>(), It.IsAny<CancellationToken>()))
+            .Callback<CreateContainerParameters, CancellationToken>((p, _) => captured = p)
+            .ReturnsAsync(new CreateContainerResponse { ID = "owned" });
+        _mockContainers
+            .Setup(x => x.StartContainerAsync("owned", It.IsAny<ContainerStartParameters>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        await _manager.CreateContainerAsync("ubuntu:22.04", new ContainerOptions { Name = "owned", KeepContainer = true });
+
+        captured!.Labels.Should().Contain(ContainerOwnership.HostLabel, Environment.MachineName);
+        captured.Labels.Should().Contain(ContainerOwnership.ProcessLabel, Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
+        captured.Labels.Should().ContainKey(ContainerOwnership.ProcessStartLabel);
+        captured.Labels.Should().Contain(ContainerOwnership.KeepLabel, "true");
     }
 
     [Fact]

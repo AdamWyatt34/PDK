@@ -47,6 +47,12 @@ public class HostExecutionTests : IDisposable
     }
 
     /// <summary>
+    /// The shell the platform-specific scripts in these tests are written for: cmd on Windows, bash elsewhere
+    /// (pipelines always name a shell, so the model default is never what runs).
+    /// </summary>
+    private string DefaultShell => _processExecutor.Platform == OperatingSystemPlatform.Windows ? "cmd" : "bash";
+
+    /// <summary>
     /// Creates an execution context for host testing.
     /// </summary>
     private HostExecutionContext CreateHostContext(string? workspacePath = null)
@@ -251,6 +257,7 @@ public class HostExecutionTests : IDisposable
             Id = Guid.NewGuid().ToString(),
             Name = "Echo test",
             Type = StepType.Script,
+            Shell = DefaultShell,
             Script = _processExecutor.Platform == OperatingSystemPlatform.Windows
                 ? "echo Script executed successfully"
                 : "echo 'Script executed successfully'"
@@ -282,6 +289,7 @@ public class HostExecutionTests : IDisposable
             Id = Guid.NewGuid().ToString(),
             Name = "Multi-line script",
             Type = StepType.Script,
+            Shell = DefaultShell,
             Script = script
         };
 
@@ -311,6 +319,7 @@ public class HostExecutionTests : IDisposable
             Id = Guid.NewGuid().ToString(),
             Name = "Env var script",
             Type = StepType.Script,
+            Shell = DefaultShell,
             Script = _processExecutor.Platform == OperatingSystemPlatform.Windows
                 ? "set MY_VAR"
                 : "printenv MY_VAR",
@@ -342,6 +351,7 @@ public class HostExecutionTests : IDisposable
             Id = Guid.NewGuid().ToString(),
             Name = "Failing script",
             Type = StepType.Script,
+            Shell = DefaultShell,
             Script = _processExecutor.Platform == OperatingSystemPlatform.Windows
                 ? "exit /b 42"
                 : "exit 42"
@@ -354,6 +364,36 @@ public class HostExecutionTests : IDisposable
         result.Should().NotBeNull();
         result.Success.Should().BeFalse();
         result.ExitCode.Should().Be(42);
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task HostScriptExecutor_BashShell_RunsOnEveryPlatform()
+    {
+        // bash is explicit here: on Windows it must resolve to the bash on PATH (Git for Windows), not the
+        // WSL launcher in the system directory.
+        if (!await _processExecutor.IsToolAvailableAsync("bash"))
+        {
+            return;
+        }
+
+        var context = CreateHostContext();
+        var executor = new HostScriptExecutor(_loggerFactory.CreateLogger<HostScriptExecutor>());
+
+        var step = new Step
+        {
+            Id = Guid.NewGuid().ToString(),
+            Name = "Bash script",
+            Type = StepType.Script,
+            Shell = "bash",
+            Script = "echo \"bash says hi\"\nexit 7"
+        };
+
+        var result = await executor.ExecuteAsync(step, context);
+
+        result.Success.Should().BeFalse();
+        result.ExitCode.Should().Be(7);
+        result.Output.Should().Contain("bash says hi");
     }
 
     #endregion
@@ -717,6 +757,7 @@ public class HostExecutionTests : IDisposable
                     Id = "step1",
                     Name = "Step 1",
                     Type = StepType.Script,
+                    Shell = DefaultShell,
                     Script = _processExecutor.Platform == OperatingSystemPlatform.Windows
                         ? "echo Step 1 executed"
                         : "echo 'Step 1 executed'"
@@ -726,6 +767,7 @@ public class HostExecutionTests : IDisposable
                     Id = "step2",
                     Name = "Step 2",
                     Type = StepType.Script,
+                    Shell = DefaultShell,
                     Script = _processExecutor.Platform == OperatingSystemPlatform.Windows
                         ? "echo Step 2 executed"
                         : "echo 'Step 2 executed'"
@@ -781,6 +823,7 @@ public class HostExecutionTests : IDisposable
                     Id = "step1",
                     Name = "Step 1",
                     Type = StepType.Script,
+                    Shell = DefaultShell,
                     Script = _processExecutor.Platform == OperatingSystemPlatform.Windows
                         ? "echo Step 1"
                         : "echo 'Step 1'"
@@ -790,6 +833,7 @@ public class HostExecutionTests : IDisposable
                     Id = "step2",
                     Name = "Failing Step",
                     Type = StepType.Script,
+                    Shell = DefaultShell,
                     Script = _processExecutor.Platform == OperatingSystemPlatform.Windows
                         ? "exit /b 1"
                         : "exit 1"
@@ -852,6 +896,7 @@ public class HostExecutionTests : IDisposable
                     Id = "step1",
                     Name = "Failing Step with ContinueOnError",
                     Type = StepType.Script,
+                    Shell = DefaultShell,
                     Script = _processExecutor.Platform == OperatingSystemPlatform.Windows
                         ? "exit /b 1"
                         : "exit 1",
@@ -862,6 +907,7 @@ public class HostExecutionTests : IDisposable
                     Id = "step2",
                     Name = "Step 2 - Should run",
                     Type = StepType.Script,
+                    Shell = DefaultShell,
                     Script = _processExecutor.Platform == OperatingSystemPlatform.Windows
                         ? "echo Continued successfully"
                         : "echo 'Continued successfully'"
@@ -919,6 +965,7 @@ public class HostExecutionTests : IDisposable
                     Id = "step1",
                     Name = "Echo variable",
                     Type = StepType.Script,
+                    Shell = DefaultShell,
                     Script = _processExecutor.Platform == OperatingSystemPlatform.Windows
                         ? "echo %greeting%"
                         : "echo \"$greeting\""
@@ -973,6 +1020,7 @@ public class HostExecutionTests : IDisposable
                     Id = "step1",
                     Name = "Echo secret",
                     Type = StepType.Script,
+                    Shell = DefaultShell,
                     Script = _processExecutor.Platform == OperatingSystemPlatform.Windows
                         ? "echo %api_key%"
                         : "echo \"$api_key\""
@@ -1034,6 +1082,7 @@ public class HostExecutionTests : IDisposable
                     Id = "create-file",
                     Name = "Create file",
                     Type = StepType.Script,
+                    Shell = DefaultShell,
                     Script = _processExecutor.Platform == OperatingSystemPlatform.Windows
                         ? $"echo {testContent} > {testFileName}"
                         : $"echo '{testContent}' > {testFileName}"
@@ -1043,6 +1092,7 @@ public class HostExecutionTests : IDisposable
                     Id = "verify-file",
                     Name = "Verify file",
                     Type = StepType.Script,
+                    Shell = DefaultShell,
                     Script = _processExecutor.Platform == OperatingSystemPlatform.Windows
                         ? $"type {testFileName}"
                         : $"cat {testFileName}"
