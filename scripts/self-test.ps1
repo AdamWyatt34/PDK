@@ -95,7 +95,7 @@ Write-Host ""
 
 # Run PDK on its own workflow
 Write-Host "Running PDK on .github/workflows/ci.yml..." -ForegroundColor Cyan
-Write-Host "Command: dotnet run --project src/PDK.CLI/PDK.CLI.csproj --no-build --configuration Release -- run --file .github/workflows/ci.yml --job build --verbose"
+Write-Host "Command: dotnet run --project src/PDK.CLI/PDK.CLI.csproj --no-build --configuration Release -- run --file .github/workflows/ci.yml --job build-ubuntu-latest --verbose"
 Write-Host ""
 Write-Host "========== PDK Output Begin =========="
 
@@ -111,7 +111,7 @@ try {
     & dotnet run --project src/PDK.CLI/PDK.CLI.csproj `
         --no-build --configuration Release -- `
         run --file .github/workflows/ci.yml `
-        --job build `
+        --job build-ubuntu-latest `
         --host `
         --step-filter "Checkout code" `
         --step-filter "Restore dependencies" `

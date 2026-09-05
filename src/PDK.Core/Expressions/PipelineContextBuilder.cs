@@ -457,7 +457,14 @@ public static class PipelineContextBuilder
             ["Build.SourceBranch"] = git.Ref.Length > 0 ? git.Ref : $"refs/heads/{branch}",
             ["Build.SourceBranchName"] = branch,
             ["Build.SourceVersion"] = git.Sha,
-            ["Build.Reason"] = "Manual",
+            ["Build.Reason"] = info.EventName?.ToLowerInvariant() switch
+            {
+                "push" => "IndividualCI",
+                "pull_request" or "pull_request_target" => "PullRequest",
+                "schedule" => "Schedule",
+                "workflow_dispatch" or "manual" or null or "" => "Manual",
+                _ => "Manual"
+            },
             ["Build.RequestedFor"] = info.Actor,
             ["System.DefaultWorkingDirectory"] = stepWorkspace,
             ["System.TeamProject"] = "local",

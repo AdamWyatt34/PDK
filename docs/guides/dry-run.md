@@ -77,7 +77,7 @@ Variables:
 
 [1] Job: build (ubuntu-latest)
   Dependencies: none
-  Container: buildpack-deps:jammy
+  Container: buildpack-deps:noble
   Steps:
     [1] Checkout
         Type: checkout -> HostCheckoutExecutor
@@ -131,7 +131,7 @@ pdk run --dry-run-json report.json
         "jobId": "build",
         "jobName": "build",
         "runsOn": "ubuntu-latest",
-        "containerImage": "buildpack-deps:jammy",
+        "containerImage": "buildpack-deps:noble",
         "dependsOn": [],
         "executionOrder": 1,
         "environment": {},

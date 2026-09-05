@@ -277,6 +277,8 @@ public sealed class VersionCommand
             WriteIndented = true,
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
         });
-        _console.WriteLine(json);
+        // Raw write: the renderer would wrap long lines and break the JSON
+        _console.Profile.Out.Writer.WriteLine(json);
+        _console.Profile.Out.Writer.Flush();
     }
 }

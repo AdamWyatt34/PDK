@@ -111,7 +111,7 @@ set +e
 dotnet run --project src/PDK.CLI/PDK.CLI.csproj \
     --no-build --configuration Release -- \
     run --file .github/workflows/ci.yml \
-    --job build \
+    --job build-ubuntu-latest \
     --host \
     --step-filter "Checkout code" \
     --step-filter "Restore dependencies" \

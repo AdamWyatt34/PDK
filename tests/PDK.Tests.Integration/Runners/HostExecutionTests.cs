@@ -221,16 +221,17 @@ public class HostExecutionTests : IDisposable
 
         using var cts = new CancellationTokenSource();
         cts.CancelAfter(TimeSpan.FromMilliseconds(500));
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
         // Act
-        var result = await _processExecutor.ExecuteAsync(
+        var act = () => _processExecutor.ExecuteAsync(
             command,
             workspacePath,
             cancellationToken: cts.Token);
 
-        // Assert
-        result.Success.Should().BeFalse();
-        result.Duration.Should().BeLessThan(TimeSpan.FromSeconds(5));
+        // Assert: the process is killed and the cancellation propagates to the caller
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(5));
     }
 
     #endregion

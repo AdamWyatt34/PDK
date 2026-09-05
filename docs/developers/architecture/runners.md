@@ -215,7 +215,8 @@ unresolved `${{ }}` expression falls back to the `ubuntu-latest` image:
 
 | Runner Name | Docker Image |
 |-------------|--------------|
-| `ubuntu-latest`, `ubuntu-22.04` | `buildpack-deps:jammy` |
+| `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm` | `buildpack-deps:noble` |
+| `ubuntu-22.04`, `ubuntu-22.04-arm` | `buildpack-deps:jammy` |
 | `ubuntu-20.04` | `buildpack-deps:focal` |
 | `windows-latest`, `windows-2022` | `mcr.microsoft.com/windows/servercore:ltsc2022` |
 | `windows-2019` | `mcr.microsoft.com/windows/servercore:ltsc2019` |

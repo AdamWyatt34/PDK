@@ -337,7 +337,7 @@ public async Task ParseFile_InvalidYaml_ThrowsParseException()
 
 ```csharp
 [Theory]
-[InlineData("ubuntu-latest", "buildpack-deps:jammy")]
+[InlineData("ubuntu-latest", "buildpack-deps:noble")]
 [InlineData("node:18", "node:18")]
 public void MapRunnerToImage_KnownRunner_ReturnsDockerImage(string runner, string expectedImage)
 {

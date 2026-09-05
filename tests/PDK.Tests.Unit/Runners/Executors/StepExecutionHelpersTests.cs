@@ -26,10 +26,21 @@ public class StepExecutionHelpersTests : RunnerTestBase
     }
 
     [Fact]
-    public void ResolveOptions_NullOptions_ReturnsNone()
+    public void ResolveOptions_NullOrNoneOptions_FallBackToTheContext()
     {
-        StepExecutionHelpers.ResolveOptions(CreateTestContext(), null).Should().BeSameAs(StepExecutionOptions.None);
-        StepExecutionHelpers.ResolveOptions(CreateHostContext(), null).Should().BeSameAs(StepExecutionOptions.None);
+        var handler = new Action<string>(_ => { });
+        var container = CreateTestContext() with { OutputLineHandler = handler, Timeout = TimeSpan.FromSeconds(7) };
+        var host = CreateHostContext() with { OutputLineHandler = handler, Timeout = TimeSpan.FromSeconds(9) };
+
+        var fromNull = StepExecutionHelpers.ResolveOptions(container, null);
+        fromNull.OnOutputLine.Should().BeSameAs(handler);
+        fromNull.Timeout.Should().Be(TimeSpan.FromSeconds(7));
+
+        var fromNone = StepExecutionHelpers.ResolveOptions(host, StepExecutionOptions.None);
+        fromNone.OnOutputLine.Should().BeSameAs(handler);
+        fromNone.Timeout.Should().Be(TimeSpan.FromSeconds(9));
+
+        StepExecutionHelpers.ResolveOptions(CreateTestContext(), null).OnOutputLine.Should().BeNull();
     }
 
     [Fact]

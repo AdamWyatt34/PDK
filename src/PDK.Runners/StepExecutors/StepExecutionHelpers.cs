@@ -22,7 +22,9 @@ internal static class StepExecutionHelpers
     public static StepExecutionOptions ResolveOptions(ExecutionContext context, StepExecutionOptions? options)
     {
         ArgumentNullException.ThrowIfNull(context);
-        return options ?? new StepExecutionOptions { OnOutputLine = context.OutputLineHandler, Timeout = context.Timeout };
+        return options is null || ReferenceEquals(options, StepExecutionOptions.None)
+            ? new StepExecutionOptions { OnOutputLine = context.OutputLineHandler, Timeout = context.Timeout }
+            : options;
     }
 
     /// <summary>
@@ -35,7 +37,9 @@ internal static class StepExecutionHelpers
     public static StepExecutionOptions ResolveOptions(HostExecutionContext context, StepExecutionOptions? options)
     {
         ArgumentNullException.ThrowIfNull(context);
-        return options ?? new StepExecutionOptions { OnOutputLine = context.OutputLineHandler, Timeout = context.Timeout };
+        return options is null || ReferenceEquals(options, StepExecutionOptions.None)
+            ? new StepExecutionOptions { OnOutputLine = context.OutputLineHandler, Timeout = context.Timeout }
+            : options;
     }
 
     /// <summary>

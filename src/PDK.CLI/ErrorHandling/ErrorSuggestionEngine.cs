@@ -371,7 +371,7 @@ public sealed class ErrorSuggestionEngine
 
             // Secret errors
             ErrorCodes.SecretEncryptionFailed => [
-                "Retry the operation; if it keeps failing, re-initialise the secret store (~/.pdk/secrets)",
+                "Retry the operation; if it keeps failing, delete ~/.pdk/secrets.json and ~/.pdk/secret.key and store the secrets again",
                 "Check that the current user can write to the secret store"
             ],
             ErrorCodes.SecretDecryptionFailed => [
@@ -383,7 +383,7 @@ public sealed class ErrorSuggestionEngine
                 "Set the secret: pdk secret set NAME, or pass it with --secret NAME=value / PDK_SECRET_NAME"
             ],
             ErrorCodes.SecretStorageFailed => [
-                "Check permissions on ~/.pdk/secrets",
+                "Check permissions on ~/.pdk/secrets.json and ~/.pdk/secret.key (they must be writable by you only)",
                 "Retry the operation"
             ],
             ErrorCodes.SecretInvalidName => [
@@ -392,7 +392,7 @@ public sealed class ErrorSuggestionEngine
 
             // Artifact errors
             ErrorCodes.ArtifactInvalidName => [
-                "Artifact names may contain letters, digits, '-', '_' and '.' only"
+                "Artifact names cannot be empty, longer than 256 characters, or contain \" : < > | * ? \\ / or line breaks"
             ],
             ErrorCodes.ArtifactNoFilesMatched => [
                 "Check the path/glob pattern of the artifact step; paths are relative to the workspace",

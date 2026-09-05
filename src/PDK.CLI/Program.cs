@@ -436,8 +436,11 @@ runCommand.SetHandler(async context =>
             AnsiConsole.MarkupLine("[yellow]         [/] Sensitive data may appear in logs and console output.");
         }
 
-        // Build logging options from CLI flags and apply them to the logging pipeline
-        var loggingOptions = LoggingOptionsBuilder.FromCliFlags(
+        // Build logging options from the configuration's logging section and the CLI flags
+        // (flags win) and apply them to the logging pipeline
+        var loggingConfig = (await serviceProvider.GetRequiredService<IConfigurationLoader>().LoadAsync(configPath))?.Logging;
+        var loggingOptions = LoggingOptionsBuilder.FromCliFlagsAndConfiguration(
+            loggingConfig,
             verbose: verbose,
             trace: trace,
             quiet: quiet,

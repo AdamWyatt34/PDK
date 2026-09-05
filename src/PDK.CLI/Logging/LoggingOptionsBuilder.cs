@@ -1,6 +1,7 @@
 namespace PDK.CLI.Logging;
 
 using Microsoft.Extensions.Logging;
+using PDK.Core.Configuration;
 using PDK.Core.Logging;
 
 /// <summary>
@@ -214,4 +215,80 @@ public sealed class LoggingOptionsBuilder
             .WithSecretMasking(!noRedact)
             .Build();
     }
+
+    /// <summary>
+    /// Builds logging options from the <c>logging</c> configuration section and the CLI flags.
+    /// The configuration supplies the defaults (level, file paths, rotation, redaction); a CLI flag
+    /// that was given always wins.
+    /// </summary>
+    /// <param name="config">The <c>logging</c> configuration section, or null.</param>
+    /// <param name="verbose">--verbose.</param>
+    /// <param name="trace">--trace.</param>
+    /// <param name="quiet">--quiet.</param>
+    /// <param name="silent">--silent.</param>
+    /// <param name="logFile">--log-file value, or null.</param>
+    /// <param name="logJson">--log-json value, or null.</param>
+    /// <param name="noRedact">--no-redact.</param>
+    /// <returns>The logging options.</returns>
+    public static LoggingOptions FromCliFlagsAndConfiguration(
+        LoggingConfig? config,
+        bool verbose = false,
+        bool trace = false,
+        bool quiet = false,
+        bool silent = false,
+        string? logFile = null,
+        string? logJson = null,
+        bool noRedact = false)
+    {
+        var builder = Create();
+
+        if (verbose || trace || quiet || silent)
+        {
+            builder.WithVerbosityFlags(verbose, trace, quiet, silent);
+        }
+        else if (TryParseLevel(config?.Level, out var configuredLevel))
+        {
+            builder.WithMinimumLevel(configuredLevel);
+        }
+
+        builder
+            .WithLogFile(logFile ?? ExpandConfiguredPath(config?.File))
+            .WithJsonLogFile(logJson ?? ExpandConfiguredPath(config?.JsonFile))
+            .WithSecretMasking(!(noRedact || config?.NoRedact == true));
+
+        if (config?.MaxSizeMb is > 0)
+        {
+            builder.WithMaxFileSize(config.MaxSizeMb.Value * 1024L * 1024L);
+        }
+
+        if (config?.RetainedFileCount is > 0)
+        {
+            builder.WithRetainedFileCount(config.RetainedFileCount.Value);
+        }
+
+        return builder.Build();
+    }
+
+    /// <summary>
+    /// Parses a configured log level name (Trace, Debug, Information/Info, Warning/Warn, Error, Critical).
+    /// </summary>
+    /// <param name="name">The level name, or null.</param>
+    /// <param name="level">The parsed level.</param>
+    /// <returns>True when the name is a known level.</returns>
+    public static bool TryParseLevel(string? name, out LogLevel level)
+    {
+        switch (name?.Trim().ToLowerInvariant())
+        {
+            case "trace": level = LogLevel.Trace; return true;
+            case "debug": level = LogLevel.Debug; return true;
+            case "information" or "info": level = LogLevel.Information; return true;
+            case "warning" or "warn": level = LogLevel.Warning; return true;
+            case "error": level = LogLevel.Error; return true;
+            case "critical" or "fatal": level = LogLevel.Critical; return true;
+            default: level = LogLevel.Information; return false;
+        }
+    }
+
+    private static string? ExpandConfiguredPath(string? path) =>
+        string.IsNullOrWhiteSpace(path) ? null : ConfigurationLoader.ExpandPath(path);
 }
