@@ -6,7 +6,15 @@ PDK needs to handle errors during pipeline execution. We needed to decide how to
 
 ## Decision
 
-Adopt a fail-fast approach: stop execution on the first error and provide detailed, actionable feedback.
+Adopt a fail-fast approach: stop executing the remaining work of a job on the first error and provide
+detailed, actionable feedback.
+
+> **Status note.** Since the expression engine was introduced, "stop" follows the CI services'
+> semantics rather than aborting the job outright: after a failed step the remaining steps are
+> *skipped* because their default condition (`success()` / `succeeded()`) is false, but steps with
+> `always()` / `failure()` conditions still run, `continue-on-error` steps do not fail the job, and
+> dependent jobs are skipped unless their own condition says otherwise. See
+> [Execution semantics](../../expressions.md#execution-semantics).
 
 ## Rationale
 
@@ -72,16 +80,17 @@ With fail-fast, execution is deterministic:
 ### Step-Level Fail-Fast
 
 ```csharp
-foreach (var step in job.Steps)
+for (var i = 0; i < job.Steps.Count; i++)
 {
-    var result = await ExecuteStepAsync(step);
-    results.Add(result);
+    // The session evaluates the step condition against the job status so far:
+    // after a failure only always()/failure()-style steps get a plan that runs.
+    var plan = session.PrepareStep(job.Steps[i], i);
+    var result = plan.Skip
+        ? JobExecutionSession.SkippedResult(plan.Step.Name, plan.SkipReason!)
+        : await ExecuteStepAsync(plan, ...);
 
-    if (!result.Success && !step.ContinueOnError)
-    {
-        // Stop immediately
-        break;
-    }
+    results.Add(result);
+    session.Record(job.Steps[i], i, result);   // flips the status to Failure unless continue-on-error
 }
 ```
 
@@ -101,7 +110,8 @@ steps:
 
 ### Job Dependencies
 
-If a job fails, dependent jobs are skipped:
+If a job fails, dependent jobs are skipped (unless their `if:` / `condition:` uses `always()` or
+`failure()`):
 
 ```yaml
 jobs:
@@ -152,8 +162,9 @@ Pipeline stops mid-way:
 ✓ Checkout
 ✓ Install
 ✗ Build
-○ Test (skipped)
-○ Deploy (skipped)
+⊘ Test (skipped: a previous step failed)
+⊘ Deploy (skipped: a previous step failed)
+✓ Upload logs (if: always())
 ```
 
 **Mitigation:**
@@ -227,10 +238,10 @@ Collect all errors, show summary, then fail.
 
 ### Implementation Impact
 
-1. Step executor checks result after each step
-2. `ContinueOnError` property on Step model
-3. Skipped steps tracked in results
-4. Exit code reflects first failure
+1. `JobExecutionSession` tracks the job status and evaluates each step's condition against it
+2. `ContinueOnError` property on Step model (`StepExecutionResult.AllowedFailure`)
+3. Skipped steps tracked in results with their reason
+4. Process exit code 1 when any job failed
 
 ## Status
 

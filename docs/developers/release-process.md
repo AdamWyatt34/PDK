@@ -47,32 +47,43 @@ Early access to upcoming features:
 
 ## Release Workflow
 
-### 1. Prepare Release
+Releases are cut by the `Release` GitHub Actions workflow (`.github/workflows/release.yml`), started
+manually with the version to release (`workflow_dispatch`). The workflow:
 
-Create a release branch:
+1. Validates the version format and checks that the tag `v<version>` does not exist yet
+2. Updates `VersionPrefix` in `Directory.Build.props` (`scripts/set-version.sh`)
+3. Generates the changelog section from the conventional-commit subjects since the previous tag
+   (`scripts/generate-changelog.sh`), keeping the `## [Unreleased]` placeholder
+4. Restores, builds (`Release`), runs the unit and integration tests with coverage
+   (`PDK_DOCKER_TESTS=require`) and packs the tool; nothing is pushed until this succeeds
+5. Commits `Directory.Build.props` and `CHANGELOG.md`, creates the `v<version>` tag and pushes both
+6. Publishes the package to NuGet (when `NUGET_API_KEY` is configured) and creates the GitHub release
+   with this version's changelog section and the `.nupkg` attached (versions starting with `0.` are
+   marked as pre-releases)
 
-```bash
-git checkout main
-git pull upstream main
-git checkout -b release/v1.2.0
-```
+`scripts/release.sh` / `scripts/release.ps1` perform the same steps interactively on a maintainer's
+machine (version bump, changelog, build, tests, pack, commit, tag, push); `scripts/bump-version.sh`
+bumps the major/minor/patch part and `scripts/verify-release.sh` checks a published package.
 
-### 2. Update Version
+### Versioning in the Repository
 
-Update version in project files:
+The version lives in one place:
 
 ```xml
-<!-- src/PDK.CLI/PDK.CLI.csproj -->
+<!-- Directory.Build.props -->
 <PropertyGroup>
-    <Version>1.2.0</Version>
-    <AssemblyVersion>1.2.0.0</AssemblyVersion>
-    <FileVersion>1.2.0.0</FileVersion>
+    <VersionPrefix>1.2.0</VersionPrefix>
+    <VersionSuffix></VersionSuffix>
 </PropertyGroup>
 ```
 
-### 3. Update Changelog
+`pdk version` reports the informational version with the commit hash appended
+(`1.2.0+<sha>`); builds are deterministic and carry no build date.
 
-Add release notes to CHANGELOG.md:
+### Changelog
+
+The `## [Unreleased]` section of CHANGELOG.md collects user-visible changes while they are being
+made; the release workflow adds the versioned section. Keep entries short and grouped by type:
 
 ```markdown
 ## [1.2.0] - 2024-01-15
@@ -89,39 +100,12 @@ Add release notes to CHANGELOG.md:
 - Variable expansion in nested structures (#126)
 ```
 
-### 4. Create Release PR
+### Running a Release
 
-```bash
-git add .
-git commit -m "chore: prepare release v1.2.0"
-git push origin release/v1.2.0
-```
-
-Create PR titled: `chore: release v1.2.0`
-
-### 5. Review and Merge
-
-- All CI checks must pass
-- At least one maintainer approval
-- Merge to main
-
-### 6. Create GitHub Release
-
-1. Go to Releases → "Draft a new release"
-2. Create tag: `v1.2.0`
-3. Target: `main`
-4. Title: `v1.2.0`
-5. Description: Copy from CHANGELOG
-6. Publish release
-
-### 7. Publish Packages
-
-After the release is published, CI automatically:
-
-1. Builds release binaries
-2. Publishes NuGet packages
-3. Creates platform-specific binaries
-4. Attaches artifacts to release
+1. Make sure `main` is green and the `## [Unreleased]` section of CHANGELOG.md is up to date
+2. Start the **Release** workflow from the Actions tab with the version (e.g. `1.2.0`)
+3. Watch the run: the release commit and tag are pushed only after build, tests and pack succeed
+4. Check the GitHub release and the package on NuGet (`dotnet tool update -g pdk`)
 
 ## Release Artifacts
 
@@ -129,11 +113,11 @@ Each release includes:
 
 | Artifact | Description |
 |----------|-------------|
-| `pdk-win-x64.zip` | Windows x64 self-contained |
-| `pdk-linux-x64.tar.gz` | Linux x64 self-contained |
-| `pdk-osx-x64.tar.gz` | macOS x64 self-contained |
-| `pdk-osx-arm64.tar.gz` | macOS ARM self-contained |
-| NuGet packages | Library packages for .NET |
+| `pdk.<version>.nupkg` | The `pdk` .NET global tool package (attached to the GitHub release and pushed to NuGet) |
+| `pdk-<version>` workflow artifact | The same package kept for 30 days so a failed publish can be retried by hand |
+
+There are no platform-specific self-contained binaries; the tool runs on any machine with the .NET 8
+runtime (it rolls forward to newer major runtimes).
 
 ## Changelog Format
 
@@ -216,19 +200,14 @@ git checkout -b hotfix/v1.1.1
 
 Make the minimal change to fix the bug.
 
-### 3. Update Version
-
-```xml
-<Version>1.1.1</Version>
-```
-
-### 4. Create PR
+### 3. Create PR
 
 Target the `main` branch.
 
-### 5. Release
+### 4. Release
 
-Follow normal release process with expedited review.
+Run the Release workflow with the patch version (e.g. `1.1.1`); the workflow bumps the version and
+changelog itself.
 
 ### 6. Cherry-pick
 
@@ -245,8 +224,7 @@ Before each release, verify:
 
 - [ ] All CI checks pass
 - [ ] Tests pass locally
-- [ ] Version numbers updated
-- [ ] Changelog updated
+- [ ] `## [Unreleased]` in CHANGELOG.md is complete (the workflow turns it into the release section)
 - [ ] Documentation updated
 - [ ] Breaking changes documented
 - [ ] Security review completed
@@ -265,7 +243,7 @@ After releasing:
 
 | Version | Date | Highlights |
 |---------|------|------------|
-| 1.0.0 | TBD | Initial release |
+| 1.0.0 | 2025-12-26 | Initial release |
 
 ## Maintainer Responsibilities
 

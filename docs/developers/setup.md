@@ -80,8 +80,11 @@ dotnet test
 ### Run Unit Tests Only
 
 ```bash
-dotnet test --filter Category=Unit
+dotnet test tests/PDK.Tests.Unit
 ```
+
+Integration tests live in `tests/PDK.Tests.Integration`; the ones that need a Docker daemon skip
+themselves when none is reachable.
 
 ### Run with Verbose Output
 
@@ -186,13 +189,14 @@ Expected output:
 ```
 PDK Doctor - System Diagnostics
 
-Docker Status: Available
-  Version: 24.0.6
-  API Version: 1.43
-  OS: linux
+Checking Docker availability...
+✓ Docker is available
+✓ Version: 24.0.6
+✓ Platform: linux
 ```
 
-If Docker is not available, PDK will fall back to host execution mode.
+If Docker is not available, `pdk doctor` exits with code 4 and lists solutions; `pdk run` then falls
+back to host execution mode (`--runner auto`) unless `--docker` was given.
 
 ## Keeping Your Fork Updated
 

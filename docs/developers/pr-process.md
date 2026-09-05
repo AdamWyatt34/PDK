@@ -126,18 +126,18 @@ git rebase --continue
 # Build the project
 dotnet build
 
-# Run all tests
+# Run all tests (Docker-dependent integration tests skip without a daemon)
 dotnet test
 
-# Check for warnings
-dotnet build /p:TreatWarningsAsErrors=true
+# Warnings are already errors (TreatWarningsAsErrors is on in Directory.Build.props)
+dotnet build -c Release
 ```
 
 ### Self-Review Checklist
 
 - [ ] Code compiles without warnings
 - [ ] All tests pass
-- [ ] New code has tests (80%+ coverage)
+- [ ] New code has tests (aim for 80%+ coverage; CI enforces 70% overall line coverage)
 - [ ] Public APIs have XML documentation
 - [ ] Code follows [Code Standards](code-standards.md)
 - [ ] Commit messages are clear
@@ -260,7 +260,7 @@ Pull requests must pass these checks:
 | Build | Project compiles successfully |
 | Unit Tests | All unit tests pass |
 | Integration Tests | All integration tests pass |
-| Code Coverage | Coverage meets threshold (80%) |
+| Code Coverage | Combined line coverage of unit and integration tests is at least 70% |
 | Lint | No style violations |
 
 ### Fixing Failed Checks

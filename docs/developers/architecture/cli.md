@@ -77,19 +77,28 @@ The run command has extensive options organized by feature:
 ### Basic Options
 
 ```csharp
-var fileOption = new Option<FileInfo>(
+var fileOption = new Option<FileInfo?>(
     aliases: ["--file", "-f"],
-    description: "Path to the pipeline file")
-{ IsRequired = true };
+    description: "Path to the pipeline file (auto-detects .github/workflows/*.yml or azure-pipelines.yml if not specified)");
 
 var jobOption = new Option<string?>(
     aliases: ["--job", "-j"],
-    description: "Specific job to run");
+    description: "Specific job to run (runs all if not specified)");
 
 var hostOption = new Option<bool>(
     aliases: ["--host"],
-    description: "Run on host machine instead of Docker");
+    description: "Run directly on host machine instead of Docker");
+
+// Job graph and execution policies
+var noDepsOption = new Option<bool>(aliases: ["--no-deps"], ...);        // run only the selected job
+var strictOption = new Option<bool>(aliases: ["--strict"], ...);         // fail on unsupported steps
+var eventOption = new Option<string>(aliases: ["--event"], ...);         // github.event_name (default "push")
+var keepContainersOption = new Option<bool>(aliases: ["--keep-containers"], ...);
 ```
+
+Options that no longer change behaviour (`--parallel`, `--max-parallel`, `--no-reuse`) are kept with
+`IsHidden = true` and print a warning when used. All option values are copied into
+`ExecutionOptions` and handed to `PipelineExecutor`.
 
 ### Logging Options
 
@@ -272,23 +281,43 @@ public class ErrorFormatter
 
 ### Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 1 | General error |
-| 2 | Command-line syntax error |
+Exit codes are constants in `ExitCodes` (`src/PDK.CLI/ExitCodes.cs`) and are used by every command:
+
+| Constant | Code | Meaning |
+|----------|------|---------|
+| `Success` | 0 | Success |
+| `Failure` | 1 | Pipeline failed, validation failed, or an unexpected error |
+| `InvalidArguments` | 2 | Bad command line, conflicting flags, unknown job, invalid filter, several candidate pipeline files |
+| `FileNotFound` | 3 | Pipeline file (or another required file) not found |
+| `DockerUnavailable` | 4 | Docker was required but is not available |
+| `Cancelled` | 130 | Ctrl+C / SIGTERM |
+
+The run handler returns `PipelineRunResult.ExitCode` from `PipelineExecutor.Execute`; exceptions that
+escape a handler are mapped with `ExitCodeFor(ex)` (file-not-found → 3, `DockerUnavailableException`
+→ 4, `OperationCanceledException` → 130, `ArgumentException` → 2, anything else → 1). The
+`ErrorFormatter` prints the error panel with its `PDK-E-...` code and a `docs/errors.md#<code>`
+reference; a cancellation prints a single `Cancelled.` line.
 
 ```csharp
-try
+catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 {
-    await executor.Execute(options);
+    AnsiConsole.MarkupLine("[yellow]Cancelled.[/]");
+    context.ExitCode = ExitCodes.Cancelled;
 }
 catch (Exception ex)
 {
     errorFormatter.DisplayError(ex, verbose);
-    Environment.Exit(1);
+    context.ExitCode = ExitCodeFor(ex);
 }
 ```
+
+### Pipeline File Resolution
+
+`--file` is optional. `PipelineFileLocator.Resolve` (`src/PDK.CLI/PipelineFileLocator.cs`) returns the
+explicit file (exit code 3 when it does not exist) or discovers exactly one candidate in the current
+directory, searching `.github/workflows/*.yml|yaml`, `azure-pipelines.yml|yaml`,
+`.azure-pipelines/*.yml|yaml` and `*.pipeline.yml|yaml`; several candidates give exit code 2, none
+gives exit code 3. `run`, `validate`, `list` and `interactive` share it.
 
 ## Console Output
 

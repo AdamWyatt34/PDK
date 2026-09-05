@@ -168,32 +168,47 @@ classDiagram
         +string Id
         +string Name
         +string RunsOn
+        +string Container
         +List~Step~ Steps
         +List~string~ DependsOn
+        +Condition Condition
+        +TimeSpan Timeout
         +Dictionary~string,string~ Environment
+        +Dictionary~string,string~ Variables
+        +Dictionary~string,string~ Matrix
+        +string Stage
     }
 
     class Step {
         +string Id
         +string Name
         +StepType Type
+        +string ActionReference
         +string Script
         +string Shell
         +Dictionary~string,string~ With
         +Dictionary~string,string~ Environment
         +bool ContinueOnError
+        +bool Enabled
+        +int TimeoutMinutes
+        +Condition Condition
     }
 
     class StepType {
         <<enumeration>>
-        Script
+        Unknown
         Checkout
+        Script
+        PowerShell
         Dotnet
         Npm
         Docker
-        PowerShell
+        Maven
+        Gradle
+        FileOperation
         UploadArtifact
         DownloadArtifact
+        Setup
     }
 
     Pipeline "1" --> "*" Job : contains
