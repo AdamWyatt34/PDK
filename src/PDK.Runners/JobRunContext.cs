@@ -56,6 +56,9 @@ public sealed record JobRunContext
     /// <summary>Gets whether containers are kept after the job for debugging (Docker mode).</summary>
     public bool KeepContainers { get; init; }
 
+    /// <summary>Gets whether images are pulled even when a local copy exists (<c>--no-cache</c>, Docker mode).</summary>
+    public bool ForcePullImages { get; init; }
+
     /// <summary>Creates a minimal context for a workspace (used by the legacy <see cref="IJobRunner.RunJobAsync(Job, string, CancellationToken)"/> overload).</summary>
     public static JobRunContext ForWorkspace(string workspacePath) => new() { WorkspacePath = workspacePath };
 }

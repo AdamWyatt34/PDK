@@ -437,7 +437,8 @@ public class PipelineExecutor
             OutputLineHandler = outputHandler,
             ContainerMemoryLimit = ParseMemoryLimit(config?.Docker?.MemoryLimit),
             ContainerCpuLimit = config?.Docker?.CpuLimit,
-            KeepContainers = options.KeepContainers
+            KeepContainers = options.KeepContainers,
+            ForcePullImages = options.NoCacheImages
         };
 
         return JobRunnerSupport.WithResolverVariables(context, _variableResolver);

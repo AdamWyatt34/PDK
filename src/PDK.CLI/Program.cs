@@ -156,25 +156,36 @@ var secretOption = new Option<string[]>(
 };
 
 // Performance optimization options (Sprint 10 Phase 3)
+// Accepted for compatibility only: every job already gets a fresh container.
 var noReuseOption = new Option<bool>(
     aliases: ["--no-reuse"],
-    description: "Disable container reuse (create new container per step)",
-    getDefaultValue: () => false);
+    description: "No effect: every job runs in a fresh container",
+    getDefaultValue: () => false)
+{
+    IsHidden = true
+};
 
 var noCacheOption = new Option<bool>(
     aliases: ["--no-cache"],
     description: "Disable Docker image caching (always pull images)",
     getDefaultValue: () => false);
 
+// Accepted for compatibility only: steps run sequentially and jobs run in dependency order.
 var parallelOption = new Option<bool>(
     aliases: ["--parallel"],
-    description: "Enable parallel step execution for independent steps",
-    getDefaultValue: () => false);
+    description: "No effect: steps run sequentially and jobs run in dependency order",
+    getDefaultValue: () => false)
+{
+    IsHidden = true
+};
 
 var maxParallelOption = new Option<int>(
     aliases: ["--max-parallel"],
-    description: "Maximum number of steps to run in parallel (default: 4)",
-    getDefaultValue: () => 4);
+    description: "No effect (see --parallel)",
+    getDefaultValue: () => 4)
+{
+    IsHidden = true
+};
 maxParallelOption.AddValidator(result =>
 {
     var value = result.GetValueForOption(maxParallelOption);
@@ -473,6 +484,12 @@ runCommand.SetHandler(async context =>
         }
         var cliVariables = ParseKeyValuePairs(vars);
         var cliSecrets = ParseKeyValuePairs(secrets);
+
+        // Options kept for compatibility that no longer change behaviour
+        if (parallel || noReuse)
+        {
+            AnsiConsole.MarkupLine("[yellow]Warning:[/] --parallel, --max-parallel and --no-reuse have no effect: steps run sequentially, jobs run in dependency order and every job gets a fresh container.");
+        }
 
         // Warn if secrets passed via CLI
         if (cliSecrets.Count > 0)
