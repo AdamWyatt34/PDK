@@ -46,19 +46,18 @@ try {
 Write-Host "Output directory: $OutputDir" -ForegroundColor Cyan
 Write-Host ""
 
-# Check Docker availability (required)
+# Check Docker availability (informational: the self-test runs in host mode)
 Write-Host "Checking Docker..."
 try {
     $null = Get-Command docker -ErrorAction Stop
     $dockerInfo = docker info 2>&1
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "Error: Docker daemon is not running. Please start Docker." -ForegroundColor Red
-        exit 2
+        Write-Host "Warning: Docker daemon is not running; the self-test runs in host mode and does not need it." -ForegroundColor Yellow
+    } else {
+        Write-Host "Docker is available" -ForegroundColor Green
     }
-    Write-Host "Docker is available" -ForegroundColor Green
 } catch {
-    Write-Host "Error: Docker is not installed. PDK requires Docker for execution." -ForegroundColor Red
-    exit 2
+    Write-Host "Warning: Docker is not installed; the self-test runs in host mode and does not need it." -ForegroundColor Yellow
 }
 Write-Host ""
 

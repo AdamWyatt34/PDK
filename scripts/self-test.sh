@@ -49,18 +49,15 @@ ln -sf "$TIMESTAMP" .pdk-dogfood/runs/latest
 echo "${CYAN}Output directory:${RESET} $OUTPUT_DIR"
 echo ""
 
-# Check Docker availability (required)
+# Check Docker availability (informational: the self-test runs in host mode)
 echo "Checking Docker..."
 if ! command -v docker > /dev/null 2>&1; then
-    echo "${RED}Error:${RESET} Docker is not installed. PDK requires Docker for execution."
-    exit 2
+    echo "${YELLOW}Warning:${RESET} Docker is not installed; the self-test runs in host mode and does not need it."
+elif ! docker info > /dev/null 2>&1; then
+    echo "${YELLOW}Warning:${RESET} Docker daemon is not running; the self-test runs in host mode and does not need it."
+else
+    echo "${GREEN}Docker is available${RESET}"
 fi
-
-if ! docker info > /dev/null 2>&1; then
-    echo "${RED}Error:${RESET} Docker daemon is not running. Please start Docker."
-    exit 2
-fi
-echo "${GREEN}Docker is available${RESET}"
 echo ""
 
 # Build PDK if needed
