@@ -111,6 +111,21 @@ with `### Breaking Changes`:
 3. Watch the run: the release commit and tag are pushed only after build, tests and pack succeed
 4. Check the GitHub release and the package on NuGet (`dotnet tool update -g pdk`)
 
+### Release Credentials
+
+Two repository secrets are used, under Settings > Secrets and variables > Actions:
+
+| Secret | Required | Used for |
+|--------|----------|----------|
+| `PAT_TOKEN` | Yes | Pushing the release commit and the tag to the protected `main` branch, and creating the GitHub release. The default `GITHUB_TOKEN` cannot push to `main`, and releases it creates do not trigger the docs workflow. |
+| `NUGET_API_KEY` | No | Pushing the package to NuGet. Without it the release is still tagged and published on GitHub, and the `.nupkg` is attached there. |
+
+`PAT_TOKEN` needs `repo` scope (a fine-grained token needs this repository, with read and write access
+to contents). **Personal access tokens expire**, and an expired one is the most likely reason for a
+release that fails immediately. The workflow checks the token before checking out and names the
+problem; without that check the failure surfaces at the checkout step as
+`fatal: could not read Username for 'https://github.com'`, which says nothing about the token.
+
 ## Release Artifacts
 
 Each release includes:
