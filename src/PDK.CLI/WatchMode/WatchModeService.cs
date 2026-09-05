@@ -6,6 +6,13 @@ namespace PDK.CLI.WatchMode;
 /// Orchestrates all watch mode components.
 /// Coordinates file watching, debouncing, execution queue, and UI.
 /// </summary>
+/// <remarks>
+/// The workspace (current directory) is watched, not the pipeline file's directory; a pipeline file
+/// that lives outside the workspace is watched individually. Ctrl+C cancels the in-flight pipeline
+/// through the token handed to <see cref="PipelineExecutor.Execute"/>; the host owns the console
+/// cancel handling, so this service never registers <c>Console.CancelKeyPress</c> and a second
+/// Ctrl+C terminates the process as usual.
+/// </remarks>
 public sealed class WatchModeService : IWatchModeService
 {
     private readonly IFileWatcher _fileWatcher;
@@ -17,6 +24,7 @@ public sealed class WatchModeService : IWatchModeService
 
     private ExecutionOptions? _currentOptions;
     private WatchModeOptions? _watchOptions;
+    private CancellationToken _runCancellation;
     private WatchModeState _currentState = WatchModeState.Watching;
     private bool _disposed;
 
@@ -73,6 +81,24 @@ public sealed class WatchModeService : IWatchModeService
         _executionQueue.ExecutionCompleted += OnExecutionCompleted;
     }
 
+    /// <summary>
+    /// Determines the directory to watch (the workspace) and whether the pipeline file needs to be
+    /// watched separately because it lives outside the workspace.
+    /// </summary>
+    /// <param name="pipelineFile">The pipeline file path.</param>
+    /// <param name="workspace">The workspace directory (defaults to the current directory).</param>
+    /// <returns>The watched directory and the additional file to watch (null when inside the workspace).</returns>
+    public static (string WatchDirectory, string? AdditionalFile) ResolveWatchTargets(string pipelineFile, string? workspace = null)
+    {
+        var workspacePath = Path.GetFullPath(workspace ?? Directory.GetCurrentDirectory());
+        var pipelinePath = Path.GetFullPath(pipelineFile);
+
+        var relative = Path.GetRelativePath(workspacePath, pipelinePath);
+        var inside = !relative.StartsWith("..", StringComparison.Ordinal) && !Path.IsPathRooted(relative);
+
+        return (workspacePath, inside ? null : pipelinePath);
+    }
+
     /// <inheritdoc />
     public async Task RunAsync(
         ExecutionOptions options,
@@ -85,19 +111,25 @@ public sealed class WatchModeService : IWatchModeService
 
         _currentOptions = options;
         _watchOptions = watchOptions;
+        _runCancellation = cancellationToken;
         _debounceEngine.DebounceMs = watchOptions.DebounceMs;
 
+        var (watchDirectory, additionalFile) = ResolveWatchTargets(options.FilePath);
         var pipelineFile = Path.GetFullPath(options.FilePath);
-        var watchDirectory = Path.GetDirectoryName(pipelineFile) ?? Environment.CurrentDirectory;
+
+        var fileWatcherOptions = watchOptions.ToFileWatcherOptions();
+        if (additionalFile is not null)
+        {
+            fileWatcherOptions.AdditionalFiles.Add(additionalFile);
+        }
 
         // Display startup message
         _ui.DisplayStartup(pipelineFile, watchOptions.DebounceMs, watchDirectory);
 
         // Start file watching
-        var fileWatcherOptions = watchOptions.ToFileWatcherOptions();
         _fileWatcher.Start(watchDirectory, fileWatcherOptions);
 
-        _logger.LogInformation("Watch mode started for: {PipelineFile}", pipelineFile);
+        _logger.LogInformation("Watch mode started for: {PipelineFile} (watching {Directory})", pipelineFile, watchDirectory);
 
         try
         {
@@ -106,6 +138,11 @@ public sealed class WatchModeService : IWatchModeService
 
             // Wait for cancellation
             await WaitForCancellationAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Ctrl+C: a normal shutdown, not an error
+            _logger.LogDebug("Watch mode cancelled");
         }
         finally
         {
@@ -176,8 +213,16 @@ public sealed class WatchModeService : IWatchModeService
         // Cancel any pending debounce
         _debounceEngine.Cancel();
 
-        // Wait for current execution to complete (with timeout)
         using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        if (_runCancellation.IsCancellationRequested)
+        {
+            // Ctrl+C: stop the in-flight pipeline instead of waiting for it to finish
+            await _executionQueue.CancelCurrentAsync(timeoutCts.Token);
+            return;
+        }
+
+        // Wait for current execution to complete (with timeout)
         try
         {
             await _executionQueue.WaitForCompletionAsync(timeoutCts.Token);
@@ -196,9 +241,12 @@ public sealed class WatchModeService : IWatchModeService
             return false;
         }
 
+        // The queue's token (queue cancellation) and the watch token (Ctrl+C) both stop the run
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _runCancellation);
+
         try
         {
-            var result = await _pipelineExecutor.Execute(_currentOptions, cancellationToken);
+            var result = await _pipelineExecutor.Execute(_currentOptions, linked.Token);
             if (!result.Success)
             {
                 _logger.LogWarning("Pipeline execution failed: {Message}", result.Message ?? "one or more jobs failed");
@@ -207,6 +255,7 @@ public sealed class WatchModeService : IWatchModeService
         }
         catch (OperationCanceledException)
         {
+            // Cancellation is not an error: no error panel
             throw;
         }
         catch (Exception ex)
@@ -225,7 +274,28 @@ public sealed class WatchModeService : IWatchModeService
 
     private void OnFileWatcherError(object? sender, Exception e)
     {
-        _ui.DisplayWarning($"File watcher error: {e.Message}");
+        _ui.DisplayWarning($"File watcher error: {e.Message}. Scheduling a catch-up run.");
+
+        // Events may have been lost (buffer overflow): schedule one catch-up run through the
+        // normal debounce path so that it coalesces with any changes that still arrive.
+        if (_disposed || _runCancellation.IsCancellationRequested)
+        {
+            return;
+        }
+
+        try
+        {
+            _debounceEngine.QueueChange(new FileChangeEvent
+            {
+                FullPath = _fileWatcher.WatchedDirectory ?? Directory.GetCurrentDirectory(),
+                RelativePath = "(catch-up after watcher error)",
+                ChangeType = FileChangeType.Modified
+            });
+        }
+        catch (ObjectDisposedException)
+        {
+            // Shutting down
+        }
     }
 
     private void OnChangeQueued(object? sender, FileChangeEvent e)
@@ -241,13 +311,14 @@ public sealed class WatchModeService : IWatchModeService
     {
         _logger.LogDebug("Debounce completed with {Count} changes", changes.Count);
         ChangesDetected?.Invoke(this, changes);
-        _ui.DisplayChangesDetected(changes);
 
-        // Check if we should clear the screen
+        // Order: clear the screen first, then show what changed, then run
         if (_watchOptions?.ClearOnRerun == true)
         {
             _ui.ClearScreen();
         }
+
+        _ui.DisplayChangesDetected(changes);
 
         // Queue the execution
         if (_executionQueue.IsExecuting)
@@ -271,12 +342,23 @@ public sealed class WatchModeService : IWatchModeService
         Statistics.RecordRun(e.Success, e.Duration);
 
         // Display completion
-        _ui.DisplayRunComplete(e.RunNumber, e.Success, e.Duration);
+        if (e.Cancelled)
+        {
+            _ui.DisplayRunCancelled(e.RunNumber, e.Duration);
+        }
+        else
+        {
+            _ui.DisplayRunComplete(e.RunNumber, e.Success, e.Duration);
+        }
 
         // Update state
         if (_executionQueue.HasPendingExecution)
         {
             CurrentState = WatchModeState.Queued;
+        }
+        else if (e.Cancelled)
+        {
+            CurrentState = WatchModeState.Watching;
         }
         else if (e.Success)
         {

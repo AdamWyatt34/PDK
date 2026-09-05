@@ -1,6 +1,7 @@
 namespace PDK.Core.Configuration;
 
 using System.Text.RegularExpressions;
+using PDK.Core.Filtering;
 
 /// <summary>
 /// Validates PDK configuration against the schema rules.
@@ -19,12 +20,21 @@ public partial class ConfigurationValidator
     private static readonly Regex MemoryLimitPattern = MemoryLimitRegex();
 
     /// <summary>
-    /// Valid log levels (case-insensitive).
+    /// Valid log levels (case-insensitive). These are the levels documented on
+    /// <see cref="LoggingConfig.Level"/> plus their common aliases.
     /// </summary>
-    private static readonly HashSet<string> ValidLogLevels = new(StringComparer.OrdinalIgnoreCase)
+    public static IReadOnlyCollection<string> ValidLogLevels { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
-        "Info", "Debug", "Warning", "Error"
+        "Trace", "Debug", "Information", "Info", "Warning", "Warn", "Error", "Critical"
     };
+
+    /// <summary>
+    /// Text listing the accepted log levels, used in error messages.
+    /// </summary>
+    public const string ValidLogLevelsDescription = "Trace, Debug, Information (Info), Warning (Warn), Error, Critical";
+
+    private static readonly HashSet<string> ValidRunnerDefaults = new(StringComparer.OrdinalIgnoreCase) { "auto", "docker", "host" };
+    private static readonly HashSet<string> ValidRunnerFallbacks = new(StringComparer.OrdinalIgnoreCase) { "host", "none" };
 
     /// <summary>
     /// The minimum allowed CPU limit.
@@ -60,6 +70,18 @@ public partial class ConfigurationValidator
         // Validate logging configuration
         ValidateLoggingConfig(config.Logging, errors);
 
+        // Validate runner configuration
+        ValidateRunnerConfig(config.Runner, errors);
+
+        // Validate performance configuration
+        ValidatePerformanceConfig(config.Performance, errors);
+
+        // Validate step filtering configuration
+        ValidateStepFilteringConfig(config.StepFiltering, errors);
+
+        // Validate watch configuration
+        ValidateWatchConfig(config.Watch, errors);
+
         return errors.Count == 0
             ? ValidationResult.Success()
             : ValidationResult.Failure(errors);
@@ -72,7 +94,7 @@ public partial class ConfigurationValidator
             errors.Add(new ValidationError
             {
                 Path = "version",
-                Message = "Version is required and must be '1.0'"
+                Message = "The 'version' field is required. Add \"version\": \"1.0\" at the top level of the configuration"
             });
         }
         else if (version != "1.0")
@@ -169,7 +191,7 @@ public partial class ConfigurationValidator
             errors.Add(new ValidationError
             {
                 Path = "logging.level",
-                Message = $"Invalid log level '{logging.Level}'. Valid values: Info, Debug, Warning, Error"
+                Message = $"Invalid log level '{logging.Level}'. Valid values: {ValidLogLevelsDescription}"
             });
         }
 
@@ -180,6 +202,179 @@ public partial class ConfigurationValidator
             {
                 Path = "logging.maxSizeMb",
                 Message = $"Invalid max size '{logging.MaxSizeMb}'. Must be greater than 0"
+            });
+        }
+
+        if (logging.RetainedFileCount.HasValue && logging.RetainedFileCount.Value < 0)
+        {
+            errors.Add(new ValidationError
+            {
+                Path = "logging.retainedFileCount",
+                Message = $"Invalid retained file count '{logging.RetainedFileCount}'. Must be 0 or greater"
+            });
+        }
+    }
+
+    private static void ValidateRunnerConfig(RunnerConfig? runner, List<ValidationError> errors)
+    {
+        if (runner == null) return;
+
+        if (!string.IsNullOrEmpty(runner.Default) && !ValidRunnerDefaults.Contains(runner.Default))
+        {
+            errors.Add(new ValidationError
+            {
+                Path = "runner.default",
+                Message = $"Invalid runner '{runner.Default}'. Valid values: auto, docker, host"
+            });
+        }
+
+        if (!string.IsNullOrEmpty(runner.Fallback) && !ValidRunnerFallbacks.Contains(runner.Fallback))
+        {
+            errors.Add(new ValidationError
+            {
+                Path = "runner.fallback",
+                Message = $"Invalid runner fallback '{runner.Fallback}'. Valid values: host, none"
+            });
+        }
+    }
+
+    private static void ValidatePerformanceConfig(PerformanceConfig? performance, List<ValidationError> errors)
+    {
+        if (performance == null) return;
+
+        if (performance.MaxParallelism < 1)
+        {
+            errors.Add(new ValidationError
+            {
+                Path = "performance.maxParallelism",
+                Message = $"Invalid max parallelism '{performance.MaxParallelism}'. Must be at least 1"
+            });
+        }
+
+        if (performance.ImageCacheMaxAgeDays < 0)
+        {
+            errors.Add(new ValidationError
+            {
+                Path = "performance.imageCacheMaxAgeDays",
+                Message = $"Invalid image cache max age '{performance.ImageCacheMaxAgeDays}'. Must be 0 or greater"
+            });
+        }
+
+        if (performance.CacheDirectories != null)
+        {
+            foreach (var (name, path) in performance.CacheDirectories)
+            {
+                if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(path))
+                {
+                    errors.Add(new ValidationError
+                    {
+                        Path = $"performance.cacheDirectories.{name}",
+                        Message = "Cache directory entries must have a non-empty name and path"
+                    });
+                }
+            }
+        }
+    }
+
+    private static void ValidateStepFilteringConfig(StepFilteringConfig? stepFiltering, List<ValidationError> errors)
+    {
+        if (stepFiltering == null) return;
+
+        if (stepFiltering.FuzzyMatchThreshold.HasValue && stepFiltering.FuzzyMatchThreshold.Value < 0)
+        {
+            errors.Add(new ValidationError
+            {
+                Path = "stepFiltering.fuzzyMatchThreshold",
+                Message = $"Invalid fuzzy match threshold '{stepFiltering.FuzzyMatchThreshold}'. Must be 0 or greater"
+            });
+        }
+
+        if (stepFiltering.Suggestions?.MaxSuggestions is < 0)
+        {
+            errors.Add(new ValidationError
+            {
+                Path = "stepFiltering.suggestions.maxSuggestions",
+                Message = $"Invalid max suggestions '{stepFiltering.Suggestions.MaxSuggestions}'. Must be 0 or greater"
+            });
+        }
+
+        if (stepFiltering.Presets == null) return;
+
+        foreach (var (presetName, preset) in stepFiltering.Presets)
+        {
+            if (string.IsNullOrWhiteSpace(presetName))
+            {
+                errors.Add(new ValidationError
+                {
+                    Path = "stepFiltering.presets",
+                    Message = "Preset names must not be empty"
+                });
+                continue;
+            }
+
+            if (preset == null)
+            {
+                errors.Add(new ValidationError
+                {
+                    Path = $"stepFiltering.presets.{presetName}",
+                    Message = $"Preset '{presetName}' must be an object"
+                });
+                continue;
+            }
+
+            foreach (var spec in preset.StepIndices ?? [])
+            {
+                if (!IndexParser.TryParse(spec ?? string.Empty, out _, out var error))
+                {
+                    errors.Add(new ValidationError
+                    {
+                        Path = $"stepFiltering.presets.{presetName}.stepIndices",
+                        Message = $"Invalid step index specification '{spec}': {error}"
+                    });
+                }
+            }
+
+            foreach (var spec in preset.StepRanges ?? [])
+            {
+                if (!StepRange.TryParse(spec, out _, out var error))
+                {
+                    errors.Add(new ValidationError
+                    {
+                        Path = $"stepFiltering.presets.{presetName}.stepRanges",
+                        Message = $"Invalid step range '{spec}': {error}"
+                    });
+                }
+            }
+        }
+    }
+
+    private static void ValidateWatchConfig(WatchConfig? watch, List<ValidationError> errors)
+    {
+        if (watch == null) return;
+
+        if (watch.DebounceMs.HasValue && watch.DebounceMs.Value < 0)
+        {
+            errors.Add(new ValidationError
+            {
+                Path = "watch.debounceMs",
+                Message = $"Invalid debounce period '{watch.DebounceMs}'. Must be 0 or greater"
+            });
+        }
+
+        ValidatePatterns(watch.ExcludePatterns, "watch.excludePatterns", errors);
+        ValidatePatterns(watch.IncludePatterns, "watch.includePatterns", errors);
+    }
+
+    private static void ValidatePatterns(List<string>? patterns, string path, List<ValidationError> errors)
+    {
+        if (patterns == null) return;
+
+        if (patterns.Any(string.IsNullOrWhiteSpace))
+        {
+            errors.Add(new ValidationError
+            {
+                Path = path,
+                Message = "Patterns must be non-empty strings"
             });
         }
     }

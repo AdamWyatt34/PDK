@@ -66,20 +66,6 @@ public sealed class SystemInfo : ISystemInfo
     }
 
     /// <inheritdoc/>
-    public DateTime? GetBuildDate()
-    {
-        var attr = _assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
-            .FirstOrDefault(a => a.Key == "BuildDate");
-
-        if (attr?.Value != null && DateTime.TryParse(attr.Value, out var date))
-        {
-            return date;
-        }
-
-        return null;
-    }
-
-    /// <inheritdoc/>
     public string? GetCommitHash()
     {
         var version = GetInformationalVersion();
@@ -90,6 +76,8 @@ public sealed class SystemInfo : ISystemInfo
     /// <inheritdoc/>
     public async Task<DockerInfo> GetDockerInfoAsync(CancellationToken cancellationToken = default)
     {
+        var endpoint = GetDockerEndpoint();
+
         try
         {
             var status = await _containerManager.GetDockerStatusAsync(cancellationToken);
@@ -99,13 +87,32 @@ public sealed class SystemInfo : ISystemInfo
                 IsRunning = status.IsAvailable,
                 Version = status.Version,
                 Platform = status.Platform,
+                Endpoint = endpoint,
                 ErrorMessage = status.ErrorMessage
             };
         }
         catch (Exception ex)
         {
-            return DockerInfo.NotAvailable(ex.Message);
+            return DockerInfo.NotAvailable(ex.Message, endpoint);
         }
+    }
+
+    /// <summary>
+    /// Gets the Docker endpoint the container manager connects to: <c>DOCKER_HOST</c> when set,
+    /// otherwise the platform default (<c>npipe://./pipe/docker_engine</c> on Windows,
+    /// <c>unix:///var/run/docker.sock</c> elsewhere).
+    /// </summary>
+    public static string GetDockerEndpoint()
+    {
+        var dockerHost = Environment.GetEnvironmentVariable("DOCKER_HOST");
+        if (!string.IsNullOrWhiteSpace(dockerHost))
+        {
+            return dockerHost.Trim();
+        }
+
+        return OperatingSystem.IsWindows()
+            ? "npipe://./pipe/docker_engine"
+            : "unix:///var/run/docker.sock";
     }
 
     /// <inheritdoc/>

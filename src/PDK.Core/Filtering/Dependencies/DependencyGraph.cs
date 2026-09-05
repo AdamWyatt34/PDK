@@ -3,16 +3,21 @@ using PDK.Core.Models;
 namespace PDK.Core.Filtering.Dependencies;
 
 /// <summary>
-/// Represents a directed graph of step dependencies within a job.
+/// Represents a directed graph of step dependencies. Nodes are keyed by (job, step index),
+/// so duplicate step names never collide and never produce self-loops.
 /// </summary>
 public class DependencyGraph
 {
-    private readonly Dictionary<string, HashSet<string>> _dependencies = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, StepNode> _nodes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, HashSet<string>> _dependencies = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, StepNode> _nodes = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Represents a step node in the dependency graph.
     /// </summary>
+    /// <param name="Id">The graph key (see <see cref="GetStepId(string, int)"/>).</param>
+    /// <param name="Name">The step display name.</param>
+    /// <param name="Index">The 1-based index of the step within its job.</param>
+    /// <param name="JobName">The job the step belongs to.</param>
     public record StepNode(string Id, string Name, int Index, string JobName);
 
     /// <summary>
@@ -20,29 +25,34 @@ public class DependencyGraph
     /// </summary>
     /// <param name="step">The step to add.</param>
     /// <param name="index">The 1-based index of the step.</param>
-    /// <param name="jobName">The name of the job containing the step.</param>
+    /// <param name="jobName">The key of the job containing the step (see <see cref="GetJobKey"/>).</param>
     public void AddNode(Step step, int index, string jobName)
     {
-        var id = GetStepId(step, index);
+        var id = GetStepId(jobName, index);
         var node = new StepNode(id, step.Name ?? $"Step {index}", index, jobName);
         _nodes[id] = node;
 
         if (!_dependencies.ContainsKey(id))
         {
-            _dependencies[id] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            _dependencies[id] = new HashSet<string>(StringComparer.Ordinal);
         }
     }
 
     /// <summary>
-    /// Adds a dependency edge: dependent depends on dependency.
+    /// Adds a dependency edge: dependent depends on dependency. Self edges are ignored.
     /// </summary>
     /// <param name="dependentId">The step that depends on another.</param>
     /// <param name="dependencyId">The step that is depended upon.</param>
     public void AddDependency(string dependentId, string dependencyId)
     {
+        if (string.Equals(dependentId, dependencyId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
         if (!_dependencies.ContainsKey(dependentId))
         {
-            _dependencies[dependentId] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            _dependencies[dependentId] = new HashSet<string>(StringComparer.Ordinal);
         }
 
         _dependencies[dependentId].Add(dependencyId);
@@ -57,7 +67,7 @@ public class DependencyGraph
     {
         return _dependencies.TryGetValue(stepId, out var deps)
             ? deps
-            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            : new HashSet<string>(StringComparer.Ordinal);
     }
 
     /// <summary>
@@ -67,8 +77,8 @@ public class DependencyGraph
     /// <returns>All step IDs this step depends on (transitively).</returns>
     public IReadOnlySet<string> GetTransitiveDependencies(string stepId)
     {
-        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        var result = new HashSet<string>(StringComparer.Ordinal);
 
         CollectDependencies(stepId, visited, result);
 
@@ -82,7 +92,7 @@ public class DependencyGraph
     /// <returns>The IDs of steps that depend on this step.</returns>
     public IReadOnlySet<string> GetDirectDependents(string stepId)
     {
-        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var (nodeId, deps) in _dependencies)
         {
@@ -102,8 +112,8 @@ public class DependencyGraph
     /// <returns>All step IDs that depend on this step.</returns>
     public IReadOnlySet<string> GetTransitiveDependents(string stepId)
     {
-        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        var result = new HashSet<string>(StringComparer.Ordinal);
 
         CollectDependents(stepId, visited, result);
 
@@ -129,8 +139,8 @@ public class DependencyGraph
     /// <returns>True if a cycle exists.</returns>
     public bool HasCycle()
     {
-        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var recursionStack = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        var recursionStack = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var nodeId in _nodes.Keys)
         {
@@ -149,12 +159,12 @@ public class DependencyGraph
     /// <returns>Steps in dependency order, or null if a cycle exists.</returns>
     public IReadOnlyList<StepNode>? GetTopologicalOrder()
     {
-        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var visited = new HashSet<string>(StringComparer.Ordinal);
         var result = new List<StepNode>();
 
         foreach (var nodeId in _nodes.Keys)
         {
-            if (!TopologicalVisit(nodeId, visited, new HashSet<string>(StringComparer.OrdinalIgnoreCase), result))
+            if (!TopologicalVisit(nodeId, visited, new HashSet<string>(StringComparer.Ordinal), result))
             {
                 return null; // Cycle detected
             }
@@ -265,10 +275,33 @@ public class DependencyGraph
     }
 
     /// <summary>
-    /// Creates a step ID from a step and its index.
+    /// Gets the key used to identify a job in the graph: its id, or its name when it has no id.
     /// </summary>
-    public static string GetStepId(Step step, int index)
+    public static string GetJobKey(Job job)
     {
-        return step.Id ?? step.Name ?? $"step_{index}";
+        ArgumentNullException.ThrowIfNull(job);
+
+        if (!string.IsNullOrEmpty(job.Id))
+        {
+            return job.Id;
+        }
+
+        return !string.IsNullOrEmpty(job.Name) ? job.Name : "job";
+    }
+
+    /// <summary>
+    /// Creates the graph key of the step at <paramref name="index"/> (1-based) in the given job.
+    /// </summary>
+    public static string GetStepId(string jobKey, int index)
+    {
+        return $"{jobKey}::{index}";
+    }
+
+    /// <summary>
+    /// Creates the graph key of the step at <paramref name="index"/> (1-based) in <paramref name="job"/>.
+    /// </summary>
+    public static string GetStepId(Job job, int index)
+    {
+        return GetStepId(GetJobKey(job), index);
     }
 }

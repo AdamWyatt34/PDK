@@ -369,6 +369,7 @@ public class WatchModeFilteringIntegrationTests : Sprint11IntegrationTestBase
         withStepName.HasFilters.Should().BeTrue("step name filter applied");
         withStepIndex.HasFilters.Should().BeTrue("step index filter applied");
         withSkip.HasFilters.Should().BeTrue("skip filter applied");
-        withJob.HasFilters.Should().BeTrue("job filter applied");
+        withJob.HasFilters.Should().BeFalse("a job selection alone does not activate step filtering");
+        withJob.HasJobFilter.Should().BeTrue("job filter applied");
     }
 }

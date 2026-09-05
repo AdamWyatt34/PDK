@@ -69,6 +69,22 @@ public class CiDetectorTests : IDisposable
         result.Should().BeTrue();
     }
 
+    [Theory]
+    [InlineData("false")]
+    [InlineData("False")]
+    [InlineData("0")]
+    [InlineData("no")]
+    [InlineData("off")]
+    [InlineData("   ")]
+    public void IsRunningInCi_ReturnsFalse_WhenCiIsExplicitlyOff(string value)
+    {
+        Environment.SetEnvironmentVariable("CI", value);
+        Environment.SetEnvironmentVariable("GITHUB_ACTIONS", value);
+
+        CiDetector.IsRunningInCi().Should().BeFalse();
+        CiDetector.GetCiSystemName().Should().BeNull();
+    }
+
     [Fact]
     public void GetCiSystemName_ReturnsNull_WhenNotInCi()
     {

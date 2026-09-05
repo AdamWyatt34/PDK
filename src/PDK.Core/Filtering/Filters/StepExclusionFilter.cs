@@ -3,30 +3,27 @@ using PDK.Core.Models;
 namespace PDK.Core.Filtering.Filters;
 
 /// <summary>
-/// Filters out steps by name (skip logic).
+/// Filters out steps by name (skip logic) using case-insensitive exact or substring matching.
 /// This filter takes precedence over inclusion filters.
 /// </summary>
 public sealed class StepExclusionFilter : IStepFilter
 {
     private readonly IReadOnlyList<string> _skipPatterns;
-    private readonly int _fuzzyThreshold;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="StepExclusionFilter"/> class.
     /// </summary>
     /// <param name="skipPatterns">The name patterns to skip.</param>
-    /// <param name="fuzzyThreshold">Maximum Levenshtein distance for fuzzy matching.</param>
-    public StepExclusionFilter(IEnumerable<string> skipPatterns, int fuzzyThreshold = StringMatcher.DefaultFuzzyThreshold)
+    public StepExclusionFilter(IEnumerable<string> skipPatterns)
     {
         _skipPatterns = skipPatterns.Where(p => !string.IsNullOrWhiteSpace(p)).ToList();
-        _fuzzyThreshold = fuzzyThreshold;
     }
 
     /// <summary>
     /// Creates a filter from a single skip pattern.
     /// </summary>
-    public static StepExclusionFilter Skip(string pattern, int fuzzyThreshold = StringMatcher.DefaultFuzzyThreshold)
-        => new([pattern], fuzzyThreshold);
+    public static StepExclusionFilter Skip(string pattern)
+        => new([pattern]);
 
     /// <inheritdoc/>
     public FilterResult ShouldExecute(Step step, int stepIndex, Job job)
@@ -41,7 +38,7 @@ public sealed class StepExclusionFilter : IStepFilter
 
         foreach (var pattern in _skipPatterns)
         {
-            if (StringMatcher.Matches(stepName, pattern, _fuzzyThreshold))
+            if (StringMatcher.Matches(stepName, pattern))
             {
                 return FilterResult.ExplicitlySkipped(pattern);
             }

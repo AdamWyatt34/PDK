@@ -1,5 +1,7 @@
 namespace PDK.CLI.UI;
 
+using PDK.Core.Models;
+using PDK.Runners;
 using Spectre.Console;
 
 /// <summary>
@@ -18,9 +20,25 @@ public record StepSummary
     public bool Success { get; init; }
 
     /// <summary>
-    /// Gets whether the step was skipped.
+    /// Gets whether the step was skipped (condition false, filtered out, disabled, unsupported).
     /// </summary>
     public bool Skipped { get; init; }
+
+    /// <summary>
+    /// Gets the reason the step was skipped, when <see cref="Skipped"/> is true.
+    /// </summary>
+    public string? SkipReason { get; init; }
+
+    /// <summary>
+    /// Gets whether a failure of this step was allowed (<c>continue-on-error</c>).
+    /// </summary>
+    public bool AllowedFailure { get; init; }
+
+    /// <summary>
+    /// Gets whether the step was reached at all. False for steps after a failing step that the
+    /// runner never executed; they still count towards the job's step total.
+    /// </summary>
+    public bool Executed { get; init; } = true;
 
     /// <summary>
     /// Gets the execution duration.
@@ -46,6 +64,21 @@ public record StepSummary
     /// Gets the error output from the step (for error context).
     /// </summary>
     public string? ErrorOutput { get; init; }
+
+    /// <summary>
+    /// Gets the display status derived from the other fields.
+    /// </summary>
+    public StepStatusDisplay.StepStatus Status =>
+        !Executed ? StepStatusDisplay.StepStatus.Pending
+        : Skipped ? StepStatusDisplay.StepStatus.Skipped
+        : Success ? StepStatusDisplay.StepStatus.Success
+        : AllowedFailure ? StepStatusDisplay.StepStatus.AllowedFailure
+        : StepStatusDisplay.StepStatus.Failed;
+
+    /// <summary>
+    /// Gets whether this step is a real failure (not skipped, not allowed).
+    /// </summary>
+    public bool IsFailure => Executed && !Success && !Skipped && !AllowedFailure;
 }
 
 /// <summary>
@@ -62,6 +95,16 @@ public record JobSummary
     /// Gets whether the job completed successfully.
     /// </summary>
     public bool Success { get; init; }
+
+    /// <summary>
+    /// Gets whether the job was skipped without running any step.
+    /// </summary>
+    public bool Skipped { get; init; }
+
+    /// <summary>
+    /// Gets the reason the job was skipped (e.g. "dependency 'build' failed", "condition false").
+    /// </summary>
+    public string? SkipReason { get; init; }
 
     /// <summary>
     /// Gets the execution duration.
@@ -110,7 +153,12 @@ public record ExecutionSummaryData
     public int FailedJobs { get; init; }
 
     /// <summary>
-    /// Gets the total number of steps across all jobs.
+    /// Gets the number of skipped jobs.
+    /// </summary>
+    public int SkippedJobs { get; init; }
+
+    /// <summary>
+    /// Gets the total number of steps across all jobs (executed or not).
     /// </summary>
     public int TotalSteps { get; init; }
 
@@ -120,7 +168,7 @@ public record ExecutionSummaryData
     public int SuccessfulSteps { get; init; }
 
     /// <summary>
-    /// Gets the number of failed steps.
+    /// Gets the number of failed steps (allowed failures excluded).
     /// </summary>
     public int FailedSteps { get; init; }
 
@@ -130,9 +178,168 @@ public record ExecutionSummaryData
     public int SkippedSteps { get; init; }
 
     /// <summary>
+    /// Gets the number of steps that failed with <c>continue-on-error</c>.
+    /// </summary>
+    public int AllowedFailureSteps { get; init; }
+
+    /// <summary>
+    /// Gets the number of steps that were never reached.
+    /// </summary>
+    public int NotRunSteps { get; init; }
+
+    /// <summary>
     /// Gets the job summaries.
     /// </summary>
     public List<JobSummary> Jobs { get; init; } = [];
+
+    /// <summary>
+    /// Builds the summary from runner results. See <see cref="ExecutionSummaryBuilder.Build"/>.
+    /// </summary>
+    public static ExecutionSummaryData FromJobResults(
+        Pipeline? pipeline,
+        IReadOnlyList<JobExecutionResult> jobResults,
+        TimeSpan totalDuration,
+        bool overallSuccess)
+        => ExecutionSummaryBuilder.Build(pipeline, jobResults, totalDuration, overallSuccess);
+}
+
+/// <summary>
+/// Converts runner results into <see cref="ExecutionSummaryData"/>, classifying every step as
+/// succeeded / failed / skipped / failed (allowed) / not run. Step totals count every step of the
+/// job: steps the runner never reached are reported as "not run".
+/// </summary>
+public static class ExecutionSummaryBuilder
+{
+    /// <summary>
+    /// Builds the summary data for a run.
+    /// </summary>
+    /// <param name="pipeline">The pipeline (used to count steps the runner never reached). May be null.</param>
+    /// <param name="jobResults">The per-job results in execution order.</param>
+    /// <param name="totalDuration">The wall-clock duration of the run.</param>
+    /// <param name="overallSuccess">Whether the run succeeded.</param>
+    public static ExecutionSummaryData Build(
+        Pipeline? pipeline,
+        IReadOnlyList<JobExecutionResult> jobResults,
+        TimeSpan totalDuration,
+        bool overallSuccess)
+    {
+        ArgumentNullException.ThrowIfNull(jobResults);
+
+        var jobSummaries = new List<JobSummary>();
+
+        foreach (var jobResult in jobResults)
+        {
+            jobSummaries.Add(ToJobSummary(jobResult, FindJob(pipeline, jobResult.JobName)));
+        }
+
+        var allSteps = jobSummaries.SelectMany(j => j.Steps).ToList();
+
+        return new ExecutionSummaryData
+        {
+            PipelineName = pipeline?.Name ?? string.Empty,
+            OverallSuccess = overallSuccess,
+            TotalDuration = totalDuration,
+            TotalJobs = jobSummaries.Count,
+            SuccessfulJobs = jobSummaries.Count(j => j.Success && !j.Skipped),
+            FailedJobs = jobSummaries.Count(j => !j.Success && !j.Skipped),
+            SkippedJobs = jobSummaries.Count(j => j.Skipped),
+            TotalSteps = allSteps.Count,
+            SuccessfulSteps = allSteps.Count(s => s.Status == StepStatusDisplay.StepStatus.Success),
+            FailedSteps = allSteps.Count(s => s.Status == StepStatusDisplay.StepStatus.Failed),
+            SkippedSteps = allSteps.Count(s => s.Status == StepStatusDisplay.StepStatus.Skipped),
+            AllowedFailureSteps = allSteps.Count(s => s.Status == StepStatusDisplay.StepStatus.AllowedFailure),
+            NotRunSteps = allSteps.Count(s => s.Status == StepStatusDisplay.StepStatus.Pending),
+            Jobs = jobSummaries
+        };
+    }
+
+    /// <summary>
+    /// Converts one job result into a summary, appending "not run" entries for steps the runner never reached.
+    /// </summary>
+    public static JobSummary ToJobSummary(JobExecutionResult jobResult, Job? job)
+    {
+        ArgumentNullException.ThrowIfNull(jobResult);
+
+        var steps = jobResult.StepResults.Select(ToStepSummary).ToList();
+
+        if (job != null)
+        {
+            for (var i = steps.Count; i < job.Steps.Count; i++)
+            {
+                var name = job.Steps[i].Name;
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    name = $"Step {i + 1}";
+                }
+
+                steps.Add(jobResult.Skipped
+                    ? new StepSummary { Name = name, Success = true, Skipped = true, SkipReason = jobResult.SkipReason }
+                    : new StepSummary { Name = name, Success = false, Executed = false });
+            }
+        }
+
+        return new JobSummary
+        {
+            Name = jobResult.JobName,
+            Success = jobResult.Success,
+            Skipped = jobResult.Skipped,
+            SkipReason = jobResult.SkipReason,
+            Duration = jobResult.Duration,
+            Steps = steps
+        };
+    }
+
+    /// <summary>
+    /// Converts one step result into a summary.
+    /// </summary>
+    public static StepSummary ToStepSummary(StepExecutionResult stepResult)
+    {
+        ArgumentNullException.ThrowIfNull(stepResult);
+
+        return new StepSummary
+        {
+            Name = stepResult.StepName,
+            Success = stepResult.Success,
+            Skipped = stepResult.Skipped,
+            SkipReason = stepResult.SkipReason,
+            AllowedFailure = !stepResult.Success && stepResult.AllowedFailure,
+            Duration = stepResult.Duration,
+            ExitCode = stepResult.Success || stepResult.Skipped ? null : stepResult.ExitCode,
+            Output = stepResult.Output,
+            ErrorOutput = stepResult.ErrorOutput
+        };
+    }
+
+    /// <summary>
+    /// Gets the real failures (not skipped, not allowed) for error context display.
+    /// </summary>
+    public static IEnumerable<StepSummary> GetFailedSteps(IEnumerable<JobExecutionResult> jobResults)
+    {
+        return jobResults
+            .SelectMany(j => j.StepResults)
+            .Select(ToStepSummary)
+            .Where(s => s.IsFailure);
+    }
+
+    private static Job? FindJob(Pipeline? pipeline, string jobName)
+    {
+        if (pipeline == null || string.IsNullOrEmpty(jobName))
+        {
+            return null;
+        }
+
+        foreach (var (key, job) in pipeline.Jobs)
+        {
+            if (string.Equals(key, jobName, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(job.Id, jobName, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(job.Name, jobName, StringComparison.OrdinalIgnoreCase))
+            {
+                return job;
+            }
+        }
+
+        return null;
+    }
 }
 
 /// <summary>
@@ -182,8 +389,8 @@ public sealed class ExecutionSummaryDisplay
                 : $"Status: [{statusColor}]{statusSymbol} {statusText}[/]",
             $"Duration: {StepStatusDisplay.FormatDuration(data.TotalDuration)}",
             "",
-            $"Jobs:  {data.TotalJobs} total, {data.SuccessfulJobs} succeeded, {data.FailedJobs} failed",
-            $"Steps: {data.TotalSteps} total, {data.SuccessfulSteps} succeeded, {data.FailedSteps} failed, {data.SkippedSteps} skipped"
+            $"Jobs:  {FormatJobCounts(data)}",
+            $"Steps: {FormatStepCounts(data)}"
         };
 
         // Create panel
@@ -203,6 +410,52 @@ public sealed class ExecutionSummaryDisplay
 
         // Display job breakdown
         DisplayJobBreakdown(data);
+    }
+
+    /// <summary>
+    /// Formats the job counts line: total / succeeded / failed / skipped.
+    /// </summary>
+    public static string FormatJobCounts(ExecutionSummaryData data)
+    {
+        var parts = new List<string>
+        {
+            $"{data.TotalJobs} total",
+            $"{data.SuccessfulJobs} succeeded",
+            $"{data.FailedJobs} failed"
+        };
+
+        if (data.SkippedJobs > 0)
+        {
+            parts.Add($"{data.SkippedJobs} skipped");
+        }
+
+        return string.Join(", ", parts);
+    }
+
+    /// <summary>
+    /// Formats the step counts line: total / succeeded / failed / skipped / failed (allowed) / not run.
+    /// </summary>
+    public static string FormatStepCounts(ExecutionSummaryData data)
+    {
+        var parts = new List<string>
+        {
+            $"{data.TotalSteps} total",
+            $"{data.SuccessfulSteps} succeeded",
+            $"{data.FailedSteps} failed",
+            $"{data.SkippedSteps} skipped"
+        };
+
+        if (data.AllowedFailureSteps > 0)
+        {
+            parts.Add($"{data.AllowedFailureSteps} failed (allowed)");
+        }
+
+        if (data.NotRunSteps > 0)
+        {
+            parts.Add($"{data.NotRunSteps} not run");
+        }
+
+        return string.Join(", ", parts);
     }
 
     /// <summary>
@@ -228,57 +481,61 @@ public sealed class ExecutionSummaryDisplay
 
         foreach (var job in data.Jobs)
         {
-            var jobStatus = job.Success
-                ? StepStatusDisplay.StepStatus.Success
-                : StepStatusDisplay.StepStatus.Failed;
+            var jobStatus = job.Skipped
+                ? StepStatusDisplay.StepStatus.Skipped
+                : job.Success
+                    ? StepStatusDisplay.StepStatus.Success
+                    : StepStatusDisplay.StepStatus.Failed;
+
+            var jobDetail = job.Skipped
+                ? $"skipped: {job.SkipReason ?? "no reason given"}"
+                : null;
 
             var jobLine = StepStatusDisplay.FormatStatusWithDuration(
                 jobStatus,
                 job.Name,
                 job.Duration,
-                _noColor);
+                _noColor,
+                jobDetail);
 
-            if (_noColor)
-            {
-                _console.WriteLine($"  {jobLine}");
-            }
-            else
-            {
-                _console.MarkupLine($"  {jobLine}");
-            }
+            WriteLine($"  {jobLine}");
 
             // Display steps within job
             foreach (var step in job.Steps)
             {
-                var stepStatus = step.Skipped
-                    ? StepStatusDisplay.StepStatus.Skipped
-                    : step.Success
-                        ? StepStatusDisplay.StepStatus.Success
-                        : StepStatusDisplay.StepStatus.Failed;
+                var stepStatus = step.Status;
+                var detail = stepStatus switch
+                {
+                    StepStatusDisplay.StepStatus.Skipped => $"skipped: {step.SkipReason ?? "no reason given"}",
+                    StepStatusDisplay.StepStatus.AllowedFailure => step.ExitCode.HasValue
+                        ? $"failed (allowed), exit code: {step.ExitCode.Value}"
+                        : "failed (allowed)",
+                    StepStatusDisplay.StepStatus.Failed when step.ExitCode.HasValue => $"Exit code: {step.ExitCode.Value}",
+                    StepStatusDisplay.StepStatus.Pending => "not run",
+                    _ => null
+                };
 
                 var stepLine = StepStatusDisplay.FormatStatusWithDuration(
                     stepStatus,
                     step.Name,
                     step.Duration,
-                    _noColor);
+                    _noColor,
+                    detail);
 
-                // Add exit code for failed steps
-                if (!step.Success && !step.Skipped && step.ExitCode.HasValue)
-                {
-                    stepLine += _noColor
-                        ? $" - Exit code: {step.ExitCode.Value}"
-                        : $" [dim]- Exit code: {step.ExitCode.Value}[/]";
-                }
-
-                if (_noColor)
-                {
-                    _console.WriteLine($"    {stepLine}");
-                }
-                else
-                {
-                    _console.MarkupLine($"    {stepLine}");
-                }
+                WriteLine($"    {stepLine}");
             }
+        }
+    }
+
+    private void WriteLine(string line)
+    {
+        if (_noColor)
+        {
+            _console.WriteLine(line);
+        }
+        else
+        {
+            _console.MarkupLine(line);
         }
     }
 
@@ -289,7 +546,7 @@ public sealed class ExecutionSummaryDisplay
     /// <param name="failedSteps">The failed steps with error context.</param>
     public void DisplayErrorContext(IEnumerable<StepSummary> failedSteps)
     {
-        foreach (var step in failedSteps.Where(s => !s.Success && !s.Skipped))
+        foreach (var step in failedSteps.Where(s => s.Executed && !s.Success && !s.Skipped))
         {
             DisplayStepErrorContext(step);
         }
@@ -306,6 +563,11 @@ public sealed class ExecutionSummaryDisplay
         {
             $"Step: {Markup.Escape(step.Name)}"
         };
+
+        if (step.AllowedFailure)
+        {
+            contentLines.Add("Failure allowed by continue-on-error");
+        }
 
         if (!string.IsNullOrEmpty(step.Command))
         {
@@ -330,14 +592,14 @@ public sealed class ExecutionSummaryDisplay
 
         var panel = new Panel(string.Join("\n", contentLines))
         {
-            Header = new PanelHeader("Error Context"),
+            Header = new PanelHeader(step.AllowedFailure ? "Error Context (allowed failure)" : "Error Context"),
             Border = BoxBorder.Rounded,
             Padding = new Padding(1, 0, 1, 0)
         };
 
         if (!_noColor)
         {
-            panel.BorderColor(Color.Red);
+            panel.BorderColor(step.AllowedFailure ? Color.Yellow : Color.Red);
         }
 
         _console.Write(panel);

@@ -347,12 +347,18 @@ public class ConfigurationValidatorTests
     [InlineData("Info")]
     [InlineData("info")]
     [InlineData("INFO")]
+    [InlineData("Information")]
+    [InlineData("information")]
+    [InlineData("Trace")]
+    [InlineData("trace")]
     [InlineData("Debug")]
     [InlineData("debug")]
     [InlineData("Warning")]
     [InlineData("warning")]
+    [InlineData("Warn")]
     [InlineData("Error")]
     [InlineData("error")]
+    [InlineData("Critical")]
     public void Validate_ValidLogLevel_ReturnsSuccess(string logLevel)
     {
         // Arrange
@@ -370,7 +376,6 @@ public class ConfigurationValidatorTests
     }
 
     [Theory]
-    [InlineData("Trace")]
     [InlineData("Fatal")]
     [InlineData("Verbose")]
     [InlineData("None")]

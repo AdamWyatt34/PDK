@@ -145,45 +145,24 @@ public sealed class ListCommand
     }
 
     /// <summary>
-    /// Auto-detects pipeline files in the current directory.
+    /// Auto-detects the pipeline file in the current directory using the shared
+    /// <see cref="PipelineFileLocator"/> search rules.
     /// </summary>
-    /// <returns>The path to the detected file, or null if none found.</returns>
+    /// <returns>The path to the detected file, or null if none (or several) were found.</returns>
     private string? AutoDetectPipeline()
     {
         var currentDir = Directory.GetCurrentDirectory();
-        var detectedFiles = new List<string>();
-
-        // Check for GitHub Actions workflows
-        var githubWorkflowsDir = Path.Combine(currentDir, ".github", "workflows");
-        if (Directory.Exists(githubWorkflowsDir))
-        {
-            var ymlFiles = Directory.GetFiles(githubWorkflowsDir, "*.yml");
-            var yamlFiles = Directory.GetFiles(githubWorkflowsDir, "*.yaml");
-            detectedFiles.AddRange(ymlFiles);
-            detectedFiles.AddRange(yamlFiles);
-        }
-
-        // Check for Azure DevOps pipelines
-        var azurePipelineYml = Path.Combine(currentDir, "azure-pipelines.yml");
-        var azurePipelineYaml = Path.Combine(currentDir, "azure-pipelines.yaml");
-        if (System.IO.File.Exists(azurePipelineYml))
-        {
-            detectedFiles.Add(azurePipelineYml);
-        }
-        if (System.IO.File.Exists(azurePipelineYaml))
-        {
-            detectedFiles.Add(azurePipelineYaml);
-        }
+        var detectedFiles = PipelineFileLocator.Discover(currentDir);
 
         if (detectedFiles.Count == 0)
         {
             _output.WriteError("No pipeline files found in current directory.");
             _output.WriteLine();
             _output.WriteInfo("Expected locations:");
-            _output.WriteLine("  .github/workflows/*.yml");
-            _output.WriteLine("  .github/workflows/*.yaml");
-            _output.WriteLine("  azure-pipelines.yml");
-            _output.WriteLine("  azure-pipelines.yaml");
+            foreach (var pattern in PipelineFileLocator.SearchDescriptions)
+            {
+                _output.WriteLine($"  {pattern}");
+            }
             _output.WriteLine();
             _output.WriteInfo("Use --file to specify a pipeline file explicitly.");
             return null;
@@ -191,15 +170,15 @@ public sealed class ListCommand
 
         if (detectedFiles.Count == 1)
         {
-            _output.WriteInfo($"Auto-detected: {Path.GetRelativePath(currentDir, detectedFiles[0])}");
-            return detectedFiles[0];
+            _output.WriteInfo($"Auto-detected: {detectedFiles[0]}");
+            return Path.Combine(currentDir, detectedFiles[0]);
         }
 
         // Multiple files found - list them
         _output.WriteWarning("Multiple pipeline files found:");
         foreach (var file in detectedFiles)
         {
-            _output.WriteLine($"  {Path.GetRelativePath(currentDir, file)}");
+            _output.WriteLine($"  {file}");
         }
         _output.WriteLine();
         _output.WriteInfo("Use --file to specify which pipeline to list.");
@@ -225,13 +204,14 @@ public sealed class ListCommand
 
         foreach (var job in sortedJobs)
         {
+            // Table cells are markup: escape every user-controlled value
             table.AddRow(
                 Markup.Escape(job.Id),
                 Markup.Escape(job.Name),
                 Markup.Escape(job.RunsOn),
                 job.Steps.Count.ToString(),
-                FormatDependencies(job.DependsOn),
-                FormatCondition(job.Condition)
+                Markup.Escape(FormatDependencies(job.DependsOn)),
+                Markup.Escape(FormatCondition(job.Condition))
             );
         }
 
@@ -251,8 +231,16 @@ public sealed class ListCommand
         {
             _output.WriteLine();
             _console.MarkupLine($"[bold]Job:[/] {Markup.Escape(job.Id)} ({Markup.Escape(job.RunsOn)})");
-            _console.MarkupLine($"[dim]Dependencies:[/] {FormatDependencies(job.DependsOn)}");
-            _console.MarkupLine($"[dim]Condition:[/] {FormatCondition(job.Condition)}");
+            if (!string.IsNullOrEmpty(job.Stage))
+            {
+                _console.MarkupLine($"[dim]Stage:[/] {Markup.Escape(job.Stage)}");
+            }
+            if (!string.IsNullOrEmpty(job.Container))
+            {
+                _console.MarkupLine($"[dim]Container:[/] {Markup.Escape(job.Container)}");
+            }
+            _console.MarkupLine($"[dim]Dependencies:[/] {Markup.Escape(FormatDependencies(job.DependsOn))}");
+            _console.MarkupLine($"[dim]Condition:[/] {Markup.Escape(FormatCondition(job.Condition))}");
 
             if (job.Steps.Count == 0)
             {
@@ -269,10 +257,11 @@ public sealed class ListCommand
             for (int i = 0; i < job.Steps.Count; i++)
             {
                 var step = job.Steps[i];
+                var typeText = step.Enabled ? step.Type.ToString() : $"{step.Type} (disabled)";
                 table.AddRow(
                     (i + 1).ToString(),
                     Markup.Escape(step.Name),
-                    step.Type.ToString(),
+                    Markup.Escape(typeText),
                     Markup.Escape(GetStepDetails(step))
                 );
             }
@@ -282,7 +271,8 @@ public sealed class ListCommand
     }
 
     /// <summary>
-    /// Renders the pipeline in JSON format.
+    /// Renders the pipeline in JSON format. Steps are always included (id, name, type, enabled,
+    /// actionReference); <c>--details</c> adds the script and inputs.
     /// </summary>
     private void RenderJson(Pipeline pipeline)
     {
@@ -297,18 +287,22 @@ public sealed class ListCommand
                 Id = job.Id,
                 Name = job.Name,
                 RunsOn = job.RunsOn,
+                Stage = job.Stage,
+                Container = job.Container,
+                Matrix = job.Matrix is { Count: > 0 } ? job.Matrix : null,
                 StepCount = job.Steps.Count,
                 DependsOn = job.DependsOn,
                 Condition = job.Condition?.Expression,
-                Steps = Details
-                    ? job.Steps.Select(s => new StepJsonOutput
-                    {
-                        Name = s.Name,
-                        Type = s.Type.ToString(),
-                        Script = s.Script,
-                        With = s.With.Count > 0 ? s.With : null
-                    }).ToList()
-                    : null
+                Steps = job.Steps.Select(s => new StepJsonOutput
+                {
+                    Id = s.Id,
+                    Name = s.Name,
+                    Type = s.Type.ToString(),
+                    Enabled = s.Enabled,
+                    ActionReference = s.ActionReference,
+                    Script = Details ? s.Script : null,
+                    With = Details && s.With.Count > 0 ? s.With : null
+                }).ToList()
             }).ToList()
         };
 
@@ -342,7 +336,7 @@ public sealed class ListCommand
     private void WritePipelineHeader(Pipeline pipeline)
     {
         _console.MarkupLine($"[bold]Pipeline:[/] {Markup.Escape(pipeline.Name)}");
-        _console.MarkupLine($"[bold]Provider:[/] {pipeline.Provider}");
+        _console.MarkupLine($"[bold]Provider:[/] {Markup.Escape(pipeline.Provider.ToString())}");
         _output.WriteLine();
     }
 
@@ -427,6 +421,12 @@ public sealed class ListCommand
             return TruncateString(firstLine, 40);
         }
 
+        // For action/task steps, show the reference
+        if (!string.IsNullOrEmpty(step.ActionReference))
+        {
+            return TruncateString(step.ActionReference, 40);
+        }
+
         // For steps with parameters, show key parameter
         if (step.With.Count > 0)
         {
@@ -479,16 +479,22 @@ public sealed class ListCommand
         public string Id { get; set; } = string.Empty;
         public string Name { get; set; } = string.Empty;
         public string RunsOn { get; set; } = string.Empty;
+        public string? Stage { get; set; }
+        public string? Container { get; set; }
+        public Dictionary<string, string>? Matrix { get; set; }
         public int StepCount { get; set; }
         public List<string> DependsOn { get; set; } = [];
         public string? Condition { get; set; }
-        public List<StepJsonOutput>? Steps { get; set; }
+        public List<StepJsonOutput> Steps { get; set; } = [];
     }
 
     private sealed class StepJsonOutput
     {
+        public string? Id { get; set; }
         public string Name { get; set; } = string.Empty;
         public string Type { get; set; } = string.Empty;
+        public bool Enabled { get; set; } = true;
+        public string? ActionReference { get; set; }
         public string? Script { get; set; }
         public Dictionary<string, string>? With { get; set; }
     }

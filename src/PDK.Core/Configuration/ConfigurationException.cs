@@ -132,6 +132,25 @@ public class ConfigurationException : PdkException
     }
 
     /// <summary>
+    /// Creates an exception for a configuration file without the required <c>version</c> field.
+    /// </summary>
+    /// <param name="path">The configuration file path.</param>
+    /// <returns>A new ConfigurationException.</returns>
+    public static ConfigurationException MissingVersion(string path)
+    {
+        return new ConfigurationException(
+            ErrorCodes.ConfigInvalidVersion,
+            $"Configuration file '{path}' is missing the required \"version\" field.",
+            configFilePath: path,
+            context: new ErrorContext { PipelineFile = path },
+            suggestions:
+            [
+                "Add \"version\": \"1.0\" at the top level of the configuration file",
+                "The version field is required so that PDK can validate the file against the right schema"
+            ]);
+    }
+
+    /// <summary>
     /// Creates an exception for invalid variable name.
     /// </summary>
     /// <param name="path">The configuration file path.</param>
@@ -207,7 +226,7 @@ public class ConfigurationException : PdkException
             context: new ErrorContext { PipelineFile = path },
             suggestions:
             [
-                "Valid log levels: Info, Debug, Warning, Error",
+                $"Valid log levels: {ConfigurationValidator.ValidLogLevelsDescription}",
                 "Log level is case-insensitive"
             ]);
     }

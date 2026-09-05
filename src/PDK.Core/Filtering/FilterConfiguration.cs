@@ -84,57 +84,20 @@ public record FilterPreset
     public bool? IncludeDependencies { get; init; }
 
     /// <summary>
-    /// Converts this preset to FilterOptions.
+    /// Converts this preset to FilterOptions. Invalid index or range specifications are
+    /// reported through <see cref="FilterOptions.Errors"/> rather than silently dropped.
     /// </summary>
     /// <param name="defaultIncludeDependencies">Default value for include dependencies.</param>
     public FilterOptions ToFilterOptions(bool defaultIncludeDependencies = false)
     {
-        var indices = new List<int>();
-        var ranges = new List<StepRange>();
+        var options = StepFilterBuilder.CreateOptions(
+            stepNames: StepNames,
+            stepIndices: StepIndices,
+            stepRanges: StepRanges,
+            skipSteps: SkipSteps,
+            jobs: Jobs,
+            includeDependencies: IncludeDependencies ?? defaultIncludeDependencies);
 
-        // Parse step indices
-        foreach (var spec in StepIndices)
-        {
-            try
-            {
-                var parsed = IndexParser.Parse(spec);
-                indices.AddRange(parsed);
-            }
-            catch
-            {
-                // Ignore invalid indices in config
-            }
-        }
-
-        // Parse step ranges
-        foreach (var spec in StepRanges)
-        {
-            try
-            {
-                // Try numeric range first
-                if (spec.All(c => char.IsDigit(c) || c == '-'))
-                {
-                    ranges.Add(NumericRange.Parse(spec));
-                }
-                else
-                {
-                    ranges.Add(NamedRange.Parse(spec));
-                }
-            }
-            catch
-            {
-                // Ignore invalid ranges in config
-            }
-        }
-
-        return new FilterOptions
-        {
-            StepNames = StepNames,
-            StepIndices = indices,
-            StepRanges = ranges,
-            SkipSteps = SkipSteps,
-            Jobs = Jobs,
-            IncludeDependencies = IncludeDependencies ?? defaultIncludeDependencies
-        };
+        return options;
     }
 }

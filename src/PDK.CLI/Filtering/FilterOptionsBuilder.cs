@@ -4,8 +4,21 @@ using PDK.Core.Filtering;
 namespace PDK.Cli.Filtering;
 
 /// <summary>
-/// Builds FilterOptions from ExecutionOptions and configuration.
+/// Builds <see cref="FilterOptions"/> from <see cref="ExecutionOptions"/> and configuration.
 /// </summary>
+/// <remarks>
+/// Precedence: configuration defaults, then the <c>--preset</c> values, then command-line values.
+/// A command-line value replaces the preset value of the same kind (e.g. <c>--step</c> replaces the
+/// preset's step names) rather than being unioned with it. Unparseable indices/ranges and an unknown
+/// preset are reported through <see cref="FilterOptions.Errors"/> and surfaced by
+/// <see cref="IStepFilterBuilder.Validate"/>.
+/// <para>
+/// <c>--job</c> is not a step filter: job selection (including the selected job's dependency jobs
+/// and <c>--no-deps</c>) is handled by the pipeline executor's job graph, so
+/// <see cref="ExecutionOptions.JobName"/> is never copied into <see cref="FilterOptions.Jobs"/>.
+/// Job filters still exist for presets (<c>stepFiltering.presets.*.jobs</c>).
+/// </para>
+/// </remarks>
 public class FilterOptionsBuilder
 {
     /// <summary>
@@ -16,190 +29,125 @@ public class FilterOptionsBuilder
     /// <returns>The built filter options.</returns>
     public FilterOptions Build(ExecutionOptions options, PdkConfig? config = null)
     {
-        var builder = new FilterOptionsBuilderState();
+        ArgumentNullException.ThrowIfNull(options);
 
-        // Load defaults from configuration
-        if (config != null)
+        var errors = new List<FilterValidationError>();
+        var stepNames = new List<string>();
+        var stepIndices = new List<string>();
+        var stepRanges = new List<string>();
+        var skipSteps = new List<string>();
+        var jobs = new List<string>();
+        var includeDependencies = false;
+        var confirm = false;
+
+        // 1. Configuration defaults
+        var filteringConfig = config?.StepFiltering;
+        if (filteringConfig?.DefaultIncludeDependencies == true)
         {
-            ApplyConfigurationDefaults(builder, config);
+            includeDependencies = true;
         }
 
-        // Load preset from configuration if specified
-        if (!string.IsNullOrEmpty(options.FilterPreset) && config != null)
+        if (filteringConfig?.ConfirmBeforeRun == true)
         {
-            ApplyPreset(builder, options.FilterPreset, config);
+            confirm = true;
         }
 
-        // Apply CLI options (override preset/defaults)
-        ApplyCliOptions(builder, options);
-
-        return builder.Build();
-    }
-
-    private void ApplyConfigurationDefaults(FilterOptionsBuilderState builder, PdkConfig config)
-    {
-        if (config.StepFiltering == null)
+        // 2. Preset
+        if (!string.IsNullOrWhiteSpace(options.FilterPreset))
         {
-            return;
+            var preset = FindPreset(filteringConfig, options.FilterPreset);
+            if (preset == null)
+            {
+                errors.Add(FilterValidationError.PresetNotFound(
+                    options.FilterPreset,
+                    filteringConfig?.Presets?.Keys ?? Enumerable.Empty<string>()));
+            }
+            else
+            {
+                stepNames.AddRange(preset.StepNames ?? []);
+                stepIndices.AddRange(preset.StepIndices ?? []);
+                stepRanges.AddRange(preset.StepRanges ?? []);
+                skipSteps.AddRange(preset.SkipSteps ?? []);
+                jobs.AddRange(preset.Jobs ?? []);
+
+                if (preset.IncludeDependencies.HasValue)
+                {
+                    includeDependencies = preset.IncludeDependencies.Value;
+                }
+            }
         }
 
-        if (config.StepFiltering.DefaultIncludeDependencies == true)
+        // 3. Command-line values replace preset values of the same kind
+        var cliStepNames = options.FilterStepNames.Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
+        if (!string.IsNullOrWhiteSpace(options.StepName) &&
+            !cliStepNames.Contains(options.StepName, StringComparer.OrdinalIgnoreCase))
         {
-            builder.IncludeDependencies = true;
+            cliStepNames.Add(options.StepName);
         }
 
-        if (config.StepFiltering.ConfirmBeforeRun == true)
+        if (cliStepNames.Count > 0)
         {
-            builder.Confirm = true;
-        }
-    }
-
-    private void ApplyPreset(FilterOptionsBuilderState builder, string presetName, PdkConfig config)
-    {
-        if (config.StepFiltering?.Presets == null ||
-            !config.StepFiltering.Presets.TryGetValue(presetName, out var preset))
-        {
-            // Preset not found - will be handled as a warning elsewhere
-            return;
+            stepNames = cliStepNames;
         }
 
-        // Apply preset values
-        if (preset.StepNames != null)
-        {
-            builder.StepNames.AddRange(preset.StepNames);
-        }
-
-        if (preset.StepIndices != null)
-        {
-            builder.StepIndices.AddRange(preset.StepIndices);
-        }
-
-        if (preset.StepRanges != null)
-        {
-            builder.StepRanges.AddRange(preset.StepRanges);
-        }
-
-        if (preset.SkipSteps != null)
-        {
-            builder.SkipSteps.AddRange(preset.SkipSteps);
-        }
-
-        if (preset.Jobs != null)
-        {
-            builder.Jobs.AddRange(preset.Jobs);
-        }
-
-        if (preset.IncludeDependencies == true)
-        {
-            builder.IncludeDependencies = true;
-        }
-    }
-
-    private void ApplyCliOptions(FilterOptionsBuilderState builder, ExecutionOptions options)
-    {
-        // Step names
-        if (options.FilterStepNames.Count > 0)
-        {
-            builder.StepNames.AddRange(options.FilterStepNames);
-        }
-
-        // Step indices (as strings to be parsed)
         if (options.FilterStepIndices.Count > 0)
         {
-            builder.StepIndices.AddRange(options.FilterStepIndices);
+            stepIndices = [.. options.FilterStepIndices];
         }
 
-        // Step ranges (as strings to be parsed)
         if (options.FilterStepRanges.Count > 0)
         {
-            builder.StepRanges.AddRange(options.FilterStepRanges);
+            stepRanges = [.. options.FilterStepRanges];
         }
 
-        // Skip steps
         if (options.SkipStepNames.Count > 0)
         {
-            builder.SkipSteps.AddRange(options.SkipStepNames);
+            skipSteps = [.. options.SkipStepNames];
         }
 
-        // Job filter (from existing JobName option)
-        if (!string.IsNullOrEmpty(options.JobName))
-        {
-            builder.Jobs.Add(options.JobName);
-        }
+        // Note: options.JobName is deliberately NOT mapped to a job filter (see class remarks).
 
-        // Include dependencies
         if (options.IncludeDependencies)
         {
-            builder.IncludeDependencies = true;
+            includeDependencies = true;
         }
 
-        // Preview and confirm
-        builder.PreviewOnly = options.PreviewFilter;
-        builder.Confirm = builder.Confirm || options.ConfirmFilter;
+        confirm = confirm || options.ConfirmFilter;
+
+        var built = StepFilterBuilder.CreateOptions(
+            stepNames: stepNames,
+            stepIndices: stepIndices,
+            stepRanges: stepRanges,
+            skipSteps: skipSteps,
+            jobs: jobs,
+            includeDependencies: includeDependencies,
+            previewOnly: options.PreviewFilter,
+            confirm: confirm);
+
+        return built with
+        {
+            PresetName = string.IsNullOrWhiteSpace(options.FilterPreset) ? null : options.FilterPreset,
+            Errors = [.. errors, .. built.Errors]
+        };
     }
 
-    private class FilterOptionsBuilderState
+    /// <summary>
+    /// Looks up a preset by name, case-insensitively.
+    /// </summary>
+    private static FilterPresetConfig? FindPreset(StepFilteringConfig? config, string presetName)
     {
-        public List<string> StepNames { get; } = [];
-        public List<string> StepIndices { get; } = [];
-        public List<string> StepRanges { get; } = [];
-        public List<string> SkipSteps { get; } = [];
-        public List<string> Jobs { get; } = [];
-        public bool IncludeDependencies { get; set; }
-        public bool PreviewOnly { get; set; }
-        public bool Confirm { get; set; }
-
-        public FilterOptions Build()
+        if (config?.Presets == null)
         {
-            var parsedIndices = new List<int>();
-            var parsedRanges = new List<StepRange>();
-
-            // Parse step indices
-            foreach (var spec in StepIndices)
-            {
-                try
-                {
-                    var indices = IndexParser.Parse(spec);
-                    parsedIndices.AddRange(indices);
-                }
-                catch
-                {
-                    // Ignore invalid indices here - they'll be caught by validation
-                }
-            }
-
-            // Parse step ranges
-            foreach (var spec in StepRanges)
-            {
-                try
-                {
-                    // Try numeric range first
-                    if (spec.All(c => char.IsDigit(c) || c == '-'))
-                    {
-                        parsedRanges.Add(NumericRange.Parse(spec));
-                    }
-                    else
-                    {
-                        parsedRanges.Add(NamedRange.Parse(spec));
-                    }
-                }
-                catch
-                {
-                    // Ignore invalid ranges here - they'll be caught by validation
-                }
-            }
-
-            return new FilterOptions
-            {
-                StepNames = StepNames.Distinct().ToList(),
-                StepIndices = parsedIndices.Distinct().OrderBy(x => x).ToList(),
-                StepRanges = parsedRanges,
-                SkipSteps = SkipSteps.Distinct().ToList(),
-                Jobs = Jobs.Distinct().ToList(),
-                IncludeDependencies = IncludeDependencies,
-                PreviewOnly = PreviewOnly,
-                Confirm = Confirm
-            };
+            return null;
         }
+
+        if (config.Presets.TryGetValue(presetName, out var exact))
+        {
+            return exact;
+        }
+
+        return config.Presets
+            .FirstOrDefault(kv => string.Equals(kv.Key, presetName, StringComparison.OrdinalIgnoreCase))
+            .Value;
     }
 }

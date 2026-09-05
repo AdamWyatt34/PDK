@@ -155,22 +155,63 @@ public class ProgressReporterTests
     }
 
     [Fact]
-    public async Task ReportOutputAsync_BuffersRapidUpdates()
+    public async Task ReportOutputAsync_NeverDropsRapidUpdates()
     {
         // Arrange
         var console = new TestConsole();
         var reporter = new ConsoleProgressReporter(console);
 
-        // Act - Send multiple rapid updates
+        // Act - Send multiple rapid updates (well within 50 ms)
         for (int i = 0; i < 10; i++)
         {
             await reporter.ReportOutputAsync($"Line {i}");
         }
 
-        // Assert - Only first line should appear due to buffering
-        // Subsequent rapid updates within 50ms are dropped
+        // Assert - Every line is printed; output lines are never throttled
         var lineCount = console.Output.Split('|').Length - 1;
-        lineCount.Should().BeLessThan(10);
+        lineCount.Should().Be(10);
+        for (int i = 0; i < 10; i++)
+        {
+            console.Output.Should().Contain($"Line {i}");
+        }
+    }
+
+    [Fact]
+    public async Task ReportStepSkippedAsync_ShowsSkippedSymbolAndReason()
+    {
+        // Arrange
+        var console = new TestConsole();
+        var reporter = new ConsoleProgressReporter(console);
+
+        // Act
+        await reporter.ReportStepSkippedAsync("Deploy [prod]", 3, 4, "condition evaluated to false");
+
+        // Assert
+        console.Output.Should().Contain(StepStatusDisplay.SkippedSymbol);
+        console.Output.Should().Contain("Step 3/4");
+        console.Output.Should().Contain("Deploy [prod]");
+        console.Output.Should().Contain("skipped: condition evaluated to false");
+    }
+
+    [Fact]
+    public async Task SilentMode_SuppressesEverything()
+    {
+        // Arrange
+        var console = new TestConsole();
+        var reporter = new ConsoleProgressReporter(console);
+        reporter.SetOutputMode(ConsoleProgressReporter.OutputMode.Silent);
+
+        // Act
+        await reporter.ReportJobStartAsync("build", 1, 1);
+        await reporter.ReportStepStartAsync("Build", 1, 1);
+        await reporter.ReportOutputAsync("some output");
+        await reporter.ReportStepSkippedAsync("Skipped", 2, 2, "filtered");
+        await reporter.ReportStepCompleteAsync("Build", true, TimeSpan.FromSeconds(1));
+        await reporter.ReportJobCompleteAsync("build", true, TimeSpan.FromSeconds(1));
+        await reporter.ReportProgressAsync(50, "half");
+
+        // Assert
+        console.Output.Should().BeEmpty();
     }
 
     [Fact]

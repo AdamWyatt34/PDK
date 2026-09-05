@@ -159,11 +159,24 @@ public class ConfigurationLoader : IConfigurationLoader
         return config;
     }
 
+    /// <summary>
+    /// Options used when inspecting the raw document (same leniency as <see cref="JsonOptions"/>).
+    /// </summary>
+    private static readonly JsonDocumentOptions DocumentOptions = new()
+    {
+        CommentHandling = JsonCommentHandling.Skip,
+        AllowTrailingCommas = true
+    };
+
     private static async Task<PdkConfig> LoadFromFileAsync(string filePath, CancellationToken cancellationToken)
     {
         try
         {
             var json = await File.ReadAllTextAsync(filePath, cancellationToken);
+
+            // The model defaults Version to "1.0", so a missing field has to be detected on the raw document.
+            EnsureVersionPresent(filePath, json);
+
             var config = JsonSerializer.Deserialize<PdkConfig>(json, JsonOptions);
 
             return config ?? new PdkConfig();
@@ -175,7 +188,34 @@ public class ConfigurationLoader : IConfigurationLoader
     }
 
     /// <summary>
-    /// Expands a path, replacing ~ with the user's home directory.
+    /// Fails with a clear message when the top-level <c>version</c> field is absent.
+    /// </summary>
+    private static void EnsureVersionPresent(string filePath, string json)
+    {
+        using var document = JsonDocument.Parse(json, DocumentOptions);
+
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            throw ConfigurationException.InvalidJson(
+                filePath,
+                new JsonException("The configuration root must be a JSON object."));
+        }
+
+        foreach (var property in document.RootElement.EnumerateObject())
+        {
+            if (property.Name.Equals("version", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+        }
+
+        throw ConfigurationException.MissingVersion(filePath);
+    }
+
+    /// <summary>
+    /// Expands a leading tilde to the user's home directory. Only <c>~</c>, <c>~/...</c> and
+    /// <c>~\...</c> are expanded; other paths (including <c>~user/...</c> and names that merely
+    /// start with a tilde) are returned unchanged.
     /// </summary>
     /// <param name="path">The path to expand.</param>
     /// <returns>The expanded path.</returns>
@@ -186,15 +226,20 @@ public class ConfigurationLoader : IConfigurationLoader
             return path;
         }
 
-        if (path.StartsWith('~'))
+        var home = GetHomeDirectory();
+        if (string.IsNullOrEmpty(home))
         {
-            var home = GetHomeDirectory();
-            if (!string.IsNullOrEmpty(home))
-            {
-                // Handle both ~/path and ~\path
-                var remainder = path.Length > 1 ? path[1..].TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar, '/') : string.Empty;
-                return Path.Combine(home, remainder);
-            }
+            return path;
+        }
+
+        if (path == "~")
+        {
+            return home;
+        }
+
+        if (path.StartsWith("~/", StringComparison.Ordinal) || path.StartsWith("~\\", StringComparison.Ordinal))
+        {
+            return Path.Combine(home, path[2..]);
         }
 
         return path;

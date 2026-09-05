@@ -49,6 +49,12 @@ public static class ErrorCodes
     /// <summary>Unknown or unsupported CI/CD provider.</summary>
     public const string UnknownProvider = "PDK-E-PARSER-006";
 
+    /// <summary>A job or step depends on a job or step that does not exist.</summary>
+    public const string MissingDependency = "PDK-E-PARSER-007";
+
+    /// <summary>A job or step depends on itself.</summary>
+    public const string SelfDependency = "PDK-E-PARSER-008";
+
     #endregion
 
     #region Runner Errors (PDK-E-RUNNER-XXX)
@@ -249,6 +255,8 @@ public static class ErrorCodes
             CircularDependency => "Circular dependency detected in jobs",
             InvalidPipelineStructure => "Pipeline structure is invalid",
             UnknownProvider => "Unknown or unsupported CI/CD provider",
+            MissingDependency => "Dependency refers to a job or step that does not exist",
+            SelfDependency => "A job or step cannot depend on itself",
 
             // Runner errors
             StepExecutionFailed => "Step execution failed",
@@ -319,15 +327,29 @@ public static class ErrorCodes
     }
 
     /// <summary>
-    /// Gets the documentation URL for an error code.
+    /// Repository-relative path of the error code reference document.
+    /// </summary>
+    public const string DocumentationFile = "docs/errors.md";
+
+    /// <summary>
+    /// Gets the documentation reference for an error code: the <see cref="DocumentationFile"/>
+    /// path followed by the anchor of the code's section (e.g. <c>docs/errors.md#pdk-e-docker-001</c>).
     /// </summary>
     /// <param name="errorCode">The error code.</param>
-    /// <returns>A URL to the error documentation.</returns>
+    /// <returns>A repository-relative reference to the error documentation.</returns>
     public static string GetDocumentationUrl(string errorCode)
     {
-        // Extract the code portion for the URL
-        var normalizedCode = errorCode.Replace("-", "_").ToLowerInvariant();
-        return $"https://docs.pdk.dev/errors/{normalizedCode}";
+        return $"{DocumentationFile}#{GetDocumentationAnchor(errorCode)}";
+    }
+
+    /// <summary>
+    /// Gets the Markdown heading anchor for an error code (lower-case code, e.g. <c>pdk-e-docker-001</c>).
+    /// </summary>
+    /// <param name="errorCode">The error code.</param>
+    /// <returns>The anchor without the leading '#'.</returns>
+    public static string GetDocumentationAnchor(string errorCode)
+    {
+        return (errorCode ?? string.Empty).Trim().ToLowerInvariant();
     }
 
     /// <summary>
@@ -349,6 +371,8 @@ public static class ErrorCodes
         yield return CircularDependency;
         yield return InvalidPipelineStructure;
         yield return UnknownProvider;
+        yield return MissingDependency;
+        yield return SelfDependency;
 
         yield return StepExecutionFailed;
         yield return StepTimeout;

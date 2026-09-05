@@ -46,14 +46,23 @@ public record FilterValidationError
     /// <summary>
     /// Creates an error for an index out of range.
     /// </summary>
-    public static FilterValidationError IndexOutOfRange(int index, int totalSteps)
-        => new()
+    /// <param name="index">The offending 1-based index.</param>
+    /// <param name="totalSteps">The number of steps in the largest candidate job.</param>
+    /// <param name="jobName">The job whose step count is reported, or null when it is the pipeline total.</param>
+    public static FilterValidationError IndexOutOfRange(int index, int totalSteps, string? jobName = null)
+    {
+        var scope = jobName != null ? $"Job '{jobName}' has" : "Pipeline has";
+        var plural = totalSteps == 1 ? "" : "s";
+        var range = totalSteps > 0 ? $" (valid range: 1-{totalSteps})" : "";
+
+        return new FilterValidationError
         {
             Code = "PDK-E-FILTER-002",
-            Message = $"Step index {index} is out of range. Pipeline has {totalSteps} step{(totalSteps == 1 ? "" : "s")} (valid range: 1-{totalSteps}).",
+            Message = $"Step index {index} is out of range. {scope} {totalSteps} step{plural}{range}.",
             Severity = FilterValidationSeverity.Error,
             ProblematicValue = index.ToString()
         };
+    }
 
     /// <summary>
     /// Creates an error for an invalid range.
@@ -91,6 +100,39 @@ public record FilterValidationError
             ProblematicValue = jobName,
             Suggestions = suggestions.ToList()
         };
+
+    /// <summary>
+    /// Creates an error for a <c>--step-index</c> value that could not be parsed.
+    /// </summary>
+    public static FilterValidationError InvalidIndexSpecification(string specification, string reason)
+        => new()
+        {
+            Code = "PDK-E-FILTER-006",
+            Message = $"Invalid step index '{specification}': {reason}",
+            Severity = FilterValidationSeverity.Error,
+            ProblematicValue = specification,
+            Suggestions = ["Use 1-based indices such as 3, a list such as 1,3,5 or a range such as 2-5"]
+        };
+
+    /// <summary>
+    /// Creates an error for a <c>--preset</c> name that is not defined in the configuration.
+    /// </summary>
+    public static FilterValidationError PresetNotFound(string presetName, IEnumerable<string> availablePresets)
+    {
+        var available = availablePresets.ToList();
+        var detail = available.Count > 0
+            ? $" Available presets: {string.Join(", ", available)}."
+            : " No presets are defined in the configuration (stepFiltering.presets).";
+
+        return new FilterValidationError
+        {
+            Code = "PDK-E-FILTER-007",
+            Message = $"Filter preset '{presetName}' not found.{detail}",
+            Severity = FilterValidationSeverity.Error,
+            ProblematicValue = presetName,
+            Suggestions = available
+        };
+    }
 
     /// <summary>
     /// Creates a warning for a step name with a possible typo.

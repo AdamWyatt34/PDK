@@ -1,5 +1,6 @@
 namespace PDK.CLI.ErrorHandling;
 
+using System.Reflection;
 using PDK.Core.ErrorHandling;
 using PDK.Core.Logging;
 using PDK.Core.Models;
@@ -7,6 +8,7 @@ using Spectre.Console;
 
 /// <summary>
 /// Formats PdkExceptions for display using Spectre.Console.
+/// Every value that reaches markup (messages, codes, context, output, stack frames) is escaped.
 /// </summary>
 public sealed class ErrorFormatter
 {
@@ -18,6 +20,11 @@ public sealed class ErrorFormatter
     /// Default number of lines to show from output.
     /// </summary>
     public const int DefaultMaxOutputLines = 20;
+
+    /// <summary>
+    /// Line printed for a cancelled operation (no panel, no documentation reference).
+    /// </summary>
+    public const string CancelledMessage = "Cancelled.";
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ErrorFormatter"/> class.
@@ -78,7 +85,7 @@ public sealed class ErrorFormatter
             DisplayTroubleshootingCommand(troubleshootingCmd);
         }
 
-        // Display documentation link
+        // Display documentation reference
         DisplayDocumentationLink(exception.ErrorCode);
 
         // Display stack trace in verbose mode
@@ -89,7 +96,9 @@ public sealed class ErrorFormatter
     }
 
     /// <summary>
-    /// Formats and displays a generic exception.
+    /// Formats and displays a generic exception. Wrapper exceptions (<see cref="AggregateException"/>,
+    /// <see cref="TargetInvocationException"/>) are unwrapped first; a cancellation prints a single
+    /// "Cancelled." line instead of an error panel.
     /// </summary>
     /// <param name="exception">The exception to display.</param>
     /// <param name="verbose">Whether to show verbose output including stack trace.</param>
@@ -97,16 +106,70 @@ public sealed class ErrorFormatter
     {
         ArgumentNullException.ThrowIfNull(exception);
 
+        var unwrapped = Unwrap(exception);
+
+        if (unwrapped is OperationCanceledException)
+        {
+            DisplayCancelled();
+            return;
+        }
+
         // If it's already a PdkException, use the specialized method
-        if (exception is PdkException pdkException)
+        if (unwrapped is PdkException pdkException)
         {
             DisplayError(pdkException, verbose);
             return;
         }
 
         // Wrap the generic exception in a PdkException
-        var wrapped = WrapException(exception);
+        var wrapped = WrapException(unwrapped);
         DisplayError(wrapped, verbose);
+    }
+
+    /// <summary>
+    /// Prints the single-line cancellation notice.
+    /// </summary>
+    public void DisplayCancelled()
+    {
+        _console.MarkupLine($"[yellow]{Markup.Escape(CancelledMessage)}[/]");
+    }
+
+    /// <summary>
+    /// Unwraps <see cref="AggregateException"/> and <see cref="TargetInvocationException"/> layers
+    /// down to the exception that carries the actual failure.
+    /// </summary>
+    /// <param name="exception">The exception to unwrap.</param>
+    /// <returns>The innermost meaningful exception.</returns>
+    public static Exception Unwrap(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+
+        var current = exception;
+        for (var depth = 0; depth < 10; depth++)
+        {
+            switch (current)
+            {
+                case AggregateException aggregate:
+                    var flattened = aggregate.Flatten();
+                    var inner = flattened.InnerExceptions.FirstOrDefault(e => e is not OperationCanceledException)
+                                ?? flattened.InnerExceptions.FirstOrDefault();
+                    if (inner == null)
+                    {
+                        return current;
+                    }
+                    current = inner;
+                    break;
+
+                case TargetInvocationException { InnerException: { } invocationInner }:
+                    current = invocationInner;
+                    break;
+
+                default:
+                    return current;
+            }
+        }
+
+        return current;
     }
 
     /// <summary>
@@ -130,13 +193,26 @@ public sealed class ErrorFormatter
             content = new Markup($"[white]{Markup.Escape(message)}[/]\n\n[dim]{Markup.Escape(description)}[/]");
         }
 
+        var headerText = $"Error {exception.ErrorCode}";
         var panel = new Panel(content)
         {
-            Header = new PanelHeader($"[red]Error {exception.ErrorCode}[/]"),
+            Header = new PanelHeader($"[red]{Markup.Escape(headerText)}[/]"),
             Border = BoxBorder.Rounded,
             BorderStyle = new Style(Color.Red),
             Padding = new Padding(1, 0, 1, 0)
         };
+
+        // A panel that is narrower than its header truncates the header ("Error…"), which would hide
+        // the error code for short messages. Widen the panel to fit the header when needed.
+        var longestLine = message.Split('\n')
+            .Concat(string.IsNullOrEmpty(description) ? [] : description.Split('\n'))
+            .Max(line => line.Length);
+        var contentWidth = longestLine + panel.Padding.GetLeftSafe() + panel.Padding.GetRightSafe() + 2;
+        var headerWidth = headerText.Length + 4;
+        if (headerWidth > contentWidth)
+        {
+            panel.Width = headerWidth;
+        }
 
         return panel;
     }
@@ -148,7 +224,7 @@ public sealed class ErrorFormatter
     /// <returns>A formatted string of suggestions.</returns>
     public string FormatSuggestions(IEnumerable<string> suggestions)
     {
-        var lines = suggestions.Select(s => $"  [cyan]\u2022[/] {Markup.Escape(s)}");
+        var lines = suggestions.Select(s => $"  [cyan]•[/] {Markup.Escape(s)}");
         return string.Join(Environment.NewLine, lines);
     }
 
@@ -196,7 +272,7 @@ public sealed class ErrorFormatter
             var location = context.ColumnNumber.HasValue
                 ? $"Line {context.LineNumber}, Column {context.ColumnNumber}"
                 : $"Line {context.LineNumber}";
-            _console.MarkupLine($"  Location: [dim]{location}[/]");
+            _console.MarkupLine($"  Location: [dim]{Markup.Escape(location)}[/]");
         }
 
         if (context.ExitCode.HasValue)
@@ -232,7 +308,7 @@ public sealed class ErrorFormatter
         foreach (var suggestion in suggestions)
         {
             var masked = MaskSecrets(suggestion);
-            _console.MarkupLine($"  [cyan]\u2022[/] {Markup.Escape(masked)}");
+            _console.MarkupLine($"  [cyan]•[/] {Markup.Escape(masked)}");
         }
 
         _console.WriteLine();
@@ -250,9 +326,10 @@ public sealed class ErrorFormatter
             _console.MarkupLine($"  [dim]{Markup.Escape(line)}[/]");
         }
 
-        if (output.Split('\n').Length > DefaultMaxOutputLines)
+        var totalLines = output.Split('\n').Length;
+        if (totalLines > DefaultMaxOutputLines)
         {
-            _console.MarkupLine($"  [dim]... ({output.Split('\n').Length - DefaultMaxOutputLines} more lines)[/]");
+            _console.MarkupLine($"  [dim]... ({totalLines - DefaultMaxOutputLines} more lines)[/]");
         }
 
         _console.WriteLine();
@@ -267,9 +344,8 @@ public sealed class ErrorFormatter
 
     private void DisplayDocumentationLink(string errorCode)
     {
-        var url = _suggestionEngine.GetDocumentationUrl(errorCode);
-        _console.MarkupLine("[dim]Documentation:[/]");
-        _console.MarkupLine($"  [link={url}]{url}[/]");
+        var reference = _suggestionEngine.GetDocumentationUrl(errorCode);
+        _console.MarkupLine($"[dim]Documentation:[/] [dim]{Markup.Escape(reference)}[/]");
         _console.WriteLine();
     }
 
@@ -296,7 +372,7 @@ public sealed class ErrorFormatter
         {
             _console.WriteLine();
             _console.MarkupLine("[dim]Inner Exception:[/]");
-            _console.MarkupLine($"  [dim]{Markup.Escape(exception.InnerException.Message)}[/]");
+            _console.MarkupLine($"  [dim]{Markup.Escape(MaskSecrets(exception.InnerException.Message))}[/]");
 
             if (exception.InnerException.StackTrace != null)
             {
@@ -330,7 +406,6 @@ public sealed class ErrorFormatter
             DirectoryNotFoundException => ErrorCodes.DirectoryNotFound,
             UnauthorizedAccessException => ErrorCodes.FileAccessDenied,
             TimeoutException => ErrorCodes.NetworkTimeout,
-            OperationCanceledException => ErrorCodes.Unknown,
             _ => ErrorCodes.Unknown
         };
 

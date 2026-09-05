@@ -9,21 +9,32 @@ namespace PDK.Core.Diagnostics;
 public interface IUpdateChecker
 {
     /// <summary>
-    /// Determines whether an update check should be performed.
+    /// Determines whether an update check should be performed (not in CI, and the
+    /// throttle period since the last successful check has elapsed).
     /// </summary>
     /// <returns>True if an update check should be performed; otherwise, false.</returns>
     bool ShouldCheckForUpdates();
+
+    /// <summary>
+    /// Determines whether an update check should be performed, honouring the
+    /// <c>features.checkUpdates</c> configuration value.
+    /// </summary>
+    /// <param name="checkUpdatesEnabled">The configured value (<c>PdkConfig.Features.CheckUpdates</c>); false disables the check.</param>
+    /// <returns>True if an update check should be performed; otherwise, false.</returns>
+    bool ShouldCheckForUpdates(bool checkUpdatesEnabled) => checkUpdatesEnabled && ShouldCheckForUpdates();
 
     /// <summary>
     /// Checks NuGet for available updates.
     /// </summary>
     /// <param name="currentVersion">The current PDK version.</param>
     /// <param name="cancellationToken">Token to cancel the operation.</param>
-    /// <returns>Update information if an update is available; otherwise, null.</returns>
+    /// <returns>Update information if a newer stable version is available; otherwise, null.</returns>
     Task<UpdateInfo?> CheckForUpdatesAsync(string currentVersion, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Updates the last check timestamp to throttle future checks.
+    /// Implementations only record a timestamp after a successful check, so a failed
+    /// (offline) check is retried on the next invocation.
     /// </summary>
     Task UpdateLastCheckTimeAsync();
 }
@@ -33,18 +44,23 @@ public interface IUpdateChecker
 /// </summary>
 public sealed class UpdateChecker : IUpdateChecker
 {
-    private const string UpdateCheckFileName = "update-check.json";
+    /// <summary>
+    /// Name of the throttle state file stored below <c>~/.pdk</c>.
+    /// </summary>
+    public const string UpdateCheckFileName = "update-check.json";
+
     private const string NuGetPackageId = "pdk";
     private static readonly TimeSpan CheckInterval = TimeSpan.FromHours(24);
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(2);
 
     private readonly HttpClient _httpClient;
     private readonly string _updateCheckFilePath;
+    private bool _lastCheckSucceeded;
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="UpdateChecker"/> class.
+    /// Initializes a new instance of the <see cref="UpdateChecker"/> class using the default state file.
     /// </summary>
-    public UpdateChecker() : this(new HttpClient())
+    public UpdateChecker() : this(new HttpClient(), null)
     {
     }
 
@@ -52,20 +68,43 @@ public sealed class UpdateChecker : IUpdateChecker
     /// Initializes a new instance of the <see cref="UpdateChecker"/> class with a custom HttpClient.
     /// </summary>
     /// <param name="httpClient">The HTTP client to use for requests.</param>
-    public UpdateChecker(HttpClient httpClient)
+    public UpdateChecker(HttpClient httpClient) : this(httpClient, null)
     {
-        _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
-
-        var pdkDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".pdk");
-        _updateCheckFilePath = Path.Combine(pdkDir, UpdateCheckFileName);
     }
 
     /// <summary>
-    /// Determines whether an update check should be performed.
+    /// Initializes a new instance of the <see cref="UpdateChecker"/> class.
     /// </summary>
-    /// <returns>True if an update check should be performed; otherwise, false.</returns>
+    /// <param name="httpClient">The HTTP client to use for requests.</param>
+    /// <param name="stateFilePath">
+    /// Path of the throttle state file. Null selects <see cref="DefaultStateFilePath"/>
+    /// (<c>~/.pdk/update-check.json</c>); tests pass a temporary path to stay isolated.
+    /// </param>
+    public UpdateChecker(HttpClient httpClient, string? stateFilePath)
+    {
+        _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+        _updateCheckFilePath = string.IsNullOrWhiteSpace(stateFilePath) ? DefaultStateFilePath : stateFilePath;
+    }
+
+    /// <summary>
+    /// Gets the default throttle state file path (<c>~/.pdk/update-check.json</c>).
+    /// </summary>
+    public static string DefaultStateFilePath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        ".pdk",
+        UpdateCheckFileName);
+
+    /// <summary>
+    /// Gets the throttle state file used by this instance.
+    /// </summary>
+    public string StateFilePath => _updateCheckFilePath;
+
+    /// <summary>
+    /// Gets whether the most recent <see cref="CheckForUpdatesAsync"/> call reached NuGet and parsed the response.
+    /// </summary>
+    public bool LastCheckSucceeded => _lastCheckSucceeded;
+
+    /// <inheritdoc/>
     public bool ShouldCheckForUpdates()
     {
         // Never check in CI environments
@@ -97,16 +136,13 @@ public sealed class UpdateChecker : IUpdateChecker
         }
     }
 
-    /// <summary>
-    /// Checks NuGet for available updates.
-    /// </summary>
-    /// <param name="currentVersion">The current PDK version.</param>
-    /// <param name="cancellationToken">Token to cancel the operation.</param>
-    /// <returns>Update information if an update is available; otherwise, null.</returns>
+    /// <inheritdoc/>
     public async Task<UpdateInfo?> CheckForUpdatesAsync(
         string currentVersion,
         CancellationToken cancellationToken = default)
     {
+        _lastCheckSucceeded = false;
+
         try
         {
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -116,21 +152,22 @@ public sealed class UpdateChecker : IUpdateChecker
             var response = await _httpClient.GetStringAsync(url, cts.Token);
 
             var versions = JsonSerializer.Deserialize<NuGetVersionsResponse>(response);
-            var latestVersionString = versions?.Versions?.LastOrDefault();
-
-            if (string.IsNullOrEmpty(latestVersionString))
+            if (versions?.Versions == null)
             {
                 return null;
             }
 
-            // Parse versions for comparison
-            var currentVersionClean = CleanVersionString(currentVersion);
-            if (!Version.TryParse(currentVersionClean, out var currentVer))
+            // The response was fetched and parsed: the throttle timestamp may be recorded.
+            _lastCheckSucceeded = true;
+
+            var latestStable = SelectLatestStableVersion(versions.Versions);
+            if (latestStable == null)
             {
                 return null;
             }
 
-            if (!Version.TryParse(latestVersionString, out var latestVer))
+            if (!TryParseVersion(currentVersion, out var currentVer) ||
+                !TryParseVersion(latestStable, out var latestVer))
             {
                 return null;
             }
@@ -140,7 +177,7 @@ public sealed class UpdateChecker : IUpdateChecker
                 return new UpdateInfo
                 {
                     CurrentVersion = currentVersion,
-                    LatestVersion = latestVersionString,
+                    LatestVersion = latestStable,
                     IsUpdateAvailable = true,
                     UpdateCommand = "dotnet tool update -g pdk"
                 };
@@ -155,11 +192,15 @@ public sealed class UpdateChecker : IUpdateChecker
         }
     }
 
-    /// <summary>
-    /// Updates the last check timestamp to throttle future checks.
-    /// </summary>
+    /// <inheritdoc/>
     public async Task UpdateLastCheckTimeAsync()
     {
+        if (!_lastCheckSucceeded)
+        {
+            // A failed check must not start the throttle period; retry on the next run.
+            return;
+        }
+
         try
         {
             var dir = Path.GetDirectoryName(_updateCheckFilePath);
@@ -178,14 +219,78 @@ public sealed class UpdateChecker : IUpdateChecker
         }
     }
 
+    /// <summary>
+    /// Selects the highest stable (non-prerelease) version from a NuGet version list.
+    /// The list order is not trusted: every entry is parsed and compared numerically.
+    /// </summary>
+    /// <param name="versions">Version strings as returned by the NuGet flat container index.</param>
+    /// <returns>The highest stable version string, or null when the list has no stable version.</returns>
+    public static string? SelectLatestStableVersion(IEnumerable<string> versions)
+    {
+        ArgumentNullException.ThrowIfNull(versions);
+
+        string? bestText = null;
+        Version? best = null;
+
+        foreach (var text in versions)
+        {
+            if (string.IsNullOrWhiteSpace(text) || IsPrerelease(text))
+            {
+                continue;
+            }
+
+            if (!TryParseVersion(text, out var parsed))
+            {
+                continue;
+            }
+
+            if (best == null || parsed > best)
+            {
+                best = parsed;
+                bestText = text.Trim();
+            }
+        }
+
+        return bestText;
+    }
+
+    /// <summary>
+    /// Determines whether a version string denotes a prerelease (SemVer <c>-suffix</c>).
+    /// </summary>
+    public static bool IsPrerelease(string version)
+    {
+        var withoutMetadata = StripBuildMetadata(version);
+        return withoutMetadata.Contains('-');
+    }
+
+    private static bool TryParseVersion(string version, out Version parsed)
+    {
+        parsed = new Version(0, 0, 0, 0);
+
+        var cleaned = CleanVersionString(version);
+        if (!Version.TryParse(cleaned, out var raw))
+        {
+            return false;
+        }
+
+        // Normalise to four components so that "1.0" and "1.0.0" compare as equal.
+        parsed = new Version(
+            Math.Max(raw.Major, 0),
+            Math.Max(raw.Minor, 0),
+            Math.Max(raw.Build, 0),
+            Math.Max(raw.Revision, 0));
+        return true;
+    }
+
+    private static string StripBuildMetadata(string version)
+    {
+        var plusIndex = version.IndexOf('+');
+        return plusIndex >= 0 ? version[..plusIndex] : version;
+    }
+
     private static string CleanVersionString(string version)
     {
-        // Remove commit hash suffix (e.g., "1.0.0+abc123" -> "1.0.0")
-        var plusIndex = version.IndexOf('+');
-        if (plusIndex >= 0)
-        {
-            version = version[..plusIndex];
-        }
+        version = StripBuildMetadata(version.Trim());
 
         // Remove pre-release suffix (e.g., "1.0.0-beta1" -> "1.0.0")
         var dashIndex = version.IndexOf('-');

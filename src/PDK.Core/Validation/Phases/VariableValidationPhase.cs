@@ -15,8 +15,10 @@ public partial class VariableValidationPhase : IValidationPhase
     public string Name => "Variable Validation";
     public int Order => 3;
 
-    // Matches ${VAR}, ${VAR:-default}, ${VAR:?error} - but NOT ${{ }} expressions
-    [GeneratedRegex(@"\$\{(?!\{)([^}:]+)(?::([?-])([^}]*))?\}", RegexOptions.Compiled)]
+    // Matches ${NAME}, ${NAME:-default}, ${NAME:?error} using the runtime expander's grammar
+    // (NAME = [A-Za-z_][A-Za-z0-9_]*). Escaped references (\${) and ${{ }} expressions are not
+    // matched, and neither are bash parameter expansions such as ${VAR#x}, ${#VAR} or ${VAR:0:2}.
+    [GeneratedRegex(@"(?<!\\)\$\{(?!\{)([A-Za-z_][A-Za-z0-9_]*)(?::([?-])([^}]*))?\}", RegexOptions.Compiled)]
     private static partial Regex VariableReferencePattern();
 
     // Matches ${{ expression }} (GitHub/Azure syntax)
@@ -203,8 +205,10 @@ public partial class VariableValidationPhase : IValidationPhase
             }
         }
 
-        // Check for unclosed variable references
-        if (value.Contains("${") && !value.Contains("}"))
+        // Check for unclosed references (escaped \${ is ignored)
+        var (unclosedVariable, unclosedExpression) = FindUnclosedReferences(value);
+
+        if (unclosedVariable)
         {
             errors.Add(DryRunValidationError.VariableError(
                 ErrorCodes.VariableInvalidSyntax,
@@ -214,7 +218,7 @@ public partial class VariableValidationPhase : IValidationPhase
                 suggestions: "Ensure all ${ references are closed with }"));
         }
 
-        if (value.Contains("${{") && !value.Contains("}}"))
+        if (unclosedExpression)
         {
             errors.Add(DryRunValidationError.VariableError(
                 ErrorCodes.VariableInvalidSyntax,
@@ -225,51 +229,43 @@ public partial class VariableValidationPhase : IValidationPhase
         }
     }
 
-    private bool ValidateExpressionSyntax(string expression, out string? error)
+    /// <summary>
+    /// Scans for <c>${</c> / <c>${{</c> openings without a matching closing brace.
+    /// </summary>
+    private static (bool UnclosedVariable, bool UnclosedExpression) FindUnclosedReferences(string value)
     {
-        error = null;
+        var unclosedVariable = false;
+        var unclosedExpression = false;
 
-        if (string.IsNullOrWhiteSpace(expression))
+        var position = 0;
+        while ((position = value.IndexOf("${", position, StringComparison.Ordinal)) >= 0)
         {
-            error = "Expression is empty";
-            return false;
-        }
+            var escaped = position > 0 && value[position - 1] == '\\';
+            var isExpression = position + 2 < value.Length && value[position + 2] == '{';
 
-        // Check for balanced parentheses
-        int parenCount = 0;
-        foreach (char c in expression)
-        {
-            if (c == '(') parenCount++;
-            if (c == ')') parenCount--;
-            if (parenCount < 0)
+            if (!escaped)
             {
-                error = "Unbalanced parentheses";
-                return false;
+                if (isExpression)
+                {
+                    if (value.IndexOf("}}", position + 3, StringComparison.Ordinal) < 0)
+                    {
+                        unclosedExpression = true;
+                    }
+                }
+                else if (value.IndexOf('}', position + 2) < 0)
+                {
+                    unclosedVariable = true;
+                }
             }
+
+            position += isExpression ? 3 : 2;
         }
 
-        if (parenCount != 0)
-        {
-            error = "Unbalanced parentheses";
-            return false;
-        }
+        return (unclosedVariable, unclosedExpression);
+    }
 
-        // Check for balanced quotes
-        int singleQuoteCount = expression.Count(c => c == '\'');
-        int doubleQuoteCount = expression.Count(c => c == '"');
-
-        if (singleQuoteCount % 2 != 0)
-        {
-            error = "Unbalanced single quotes";
-            return false;
-        }
-
-        if (doubleQuoteCount % 2 != 0)
-        {
-            error = "Unbalanced double quotes";
-            return false;
-        }
-
-        return true;
+    private static bool ValidateExpressionSyntax(string expression, out string? error)
+    {
+        return ExpressionSyntaxChecker.Validate(expression, out error);
     }
 }

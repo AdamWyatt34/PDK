@@ -24,11 +24,11 @@ public interface IDependencyAnalyzer
     /// <summary>
     /// Gets all dependencies of a step (steps that must run before it).
     /// </summary>
-    /// <param name="step">The step to analyze.</param>
-    /// <param name="stepIndex">The index of the step within the job.</param>
+    /// <param name="job">The job containing the step.</param>
+    /// <param name="stepIndex">The 1-based index of the step within the job.</param>
     /// <param name="graph">The dependency graph.</param>
     /// <returns>The steps this step depends on.</returns>
-    IReadOnlyList<DependencyGraph.StepNode> GetDependencies(Step step, int stepIndex, DependencyGraph graph);
+    IReadOnlyList<DependencyGraph.StepNode> GetDependencies(Job job, int stepIndex, DependencyGraph graph);
 
     /// <summary>
     /// Expands a filter to include all dependencies of selected steps.
@@ -36,5 +36,11 @@ public interface IDependencyAnalyzer
     /// <param name="options">The original filter options.</param>
     /// <param name="pipeline">The pipeline.</param>
     /// <returns>Filter options with dependencies included.</returns>
+    /// <remarks>
+    /// The result is expressed as step indices, which are unioned across jobs. For a precise
+    /// per-job expansion use <see cref="IStepFilterBuilder.Build"/> with
+    /// <see cref="FilterOptions.IncludeDependencies"/> set, which decorates the filter with a
+    /// <see cref="Filters.DependencyExpandingFilter"/>.
+    /// </remarks>
     FilterOptions ExpandWithDependencies(FilterOptions options, Pipeline pipeline);
 }

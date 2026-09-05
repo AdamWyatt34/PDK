@@ -3,12 +3,12 @@ using PDK.Core.Models;
 namespace PDK.Core.Filtering.Filters;
 
 /// <summary>
-/// Filters steps by ranges (numeric or named).
+/// Filters steps by ranges (numeric or named). Named ranges are resolved against the
+/// step names of the job being evaluated, so the filter works independently for every job.
 /// </summary>
 public sealed class StepRangeFilter : IStepFilter
 {
     private readonly IReadOnlyList<StepRange> _ranges;
-    private IReadOnlyList<string>? _cachedStepNames;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="StepRangeFilter"/> class.
@@ -47,33 +47,27 @@ public sealed class StepRangeFilter : IStepFilter
         }
 
         var stepName = step.Name ?? $"Step {stepIndex}";
-
-        // Build step names list for named range resolution
-        if (_cachedStepNames == null || _cachedStepNames.Count != job.Steps.Count)
-        {
-            _cachedStepNames = job.Steps
-                .Select((s, i) => s.Name ?? $"Step {i + 1}")
-                .ToList();
-        }
+        var stepNames = GetStepNames(job);
 
         foreach (var range in _ranges)
         {
-            try
+            if (range.Contains(stepIndex, stepName, stepNames))
             {
-                if (range.Contains(stepIndex, stepName, _cachedStepNames))
-                {
-                    return FilterResult.Execute($"Matched range {range}");
-                }
-            }
-            catch (InvalidOperationException)
-            {
-                // Named range resolution failed - skip this range
-                // Validation should catch this earlier, but be defensive
-                continue;
+                return FilterResult.Execute($"Matched range {range}");
             }
         }
 
         return FilterResult.FilteredOut($"Step {stepIndex} not in any selected ranges");
+    }
+
+    /// <summary>
+    /// Gets the step names of a job in order (used for named range resolution).
+    /// </summary>
+    public static IReadOnlyList<string> GetStepNames(Job job)
+    {
+        return job.Steps
+            .Select((s, i) => s.Name ?? $"Step {i + 1}")
+            .ToList();
     }
 
     /// <summary>

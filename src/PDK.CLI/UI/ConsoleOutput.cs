@@ -96,6 +96,16 @@ public interface IConsoleOutput
     LogLevel MinimumLevel { get; }
 
     /// <summary>
+    /// Sets the minimum level for output. The CLI maps its verbosity flags as follows:
+    /// <c>--trace</c> → <see cref="LogLevel.Trace"/>, <c>--verbose</c> → <see cref="LogLevel.Debug"/>,
+    /// default → <see cref="LogLevel.Information"/>, <c>--quiet</c> → <see cref="LogLevel.Warning"/>,
+    /// <c>--silent</c> → <see cref="LogLevel.Error"/> (only errors are printed).
+    /// Plain output (<see cref="WriteLine(string)"/>, tables, panels, renderables) counts as Information.
+    /// </summary>
+    /// <param name="level">The new minimum level.</param>
+    void SetMinimumLevel(LogLevel level);
+
+    /// <summary>
     /// Gets the visual hierarchy helper for structured output.
     /// </summary>
     VisualHierarchy Hierarchy { get; }
@@ -144,7 +154,13 @@ public sealed class ConsoleOutput : IConsoleOutput
     public int TerminalWidth => _console.Profile.Width;
 
     /// <inheritdoc/>
-    public LogLevel MinimumLevel { get; }
+    public LogLevel MinimumLevel { get; private set; }
+
+    /// <inheritdoc/>
+    public void SetMinimumLevel(LogLevel level)
+    {
+        MinimumLevel = level;
+    }
 
     /// <inheritdoc/>
     public VisualHierarchy Hierarchy => _hierarchy;
@@ -266,30 +282,45 @@ public sealed class ConsoleOutput : IConsoleOutput
     /// <inheritdoc/>
     public void WriteLine(string message)
     {
+        if (!ShouldWrite(LogLevel.Information))
+        {
+            return;
+        }
+
         _console.WriteLine(message);
     }
 
     /// <inheritdoc/>
     public void WriteLine()
     {
+        if (!ShouldWrite(LogLevel.Information))
+        {
+            return;
+        }
+
         _console.WriteLine();
     }
 
     /// <inheritdoc/>
     public void WriteTable(Table table)
     {
-        _console.Write(table);
+        Write(table);
     }
 
     /// <inheritdoc/>
     public void WritePanel(Panel panel)
     {
-        _console.Write(panel);
+        Write(panel);
     }
 
     /// <inheritdoc/>
     public void Write(IRenderable renderable)
     {
+        if (!ShouldWrite(LogLevel.Information))
+        {
+            return;
+        }
+
         _console.Write(renderable);
     }
 }

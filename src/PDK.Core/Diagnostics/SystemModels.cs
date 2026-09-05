@@ -31,6 +31,12 @@ public record DockerInfo
     public string? Platform { get; init; }
 
     /// <summary>
+    /// Gets the Docker endpoint PDK connects to (the <c>DOCKER_HOST</c> value, or the platform default
+    /// socket / named pipe). Reported even when Docker is unavailable, to show where it was looked for.
+    /// </summary>
+    public string? Endpoint { get; init; }
+
+    /// <summary>
     /// Gets the error message if Docker is not available.
     /// </summary>
     public string? ErrorMessage { get; init; }
@@ -39,12 +45,14 @@ public record DockerInfo
     /// Creates a DockerInfo indicating Docker is not available.
     /// </summary>
     /// <param name="errorMessage">The error message describing why Docker is unavailable.</param>
+    /// <param name="endpoint">The endpoint that was probed, if known.</param>
     /// <returns>A DockerInfo instance indicating unavailability.</returns>
-    public static DockerInfo NotAvailable(string? errorMessage = null) => new()
+    public static DockerInfo NotAvailable(string? errorMessage = null, string? endpoint = null) => new()
     {
         IsAvailable = false,
         IsRunning = false,
-        ErrorMessage = errorMessage
+        ErrorMessage = errorMessage,
+        Endpoint = endpoint
     };
 }
 

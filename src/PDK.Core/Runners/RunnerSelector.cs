@@ -13,7 +13,9 @@ public class RunnerSelector : IRunnerSelector
     private readonly IDockerDetector _dockerDetector;
     private readonly IConfigurationLoader _configLoader;
     private readonly ILogger<RunnerSelector> _logger;
+    private readonly SemaphoreSlim _configLock = new(1, 1);
     private PdkConfig? _cachedConfig;
+    private bool _configLoaded;
 
     private const string HostModeSecurityWarning =
         "HOST MODE - Steps execute with your user permissions. " +
@@ -37,23 +39,32 @@ public class RunnerSelector : IRunnerSelector
     }
 
     /// <inheritdoc />
-    public async Task<RunnerSelectionResult> SelectRunnerAsync(
+    public Task<RunnerSelectionResult> SelectRunnerAsync(
         RunnerType requestedType,
         Job? job = null,
         CancellationToken cancellationToken = default)
     {
+        return SelectRunnerAsync(requestedType, job, null, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<RunnerSelectionResult> SelectRunnerAsync(
+        RunnerType requestedType,
+        Job? job,
+        PdkConfig? config,
+        CancellationToken cancellationToken = default)
+    {
         _logger.LogDebug("Selecting runner. Requested type: {RequestedType}", requestedType);
 
-        // Load configuration once
-        _cachedConfig ??= await _configLoader.LoadAsync(cancellationToken: cancellationToken);
-        var runnerConfig = _cachedConfig?.Runner ?? new RunnerConfig();
+        var effectiveConfig = config ?? await GetDiscoveredConfigAsync(cancellationToken);
+        var runnerConfig = effectiveConfig?.Runner ?? new RunnerConfig();
 
         RunnerSelectionResult result;
 
         switch (requestedType)
         {
             case RunnerType.Host:
-                result = SelectHostRunner("--host flag specified");
+                result = SelectHostRunner("--host flag specified", runnerConfig);
                 break;
 
             case RunnerType.Docker:
@@ -81,18 +92,44 @@ public class RunnerSelector : IRunnerSelector
         return result;
     }
 
-    private RunnerSelectionResult SelectHostRunner(string reason)
+    /// <summary>
+    /// Loads the discovered configuration once. A "no configuration file" result is cached too,
+    /// so repeated selections (watch mode, interactive mode) do not re-scan the file system.
+    /// </summary>
+    private async Task<PdkConfig?> GetDiscoveredConfigAsync(CancellationToken cancellationToken)
+    {
+        if (_configLoaded)
+        {
+            return _cachedConfig;
+        }
+
+        await _configLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (!_configLoaded)
+            {
+                _cachedConfig = await _configLoader.LoadAsync(cancellationToken: cancellationToken);
+                _configLoaded = true;
+            }
+
+            return _cachedConfig;
+        }
+        finally
+        {
+            _configLock.Release();
+        }
+    }
+
+    private RunnerSelectionResult SelectHostRunner(string reason, RunnerConfig config)
     {
         _logger.LogDebug("Selecting host runner: {Reason}", reason);
-
-        var showWarning = _cachedConfig?.Runner?.ShowHostModeWarnings ?? true;
 
         return new RunnerSelectionResult
         {
             SelectedRunner = RunnerType.Host,
             Reason = reason,
             IsFallback = false,
-            Warning = showWarning ? HostModeSecurityWarning : null
+            Warning = config.ShowHostModeWarnings ? HostModeSecurityWarning : null
         };
     }
 
@@ -132,7 +169,7 @@ public class RunnerSelector : IRunnerSelector
         // If configuration explicitly specifies host, use host
         if (defaultRunner == "host")
         {
-            return SelectHostRunner("configuration default is 'host'");
+            return SelectHostRunner("configuration default is 'host'", config);
         }
 
         // Try Docker (either explicit docker default or auto)

@@ -56,6 +56,42 @@ public record PdkConfig
     /// Gets the step filtering configuration (Sprint 11 - REQ-11-007).
     /// </summary>
     public StepFilteringConfig? StepFiltering { get; init; }
+
+    /// <summary>
+    /// Gets the watch mode configuration (Sprint 11 - REQ-11-001). JSON section: <c>watch</c>.
+    /// </summary>
+    public WatchConfig? Watch { get; init; }
+}
+
+/// <summary>
+/// Watch mode configuration (JSON section <c>watch</c>).
+/// The CLI maps these onto <c>WatchModeOptions</c>:
+/// <c>debounceMs</c> → <c>DebounceMs</c>, <c>clearOnRerun</c> → <c>ClearOnRerun</c>,
+/// <c>excludePatterns</c> → <c>ExcludePatterns</c>, <c>includePatterns</c> → <c>IncludePatterns</c>.
+/// Explicit command-line flags (<c>--watch-debounce</c>, <c>--watch-clear</c>) take precedence.
+/// </summary>
+public record WatchConfig
+{
+    /// <summary>
+    /// Gets the debounce period in milliseconds applied to file changes before a re-run. Must be 0 or greater.
+    /// </summary>
+    public int? DebounceMs { get; init; }
+
+    /// <summary>
+    /// Gets whether the terminal is cleared before each re-run.
+    /// </summary>
+    public bool? ClearOnRerun { get; init; }
+
+    /// <summary>
+    /// Gets additional glob patterns (relative to the workspace) whose changes are ignored.
+    /// </summary>
+    public List<string>? ExcludePatterns { get; init; }
+
+    /// <summary>
+    /// Gets glob patterns (relative to the workspace) that changed files must match to trigger a re-run.
+    /// When empty, every non-excluded file triggers a re-run.
+    /// </summary>
+    public List<string>? IncludePatterns { get; init; }
 }
 
 /// <summary>

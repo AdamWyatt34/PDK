@@ -11,7 +11,7 @@ public static class StepStatusDisplay
     /// </summary>
     public enum StepStatus
     {
-        /// <summary>Step has not started yet.</summary>
+        /// <summary>Step has not started yet (or was never reached).</summary>
         Pending,
 
         /// <summary>Step is currently executing.</summary>
@@ -24,7 +24,10 @@ public static class StepStatusDisplay
         Failed,
 
         /// <summary>Step was skipped.</summary>
-        Skipped
+        Skipped,
+
+        /// <summary>Step failed but the failure was allowed (<c>continue-on-error</c>).</summary>
+        AllowedFailure
     }
 
     /// <summary>
@@ -53,6 +56,11 @@ public static class StepStatusDisplay
     public const string SkippedSymbol = "⊘";
 
     /// <summary>
+    /// Symbol for allowed failures.
+    /// </summary>
+    public const string AllowedFailureSymbol = "⚠";
+
+    /// <summary>
     /// Plain text symbol for pending steps (NO_COLOR mode).
     /// </summary>
     public const string PendingSymbolPlain = "o";
@@ -78,6 +86,11 @@ public static class StepStatusDisplay
     public const string SkippedSymbolPlain = "-";
 
     /// <summary>
+    /// Plain text symbol for allowed failures (NO_COLOR mode).
+    /// </summary>
+    public const string AllowedFailureSymbolPlain = "!";
+
+    /// <summary>
     /// Gets the appropriate symbol for a step status.
     /// </summary>
     /// <param name="status">The step status.</param>
@@ -94,6 +107,7 @@ public static class StepStatusDisplay
                 StepStatus.Success => SuccessSymbolPlain,
                 StepStatus.Failed => FailedSymbolPlain,
                 StepStatus.Skipped => SkippedSymbolPlain,
+                StepStatus.AllowedFailure => AllowedFailureSymbolPlain,
                 _ => "?"
             };
         }
@@ -105,6 +119,7 @@ public static class StepStatusDisplay
             StepStatus.Success => SuccessSymbol,
             StepStatus.Failed => FailedSymbol,
             StepStatus.Skipped => SkippedSymbol,
+            StepStatus.AllowedFailure => AllowedFailureSymbol,
             _ => "?"
         };
     }
@@ -122,8 +137,28 @@ public static class StepStatusDisplay
             StepStatus.Running => "cyan",
             StepStatus.Success => "green",
             StepStatus.Failed => "red",
-            StepStatus.Skipped => "yellow",
+            StepStatus.Skipped => "grey",
+            StepStatus.AllowedFailure => "yellow",
             _ => "white"
+        };
+    }
+
+    /// <summary>
+    /// Gets a human-readable label for a step status ("succeeded", "failed (allowed)", ...).
+    /// </summary>
+    /// <param name="status">The step status.</param>
+    /// <returns>The label.</returns>
+    public static string GetLabel(StepStatus status)
+    {
+        return status switch
+        {
+            StepStatus.Pending => "not run",
+            StepStatus.Running => "running",
+            StepStatus.Success => "succeeded",
+            StepStatus.Failed => "failed",
+            StepStatus.Skipped => "skipped",
+            StepStatus.AllowedFailure => "failed (allowed)",
+            _ => "unknown"
         };
     }
 
@@ -162,17 +197,48 @@ public static class StepStatusDisplay
         TimeSpan duration,
         bool noColor = false)
     {
+        return FormatStatusWithDuration(status, stepName, duration, noColor, null);
+    }
+
+    /// <summary>
+    /// Formats a step status with symbol, name, duration and an optional detail
+    /// (e.g. a skip reason or "failed (allowed)") for display.
+    /// </summary>
+    /// <param name="status">The step status.</param>
+    /// <param name="stepName">The name of the step.</param>
+    /// <param name="duration">The execution duration.</param>
+    /// <param name="noColor">Whether to use plain text without colors.</param>
+    /// <param name="detail">Optional detail appended after the duration.</param>
+    /// <returns>Formatted string for console output.</returns>
+    public static string FormatStatusWithDuration(
+        StepStatus status,
+        string stepName,
+        TimeSpan duration,
+        bool noColor,
+        string? detail)
+    {
         var symbol = GetSymbol(status, noColor);
         var durationStr = FormatDuration(duration);
+        var showDuration = status is not (StepStatus.Skipped or StepStatus.Pending);
 
         if (noColor)
         {
-            return $"{symbol} {stepName} ({durationStr})";
+            var plain = showDuration ? $"{symbol} {stepName} ({durationStr})" : $"{symbol} {stepName}";
+            return string.IsNullOrWhiteSpace(detail) ? plain : $"{plain} - {detail}";
         }
 
         var color = GetColor(status);
         var escapedName = Spectre.Console.Markup.Escape(stepName);
-        return $"[{color}]{symbol}[/] {escapedName} [dim]({durationStr})[/]";
+        var nameMarkup = status is StepStatus.Skipped or StepStatus.Pending
+            ? $"[grey]{escapedName}[/]"
+            : escapedName;
+        var line = showDuration
+            ? $"[{color}]{symbol}[/] {nameMarkup} [dim]({durationStr})[/]"
+            : $"[{color}]{symbol}[/] {nameMarkup}";
+
+        return string.IsNullOrWhiteSpace(detail)
+            ? line
+            : $"{line} [dim]- {Spectre.Console.Markup.Escape(detail)}[/]";
     }
 
     /// <summary>
