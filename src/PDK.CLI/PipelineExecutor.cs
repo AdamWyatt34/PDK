@@ -252,7 +252,7 @@ public class PipelineExecutor
         // Select runner (Sprint 10 - REQ-10-012)
         // Note: We select once for the first job's capabilities check
         var firstJob = jobsToRun.Select(j => j.Value).FirstOrDefault();
-        var selection = await _runnerSelector.SelectRunnerAsync(options.RunnerType, firstJob, cancellationToken);
+        var selection = await _runnerSelector.SelectRunnerAsync(options.RunnerType, firstJob, config, cancellationToken);
         DisplayRunnerSelection(selection, options.Verbose);
 
         // Create the runner
@@ -365,18 +365,21 @@ public class PipelineExecutor
             "Pipeline timing - Total: {TotalMs}ms, Jobs: {JobCount}, File: {FilePath}",
             pipelineStartTime.ElapsedMilliseconds, jobResults.Count, options.FilePath);
 
-        // Display execution summary (REQ-06-013)
-        var summaryData = BuildExecutionSummary(pipeline, jobResults, pipelineStartTime.Elapsed, allJobsSucceeded);
-        var summaryDisplay = new ExecutionSummaryDisplay(_console);
-        summaryDisplay.Display(summaryData);
-
-        // Display error context for failed steps (REQ-06-014)
-        if (!allJobsSucceeded)
+        // Display execution summary (REQ-06-013); --silent only shows errors
+        if (!options.Silent)
         {
-            var failedSteps = GetFailedSteps(jobResults);
-            if (failedSteps.Any())
+            var summaryData = ExecutionSummaryData.FromJobResults(pipeline, jobResults, pipelineStartTime.Elapsed, allJobsSucceeded);
+            var summaryDisplay = new ExecutionSummaryDisplay(_console);
+            summaryDisplay.Display(summaryData);
+
+            // Display error context for failed steps (REQ-06-014)
+            if (!allJobsSucceeded)
             {
-                summaryDisplay.DisplayErrorContext(failedSteps);
+                var failedSteps = ExecutionSummaryBuilder.GetFailedSteps(jobResults).ToList();
+                if (failedSteps.Count > 0)
+                {
+                    summaryDisplay.DisplayErrorContext(failedSteps);
+                }
             }
         }
 
@@ -573,110 +576,34 @@ public class PipelineExecutor
     /// </summary>
     private void ConfigureProgressReporterMode(ExecutionOptions options)
     {
+        _output.SetMinimumLevel(options switch
+        {
+            { Silent: true } => Microsoft.Extensions.Logging.LogLevel.Error,
+            { Quiet: true } => Microsoft.Extensions.Logging.LogLevel.Warning,
+            { Trace: true } => Microsoft.Extensions.Logging.LogLevel.Trace,
+            { Verbose: true } => Microsoft.Extensions.Logging.LogLevel.Debug,
+            _ => Microsoft.Extensions.Logging.LogLevel.Information
+        });
+
         if (_progressReporter is ConsoleProgressReporter consoleReporter)
         {
-            if (options.Quiet)
+            if (options.Silent)
+            {
+                consoleReporter.SetOutputMode(ConsoleProgressReporter.OutputMode.Silent);
+            }
+            else if (options.Quiet)
             {
                 consoleReporter.SetOutputMode(ConsoleProgressReporter.OutputMode.Quiet);
             }
-            else if (options.Verbose)
+            else if (options.Verbose || options.Trace)
             {
                 consoleReporter.SetOutputMode(ConsoleProgressReporter.OutputMode.Verbose);
             }
-        }
-    }
-
-    /// <summary>
-    /// Builds the execution summary data from job results.
-    /// </summary>
-    private static ExecutionSummaryData BuildExecutionSummary(
-        Pipeline pipeline,
-        List<JobExecutionResult> jobResults,
-        TimeSpan totalDuration,
-        bool allJobsSucceeded)
-    {
-        var jobSummaries = new List<JobSummary>();
-        var totalSteps = 0;
-        var successfulSteps = 0;
-        var failedSteps = 0;
-        var skippedSteps = 0;
-
-        foreach (var jobResult in jobResults)
-        {
-            var stepSummaries = new List<StepSummary>();
-
-            foreach (var stepResult in jobResult.StepResults)
+            else
             {
-                totalSteps++;
-                if (stepResult.Skipped)
-                {
-                    skippedSteps++;
-                }
-                else if (stepResult.CountsAsSuccess)
-                {
-                    successfulSteps++;
-                }
-                else
-                {
-                    failedSteps++;
-                }
-
-                stepSummaries.Add(new StepSummary
-                {
-                    Name = stepResult.StepName,
-                    Success = stepResult.CountsAsSuccess,
-                    Skipped = stepResult.Skipped,
-                    Duration = stepResult.Duration,
-                    ExitCode = stepResult.Success || stepResult.Skipped ? null : stepResult.ExitCode,
-                    Output = stepResult.Output,
-                    ErrorOutput = stepResult.ErrorOutput
-                });
+                consoleReporter.SetOutputMode(ConsoleProgressReporter.OutputMode.Normal);
             }
-
-            jobSummaries.Add(new JobSummary
-            {
-                Name = jobResult.JobName,
-                Success = jobResult.Success,
-                Skipped = jobResult.Skipped,
-                Duration = jobResult.Duration,
-                Steps = stepSummaries
-            });
         }
-
-        return new ExecutionSummaryData
-        {
-            PipelineName = pipeline.Name,
-            OverallSuccess = allJobsSucceeded,
-            TotalDuration = totalDuration,
-            TotalJobs = jobResults.Count,
-            SuccessfulJobs = jobResults.Count(j => j.Success && !j.Skipped),
-            FailedJobs = jobResults.Count(j => !j.Success),
-            SkippedJobs = jobResults.Count(j => j.Skipped),
-            TotalSteps = totalSteps,
-            SuccessfulSteps = successfulSteps,
-            FailedSteps = failedSteps,
-            SkippedSteps = skippedSteps,
-            Jobs = jobSummaries
-        };
-    }
-
-    /// <summary>
-    /// Gets all failed steps from job results for error context display.
-    /// </summary>
-    private static IEnumerable<StepSummary> GetFailedSteps(List<JobExecutionResult> jobResults)
-    {
-        return jobResults
-            .SelectMany(j => j.StepResults)
-            .Where(s => !s.CountsAsSuccess)
-            .Select(s => new StepSummary
-            {
-                Name = s.StepName,
-                Success = s.Success,
-                Duration = s.Duration,
-                ExitCode = s.ExitCode,
-                Output = s.Output,
-                ErrorOutput = s.ErrorOutput
-            });
     }
 
     /// <summary>

@@ -530,11 +530,46 @@ runCommand.SetHandler(async context =>
                 _ => "auto"
             };
 
+            // Apply the same step filters as a real run so the plan shows what would execute
+            PDK.Core.Filtering.IStepFilter? dryRunFilter = null;
+            var dryRunFilterOptions = serviceProvider.GetRequiredService<FilterOptionsBuilder>().Build(new ExecutionOptions
+            {
+                FilePath = file.FullName,
+                JobName = job,
+                StepName = step,
+                FilterStepNames = [.. filterSteps],
+                FilterStepIndices = [.. filterStepIndices],
+                FilterStepRanges = [.. filterStepRanges],
+                SkipStepNames = [.. skipSteps],
+                IncludeDependencies = includeDeps,
+                FilterPreset = filterPreset
+            }, config);
+
+            if (dryRunFilterOptions.HasFilters)
+            {
+                var filterBuilder = serviceProvider.GetRequiredService<PDK.Core.Filtering.IStepFilterBuilder>();
+                var filterValidation = filterBuilder.Validate(dryRunFilterOptions, pipeline);
+                if (!filterValidation.IsValid)
+                {
+                    foreach (var error in filterValidation.Errors)
+                    {
+                        AnsiConsole.MarkupLine($"[red]Error:[/] [[{Markup.Escape(error.Code)}]] {Markup.Escape(error.Message)}");
+                    }
+
+                    context.ExitCode = ExitCodes.InvalidArguments;
+                    return;
+                }
+
+                dryRunFilter = filterBuilder.Build(dryRunFilterOptions, pipeline);
+            }
+
             var result = await dryRunService.ExecuteAsync(
                 pipeline,
                 file.FullName,
                 runnerTypeStr,
-                dryRunJson);
+                dryRunJson,
+                new PDK.CLI.DryRun.DryRunRequest { JobName = job, Filter = dryRunFilter },
+                cancellationToken);
 
             context.ExitCode = result.IsValid ? ExitCodes.Success : ExitCodes.Failure;
             return;
@@ -562,6 +597,8 @@ runCommand.SetHandler(async context =>
                 ValidateOnly = validate,
                 Verbose = verbose,
                 Quiet = quiet,
+                Trace = trace,
+                Silent = silent,
                 ConfigPath = configPath,
                 CliVariables = cliVariables,
                 VarFilePath = varFile?.FullName,
@@ -589,11 +626,19 @@ runCommand.SetHandler(async context =>
                 KeepContainers = keepContainers
             };
 
-            var watchModeOptions = new WatchModeOptions
+            // Configuration supplies the defaults for watch mode; explicit CLI flags win
+            var watchModeOptions = new WatchModeOptions();
+            var watchConfig = await serviceProvider.GetRequiredService<IConfigurationLoader>().LoadAsync(configPath);
+            watchModeOptions.ApplyConfiguration(watchConfig?.Watch);
+            if (context.ParseResult.FindResultFor(watchDebounceOption) is { IsImplicit: false })
             {
-                DebounceMs = watchDebounce,
-                ClearOnRerun = watchClear
-            };
+                watchModeOptions.DebounceMs = watchDebounce;
+            }
+
+            if (context.ParseResult.FindResultFor(watchClearOption) is { IsImplicit: false })
+            {
+                watchModeOptions.ClearOnRerun = watchClear;
+            }
 
             // Ctrl+C / SIGTERM cancel the token (CancelOnProcessTermination) and the watch
             // service shuts down gracefully.
@@ -615,6 +660,8 @@ runCommand.SetHandler(async context =>
             ValidateOnly = validate,
             Verbose = verbose,
             Quiet = quiet,
+            Trace = trace,
+            Silent = silent,
             ConfigPath = configPath,
             CliVariables = cliVariables,
             VarFilePath = varFile?.FullName,
@@ -1103,6 +1150,7 @@ static void ConfigureServices(ServiceCollection services)
     services.AddSingleton<PDK.Core.Validation.IValidationPhase, PDK.Core.Validation.Phases.DependencyValidationPhase>();
     services.AddTransient<PDK.CLI.DryRun.DryRunUI>();
     services.AddTransient<PDK.CLI.DryRun.JsonOutputFormatter>();
+    services.AddSingleton<PDK.Core.Validation.IImageMappingProvider, PDK.CLI.DryRun.ImageMappingProvider>();
     services.AddTransient<PDK.CLI.DryRun.DryRunService>();
 
     // Register step filtering services (Sprint 11 - REQ-11-007, REQ-11-008)

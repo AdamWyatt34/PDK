@@ -55,6 +55,16 @@ public class ExecutionOptions
     public bool Quiet { get; set; }
 
     /// <summary>
+    /// Gets or sets whether trace output is enabled (--trace): everything --verbose shows plus trace-level logs.
+    /// </summary>
+    public bool Trace { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether all console output is suppressed except errors (--silent).
+    /// </summary>
+    public bool Silent { get; set; }
+
+    /// <summary>
     /// Gets or sets the explicit path to a configuration file.
     /// If null, configuration is auto-discovered using standard search order.
     /// </summary>

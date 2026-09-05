@@ -111,9 +111,7 @@ public class FilteringJobRunner : IJobRunner
                     jobName, stepIndex, job.Steps.Count, stepName, filterResult.Reason);
 
                 // Report skip to progress reporter
-                await _progressReporter.ReportOutputAsync(
-                    $"  Step {stepIndex}: {stepName} - SKIPPED ({filterResult.Reason})",
-                    cancellationToken);
+                await _progressReporter.ReportStepSkippedAsync(stepName, stepIndex, job.Steps.Count, filterResult.Reason, cancellationToken);
             }
         }
 

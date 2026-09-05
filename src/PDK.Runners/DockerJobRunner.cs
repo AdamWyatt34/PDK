@@ -213,9 +213,7 @@ public class DockerJobRunner : IJobRunner
                 {
                     stepResult = JobExecutionSession.SkippedResult(displayName, plan.SkipReason!);
                     _logger.LogInformation("[{JobName}] Step skipped: {StepName} - {Reason}", job.Name, displayName, plan.SkipReason);
-                    await _progressReporter.ReportOutputAsync(
-                        $"  {(plan.Warn ? "[WARNING] " : string.Empty)}Step {i + 1}: {displayName} - SKIPPED ({plan.SkipReason})",
-                        token);
+                    await _progressReporter.ReportStepSkippedAsync(displayName, i + 1, job.Steps.Count, plan.SkipReason, token);
                 }
                 else if (plan.Failed)
                 {
