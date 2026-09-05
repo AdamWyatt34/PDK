@@ -152,28 +152,25 @@ public class SchemaValidationPhase : IValidationPhase
         string? stepName,
         List<DryRunValidationError> errors)
     {
-        // Basic syntax validation for condition expressions
-        // Check for unbalanced parentheses
-        int parenCount = 0;
-        foreach (char c in expression)
-        {
-            if (c == '(') parenCount++;
-            if (c == ')') parenCount--;
-            if (parenCount < 0) break;
-        }
-
-        if (parenCount != 0)
+        // Basic syntax validation for condition expressions: balanced parentheses and quotes,
+        // ignoring characters inside string literals.
+        if (!ExpressionSyntaxChecker.Validate(expression, out var syntaxError) &&
+            !string.IsNullOrWhiteSpace(expression))
         {
             var location = stepName != null
                 ? $"step '{stepName}' in job '{jobId}'"
                 : $"job '{jobId}'";
 
+            var problem = syntaxError?.Contains("quote", StringComparison.OrdinalIgnoreCase) == true
+                ? "has unbalanced quotes"
+                : "has unbalanced parentheses";
+
             errors.Add(DryRunValidationError.SchemaError(
                 ErrorCodes.InvalidPipelineStructure,
-                $"Condition expression in {location} has unbalanced parentheses: {expression}",
+                $"Condition expression in {location} {problem}: {expression}",
                 jobId: jobId,
                 stepName: stepName,
-                suggestions: "Check the condition expression for matching parentheses"));
+                suggestions: "Check the condition expression for matching parentheses and quotes"));
         }
 
         // Check for empty expression after trimming

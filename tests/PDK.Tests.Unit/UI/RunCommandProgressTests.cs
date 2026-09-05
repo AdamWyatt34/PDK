@@ -144,7 +144,7 @@ public class RunCommandProgressTests
     }
 
     [Fact]
-    public async Task NormalMode_BuffersRapidUpdates()
+    public async Task NormalMode_PrintsEveryRapidUpdate()
     {
         // Arrange
         var console = new TestConsole();
@@ -158,10 +158,9 @@ public class RunCommandProgressTests
             await reporter.ReportOutputAsync($"Normal line {i}");
         }
 
-        // Assert - Not all lines should appear due to buffering
+        // Assert - Output lines are never dropped, even within the old 50 ms window
         var lineCount = console.Output.Split('|').Length - 1;
-        lineCount.Should().BeLessThan(10);
-        lineCount.Should().BeGreaterThan(0);
+        lineCount.Should().Be(10);
     }
 
     [Fact]

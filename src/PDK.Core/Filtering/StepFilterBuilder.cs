@@ -1,3 +1,4 @@
+using PDK.Core.Filtering.Dependencies;
 using PDK.Core.Filtering.Filters;
 using PDK.Core.Models;
 
@@ -9,15 +10,17 @@ namespace PDK.Core.Filtering;
 public interface IStepFilterBuilder
 {
     /// <summary>
-    /// Builds a step filter from the given options.
+    /// Builds a step filter from the given options. When <see cref="FilterOptions.IncludeDependencies"/>
+    /// is set, the filter also selects the dependencies of every selected step, expanded within each job.
     /// </summary>
     /// <param name="options">The filter options.</param>
-    /// <param name="pipeline">The pipeline (for named range resolution).</param>
+    /// <param name="pipeline">The pipeline the filter will be applied to.</param>
     /// <returns>The built filter.</returns>
     IStepFilter Build(FilterOptions options, Pipeline pipeline);
 
     /// <summary>
-    /// Validates filter options against a pipeline.
+    /// Validates filter options against a pipeline. Errors collected while the options were built
+    /// (<see cref="FilterOptions.Errors"/>) are included in the result.
     /// </summary>
     /// <param name="options">The filter options to validate.</param>
     /// <param name="pipeline">The pipeline to validate against.</param>
@@ -31,23 +34,44 @@ public interface IStepFilterBuilder
 public class StepFilterBuilder : IStepFilterBuilder
 {
     private readonly StepFilterValidator _validator;
-    private readonly int _fuzzyThreshold;
+    private readonly IDependencyAnalyzer _dependencyAnalyzer;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="StepFilterBuilder"/> class.
     /// </summary>
-    /// <param name="fuzzyThreshold">Maximum Levenshtein distance for fuzzy matching.</param>
-    /// <param name="maxSuggestions">Maximum number of suggestions for validation errors.</param>
-    public StepFilterBuilder(int fuzzyThreshold = StringMatcher.DefaultFuzzyThreshold, int maxSuggestions = 3)
+    /// <param name="fuzzyThreshold">Maximum Levenshtein distance used for "did you mean" suggestions (<c>stepFiltering.fuzzyMatchThreshold</c>).</param>
+    /// <param name="maxSuggestions">Maximum number of suggestions for validation errors (<c>stepFiltering.suggestions.maxSuggestions</c>).</param>
+    /// <param name="suggestionsEnabled">Whether suggestions are produced at all (<c>stepFiltering.suggestions.enabled</c>).</param>
+    /// <param name="dependencyAnalyzer">Analyzer used for <c>--include-dependencies</c>. Defaults to <see cref="DependencyAnalyzer"/>.</param>
+    public StepFilterBuilder(
+        int fuzzyThreshold = StringMatcher.DefaultFuzzyThreshold,
+        int maxSuggestions = 3,
+        bool suggestionsEnabled = true,
+        IDependencyAnalyzer? dependencyAnalyzer = null)
     {
-        _fuzzyThreshold = fuzzyThreshold;
-        _validator = new StepFilterValidator(fuzzyThreshold: 5, maxSuggestions: maxSuggestions);
+        FuzzyThreshold = Math.Max(0, fuzzyThreshold);
+        MaxSuggestions = suggestionsEnabled ? Math.Max(0, maxSuggestions) : 0;
+        _validator = new StepFilterValidator(FuzzyThreshold, MaxSuggestions);
+        _dependencyAnalyzer = dependencyAnalyzer ?? new DependencyAnalyzer();
     }
+
+    /// <summary>
+    /// Gets the maximum Levenshtein distance used for suggestions.
+    /// </summary>
+    public int FuzzyThreshold { get; }
+
+    /// <summary>
+    /// Gets the maximum number of suggestions (0 when suggestions are disabled).
+    /// </summary>
+    public int MaxSuggestions { get; }
 
     /// <inheritdoc/>
     public IStepFilter Build(FilterOptions options, Pipeline pipeline)
     {
-        if (!options.HasFilters)
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(pipeline);
+
+        if (!options.HasFilters && !options.HasJobFilter)
         {
             return NoOpFilter.Instance;
         }
@@ -57,7 +81,7 @@ public class StepFilterBuilder : IStepFilterBuilder
         // Add step name filter
         if (options.StepNames.Count > 0)
         {
-            builder.WithStepNames(options.StepNames, _fuzzyThreshold);
+            builder.WithStepNames(options.StepNames);
         }
 
         // Add step index filter
@@ -75,7 +99,7 @@ public class StepFilterBuilder : IStepFilterBuilder
         // Add exclusion filter
         if (options.SkipSteps.Count > 0)
         {
-            builder.WithSkipSteps(options.SkipSteps, _fuzzyThreshold);
+            builder.WithSkipSteps(options.SkipSteps);
         }
 
         // Add job filter
@@ -84,7 +108,15 @@ public class StepFilterBuilder : IStepFilterBuilder
             builder.WithJobs(options.Jobs);
         }
 
-        return builder.Build();
+        IStepFilter filter = builder.Build();
+
+        // Expand selections with their dependencies, per job
+        if (options.IncludeDependencies && options.HasInclusionFilters)
+        {
+            filter = new DependencyExpandingFilter(filter, _dependencyAnalyzer);
+        }
+
+        return filter;
     }
 
     /// <inheritdoc/>
@@ -94,7 +126,8 @@ public class StepFilterBuilder : IStepFilterBuilder
     }
 
     /// <summary>
-    /// Creates filter options from CLI arguments.
+    /// Creates filter options from CLI arguments. Unparseable indices and ranges are reported
+    /// through <see cref="FilterOptions.Errors"/> instead of throwing.
     /// </summary>
     /// <param name="stepNames">Step names from --step flags.</param>
     /// <param name="stepIndices">Step indices from --step-index flags (as strings to parse).</param>
@@ -117,49 +150,45 @@ public class StepFilterBuilder : IStepFilterBuilder
     {
         var parsedIndices = new List<int>();
         var parsedRanges = new List<StepRange>();
+        var errors = new List<FilterValidationError>();
 
         // Parse step indices
-        if (stepIndices != null)
+        foreach (var spec in stepIndices ?? [])
         {
-            foreach (var spec in stepIndices)
+            if (IndexParser.TryParse(spec ?? string.Empty, out var indices, out var error))
             {
-                var indices = IndexParser.Parse(spec);
                 parsedIndices.AddRange(indices);
+            }
+            else
+            {
+                errors.Add(FilterValidationError.InvalidIndexSpecification(spec ?? string.Empty, error ?? "unrecognised format"));
             }
         }
 
         // Parse step ranges
-        if (stepRanges != null)
+        foreach (var spec in stepRanges ?? [])
         {
-            foreach (var spec in stepRanges)
+            if (StepRange.TryParse(spec, out var range, out var error))
             {
-                var range = ParseRange(spec);
-                parsedRanges.Add(range);
+                parsedRanges.Add(range!);
+            }
+            else
+            {
+                errors.Add(FilterValidationError.InvalidRange(spec ?? string.Empty, error ?? "unrecognised format"));
             }
         }
 
         return new FilterOptions
         {
-            StepNames = stepNames?.ToList() ?? [],
-            StepIndices = parsedIndices,
+            StepNames = stepNames?.Where(n => !string.IsNullOrWhiteSpace(n)).Distinct().ToList() ?? [],
+            StepIndices = parsedIndices.Distinct().OrderBy(x => x).ToList(),
             StepRanges = parsedRanges,
-            SkipSteps = skipSteps?.ToList() ?? [],
-            Jobs = jobs?.ToList() ?? [],
+            SkipSteps = skipSteps?.Where(n => !string.IsNullOrWhiteSpace(n)).Distinct().ToList() ?? [],
+            Jobs = jobs?.Where(n => !string.IsNullOrWhiteSpace(n)).Distinct().ToList() ?? [],
             IncludeDependencies = includeDependencies,
             PreviewOnly = previewOnly,
-            Confirm = confirm
+            Confirm = confirm,
+            Errors = errors
         };
-    }
-
-    private static StepRange ParseRange(string spec)
-    {
-        // Try numeric range first
-        if (spec.All(c => char.IsDigit(c) || c == '-'))
-        {
-            return NumericRange.Parse(spec);
-        }
-
-        // Named range
-        return NamedRange.Parse(spec);
     }
 }

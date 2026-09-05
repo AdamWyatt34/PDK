@@ -1,9 +1,13 @@
+using PDK.Core.Filtering.Filters;
 using PDK.Core.Models;
 
 namespace PDK.Core.Filtering;
 
 /// <summary>
 /// Validates filter options against a pipeline to ensure they are valid.
+/// Indices, ranges and names are validated per job: an index is valid when at least one of the
+/// candidate jobs (the selected ones, or all jobs) has that many steps, and a named range must
+/// resolve within a single job.
 /// </summary>
 public class StepFilterValidator
 {
@@ -14,11 +18,11 @@ public class StepFilterValidator
     /// Initializes a new instance of the <see cref="StepFilterValidator"/> class.
     /// </summary>
     /// <param name="fuzzyThreshold">Maximum Levenshtein distance for suggestions.</param>
-    /// <param name="maxSuggestions">Maximum number of suggestions to return.</param>
-    public StepFilterValidator(int fuzzyThreshold = 5, int maxSuggestions = 3)
+    /// <param name="maxSuggestions">Maximum number of suggestions to return (0 disables suggestions).</param>
+    public StepFilterValidator(int fuzzyThreshold = StringMatcher.DefaultFuzzyThreshold, int maxSuggestions = 3)
     {
-        _fuzzyThreshold = fuzzyThreshold;
-        _maxSuggestions = maxSuggestions;
+        _fuzzyThreshold = Math.Max(0, fuzzyThreshold);
+        _maxSuggestions = Math.Max(0, maxSuggestions);
     }
 
     /// <summary>
@@ -29,39 +33,51 @@ public class StepFilterValidator
     /// <returns>The validation result with any errors or warnings.</returns>
     public FilterValidationResult Validate(FilterOptions options, Pipeline pipeline)
     {
-        var errors = new List<FilterValidationError>();
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(pipeline);
 
-        // Get all step names and job names for validation
-        var allStepNames = GetAllStepNames(pipeline);
+        // Errors collected while the options were built (unparseable values, unknown preset)
+        var errors = new List<FilterValidationError>(options.Errors);
+
+        var allJobs = pipeline.Jobs.Values.ToList();
         var allJobNames = GetAllJobNames(pipeline);
-        var totalSteps = allStepNames.Count;
 
         // Validate job names
         foreach (var jobName in options.Jobs)
         {
             if (!JobExists(pipeline, jobName))
             {
-                var suggestions = StringMatcher.FindSimilar(jobName, allJobNames, _maxSuggestions, _fuzzyThreshold);
-                errors.Add(FilterValidationError.JobNotFound(jobName, suggestions));
+                errors.Add(FilterValidationError.JobNotFound(jobName, Suggest(jobName, allJobNames)));
             }
         }
+
+        // Candidate jobs: the selected ones, or every job when there is no job selection
+        var candidateJobs = options.Jobs.Count > 0
+            ? allJobs.Where(job => JobMatches(pipeline, job, options.Jobs)).ToList()
+            : allJobs;
+        if (candidateJobs.Count == 0)
+        {
+            candidateJobs = allJobs;
+        }
+
+        var allStepNames = GetStepNames(candidateJobs);
+        var totalSteps = candidateJobs.Sum(job => job.Steps.Count);
 
         // Validate step names
         foreach (var stepName in options.StepNames)
         {
-            if (!StepExists(pipeline, stepName))
+            if (!StepExists(candidateJobs, stepName))
             {
-                var suggestions = StringMatcher.FindSimilar(stepName, allStepNames, _maxSuggestions, _fuzzyThreshold);
-                errors.Add(FilterValidationError.StepNotFound(stepName, suggestions));
+                errors.Add(FilterValidationError.StepNotFound(stepName, Suggest(stepName, allStepNames)));
             }
         }
 
         // Validate skip step names (warn instead of error for flexibility)
         foreach (var skipName in options.SkipSteps)
         {
-            if (!StepExists(pipeline, skipName))
+            if (!StepExists(candidateJobs, skipName))
             {
-                var suggestions = StringMatcher.FindSimilar(skipName, allStepNames, _maxSuggestions, _fuzzyThreshold);
+                var suggestions = Suggest(skipName, allStepNames);
                 if (suggestions.Count > 0)
                 {
                     errors.Add(FilterValidationError.PossibleTypo(skipName, suggestions));
@@ -69,19 +85,20 @@ public class StepFilterValidator
             }
         }
 
-        // Validate step indices
-        foreach (var index in options.StepIndices)
+        // Validate step indices per job
+        var (largestJob, maxSteps) = GetLargestJob(candidateJobs);
+        foreach (var index in options.StepIndices.Distinct())
         {
-            if (index < 1 || index > totalSteps)
+            if (index < 1 || index > maxSteps)
             {
-                errors.Add(FilterValidationError.IndexOutOfRange(index, totalSteps));
+                errors.Add(FilterValidationError.IndexOutOfRange(index, maxSteps, largestJob));
             }
         }
 
-        // Validate step ranges
+        // Validate step ranges per job
         foreach (var range in options.StepRanges)
         {
-            ValidateRange(range, allStepNames, errors);
+            ValidateRange(range, candidateJobs, largestJob, maxSteps, allStepNames, errors);
         }
 
         // If there are already errors, don't continue to count matching steps
@@ -91,7 +108,7 @@ public class StepFilterValidator
         }
 
         // Count matching steps (for empty filter check)
-        var matchingSteps = CountMatchingSteps(options, pipeline);
+        var matchingSteps = CountMatchingSteps(options, candidateJobs);
 
         if (options.HasFilters && matchingSteps == 0)
         {
@@ -100,7 +117,7 @@ public class StepFilterValidator
         }
 
         // Return success (possibly with warnings)
-        if (errors.Any())
+        if (errors.Count > 0)
         {
             return FilterValidationResult.WithWarnings(errors, matchingSteps, totalSteps);
         }
@@ -108,7 +125,13 @@ public class StepFilterValidator
         return FilterValidationResult.Success(matchingSteps, totalSteps);
     }
 
-    private void ValidateRange(StepRange range, IReadOnlyList<string> stepNames, List<FilterValidationError> errors)
+    private void ValidateRange(
+        StepRange range,
+        IReadOnlyList<Job> candidateJobs,
+        string? largestJob,
+        int maxSteps,
+        IReadOnlyList<string> allStepNames,
+        List<FilterValidationError> errors)
     {
         switch (range)
         {
@@ -119,59 +142,104 @@ public class StepFilterValidator
                         numericRange.ToString(),
                         $"Start index {numericRange.Start} must be at least 1."));
                 }
-                if (numericRange.End > stepNames.Count)
-                {
-                    errors.Add(FilterValidationError.InvalidRange(
-                        numericRange.ToString(),
-                        $"End index {numericRange.End} exceeds total steps ({stepNames.Count})."));
-                }
                 if (numericRange.End < numericRange.Start)
                 {
                     errors.Add(FilterValidationError.InvalidRange(
                         numericRange.ToString(),
                         $"End index ({numericRange.End}) cannot be less than start index ({numericRange.Start})."));
                 }
+                else if (numericRange.End > maxSteps)
+                {
+                    var scope = largestJob != null ? $"job '{largestJob}'" : "the pipeline";
+                    errors.Add(FilterValidationError.InvalidRange(
+                        numericRange.ToString(),
+                        $"End index {numericRange.End} exceeds the number of steps in {scope} ({maxSteps})."));
+                }
                 break;
 
             case NamedRange namedRange:
-                var startIndex = FindStepIndex(stepNames, namedRange.StartName);
-                var endIndex = FindStepIndex(stepNames, namedRange.EndName);
-
-                if (startIndex == null)
-                {
-                    var suggestions = StringMatcher.FindSimilar(namedRange.StartName, stepNames, _maxSuggestions, _fuzzyThreshold);
-                    errors.Add(FilterValidationError.InvalidRange(
-                        namedRange.ToString(),
-                        $"Start step '{namedRange.StartName}' not found.{(suggestions.Count > 0 ? $" Did you mean: {string.Join(", ", suggestions)}?" : "")}"));
-                }
-                if (endIndex == null)
-                {
-                    var suggestions = StringMatcher.FindSimilar(namedRange.EndName, stepNames, _maxSuggestions, _fuzzyThreshold);
-                    errors.Add(FilterValidationError.InvalidRange(
-                        namedRange.ToString(),
-                        $"End step '{namedRange.EndName}' not found.{(suggestions.Count > 0 ? $" Did you mean: {string.Join(", ", suggestions)}?" : "")}"));
-                }
-                if (startIndex != null && endIndex != null && endIndex < startIndex)
-                {
-                    errors.Add(FilterValidationError.InvalidRange(
-                        namedRange.ToString(),
-                        $"End step '{namedRange.EndName}' comes before start step '{namedRange.StartName}'."));
-                }
+                ValidateNamedRange(namedRange, candidateJobs, allStepNames, errors);
                 break;
         }
     }
 
-    private int CountMatchingSteps(FilterOptions options, Pipeline pipeline)
+    private void ValidateNamedRange(
+        NamedRange namedRange,
+        IReadOnlyList<Job> candidateJobs,
+        IReadOnlyList<string> allStepNames,
+        List<FilterValidationError> errors)
+    {
+        var startFound = false;
+        var endFound = false;
+        var bothInSameJob = false;
+        var orderedInSomeJob = false;
+
+        foreach (var job in candidateJobs)
+        {
+            var names = StepRangeFilter.GetStepNames(job);
+            var startIndex = FindStepIndex(names, namedRange.StartName);
+            var endIndex = FindStepIndex(names, namedRange.EndName);
+
+            startFound |= startIndex != null;
+            endFound |= endIndex != null;
+
+            if (startIndex != null && endIndex != null)
+            {
+                bothInSameJob = true;
+                if (endIndex >= startIndex)
+                {
+                    orderedInSomeJob = true;
+                    break;
+                }
+            }
+        }
+
+        if (orderedInSomeJob)
+        {
+            return;
+        }
+
+        if (!startFound)
+        {
+            var suggestions = Suggest(namedRange.StartName, allStepNames);
+            errors.Add(FilterValidationError.InvalidRange(
+                namedRange.ToString(),
+                $"Start step '{namedRange.StartName}' not found.{FormatSuggestions(suggestions)}"));
+        }
+
+        if (!endFound)
+        {
+            var suggestions = Suggest(namedRange.EndName, allStepNames);
+            errors.Add(FilterValidationError.InvalidRange(
+                namedRange.ToString(),
+                $"End step '{namedRange.EndName}' not found.{FormatSuggestions(suggestions)}"));
+        }
+
+        if (startFound && endFound)
+        {
+            errors.Add(FilterValidationError.InvalidRange(
+                namedRange.ToString(),
+                bothInSameJob
+                    ? $"End step '{namedRange.EndName}' comes before start step '{namedRange.StartName}'."
+                    : $"Steps '{namedRange.StartName}' and '{namedRange.EndName}' are not in the same job."));
+        }
+    }
+
+    private static string FormatSuggestions(IReadOnlyList<string> suggestions)
+        => suggestions.Count > 0 ? $" Did you mean: {string.Join(", ", suggestions)}?" : string.Empty;
+
+    private IReadOnlyList<string> Suggest(string value, IEnumerable<string> candidates)
+        => StringMatcher.FindSimilar(value, candidates, _maxSuggestions, _fuzzyThreshold);
+
+    private static int CountMatchingSteps(FilterOptions options, IReadOnlyList<Job> candidateJobs)
     {
         if (!options.HasFilters)
         {
-            return GetTotalStepCount(pipeline);
+            return candidateJobs.Sum(job => job.Steps.Count);
         }
 
-        var count = 0;
-
-        // Build a temporary filter to check matches
-        var builder = new Filters.CompositeFilter.Builder();
+        // Build a temporary filter (without job filter: candidate jobs are already restricted)
+        var builder = new CompositeFilter.Builder();
 
         if (options.StepNames.Count > 0)
         {
@@ -189,19 +257,15 @@ public class StepFilterValidator
         {
             builder.WithSkipSteps(options.SkipSteps);
         }
-        if (options.Jobs.Count > 0)
-        {
-            builder.WithJobs(options.Jobs);
-        }
 
         var filter = builder.Build();
+        var count = 0;
 
-        foreach (var job in pipeline.Jobs.Values)
+        foreach (var job in candidateJobs)
         {
             for (int i = 0; i < job.Steps.Count; i++)
             {
-                var result = filter.ShouldExecute(job.Steps[i], i + 1, job);
-                if (result.ShouldExecute)
+                if (filter.ShouldExecute(job.Steps[i], i + 1, job).ShouldExecute)
                 {
                     count++;
                 }
@@ -211,42 +275,66 @@ public class StepFilterValidator
         return count;
     }
 
-    private static IReadOnlyList<string> GetAllStepNames(Pipeline pipeline)
+    private static (string? JobName, int Steps) GetLargestJob(IReadOnlyList<Job> jobs)
     {
-        return pipeline.Jobs.Values
-            .SelectMany((job, jobIndex) => job.Steps.Select((step, stepIndex) =>
-                step.Name ?? $"Step {stepIndex + 1}"))
+        string? largest = null;
+        var max = 0;
+
+        foreach (var job in jobs)
+        {
+            if (job.Steps.Count > max || largest == null)
+            {
+                max = job.Steps.Count;
+                largest = DisplayName(job);
+            }
+        }
+
+        return (jobs.Count == 1 || jobs.Count > 1 ? largest : null, max);
+    }
+
+    private static string DisplayName(Job job)
+        => !string.IsNullOrWhiteSpace(job.Name) ? job.Name : (!string.IsNullOrWhiteSpace(job.Id) ? job.Id : "job");
+
+    private static IReadOnlyList<string> GetStepNames(IEnumerable<Job> jobs)
+    {
+        return jobs
+            .SelectMany(job => job.Steps.Select((step, stepIndex) => step.Name ?? $"Step {stepIndex + 1}"))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
 
     private static IReadOnlyList<string> GetAllJobNames(Pipeline pipeline)
     {
-        return pipeline.Jobs.Values
-            .SelectMany(job => new[] { job.Name, job.Id })
+        return pipeline.Jobs
+            .SelectMany(kv => new[] { kv.Key, kv.Value.Name, kv.Value.Id })
             .Where(n => !string.IsNullOrWhiteSpace(n))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Cast<string>()
             .ToList();
     }
 
-    private static int GetTotalStepCount(Pipeline pipeline)
+    private static bool StepExists(IEnumerable<Job> jobs, string stepName)
     {
-        return pipeline.Jobs.Values.Sum(job => job.Steps.Count);
-    }
-
-    private static bool StepExists(Pipeline pipeline, string stepName)
-    {
-        return pipeline.Jobs.Values.Any(job =>
-            job.Steps.Any(step =>
-                (step.Name?.Equals(stepName, StringComparison.OrdinalIgnoreCase) ?? false) ||
-                (step.Name?.Contains(stepName, StringComparison.OrdinalIgnoreCase) ?? false)));
+        return jobs.Any(job =>
+            job.Steps.Any(step => StringMatcher.Matches(step.Name, stepName)));
     }
 
     private static bool JobExists(Pipeline pipeline, string jobName)
     {
-        return pipeline.Jobs.Values.Any(job =>
-            (job.Name?.Equals(jobName, StringComparison.OrdinalIgnoreCase) ?? false) ||
-            (job.Id?.Equals(jobName, StringComparison.OrdinalIgnoreCase) ?? false));
+        return pipeline.Jobs.Any(kv => JobMatches(kv.Key, kv.Value, jobName));
+    }
+
+    private static bool JobMatches(Pipeline pipeline, Job job, IEnumerable<string> jobNames)
+    {
+        var key = pipeline.Jobs.FirstOrDefault(kv => ReferenceEquals(kv.Value, job)).Key;
+        return jobNames.Any(name => JobMatches(key, job, name));
+    }
+
+    private static bool JobMatches(string? key, Job job, string jobName)
+    {
+        return string.Equals(key, jobName, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(job.Name, jobName, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(job.Id, jobName, StringComparison.OrdinalIgnoreCase);
     }
 
     private static int? FindStepIndex(IReadOnlyList<string> stepNames, string targetName)

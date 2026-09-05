@@ -35,9 +35,14 @@ public record ExecutionPlan
         = new Dictionary<string, string>();
 
     /// <summary>
-    /// Gets the total number of steps across all jobs.
+    /// Gets the total number of steps across all jobs (including steps that will not run).
     /// </summary>
     public int TotalSteps => Jobs.Sum(j => j.Steps.Count);
+
+    /// <summary>
+    /// Gets the number of steps that would actually execute (see <see cref="StepPlanNode.WillRun"/>).
+    /// </summary>
+    public int StepsToRun => Jobs.Sum(j => j.Steps.Count(s => s.WillRun));
 
     /// <summary>
     /// Gets the total number of jobs.
@@ -178,4 +183,15 @@ public record StepPlanNode
     /// Gets a preview of the script/command, if applicable (truncated).
     /// </summary>
     public string? ScriptPreview { get; init; }
+
+    /// <summary>
+    /// Gets whether the step would execute. False for steps excluded by a step filter or disabled
+    /// in the pipeline; <see cref="SkipReason"/> then explains why. Serialised as <c>willRun</c>.
+    /// </summary>
+    public bool WillRun { get; init; } = true;
+
+    /// <summary>
+    /// Gets the reason the step would not execute, when <see cref="WillRun"/> is false.
+    /// </summary>
+    public string? SkipReason { get; init; }
 }

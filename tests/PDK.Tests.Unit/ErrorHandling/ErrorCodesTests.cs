@@ -57,8 +57,9 @@ public class ErrorCodesTests
         foreach (var code in allCodes)
         {
             var url = ErrorCodes.GetDocumentationUrl(code);
-            url.Should().StartWith("https://", because: "documentation URL should be a valid HTTPS URL");
-            url.Should().Contain("pdk", because: "documentation URL should be on the PDK docs site");
+            url.Should().StartWith(ErrorCodes.DocumentationFile + "#", because: "the reference points at the error code document in the repository");
+            url.Should().EndWith(code.ToLowerInvariant(), because: "the anchor is the lower-cased error code");
+            url.Should().NotContain("https://", because: "the docs.pdk.dev site does not exist");
         }
     }
 

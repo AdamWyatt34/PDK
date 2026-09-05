@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
+using PDK.Core.Logging;
 using PDK.Core.Models;
 using PDK.Core.Validation;
 using PDK.Core.Validation.Phases;
@@ -19,7 +20,21 @@ public class DryRunService
     private readonly DryRunUI _ui;
     private readonly JsonOutputFormatter _jsonFormatter;
     private readonly ILogger<DryRunService> _logger;
+    private readonly IImageMappingProvider? _imageMappingProvider;
+    private readonly ISecretMasker? _secretMasker;
 
+    /// <summary>
+    /// Initializes a new instance of <see cref="DryRunService"/>.
+    /// </summary>
+    /// <param name="validationPhases">The validation phases to run.</param>
+    /// <param name="variableResolver">The variable resolver.</param>
+    /// <param name="variableExpander">The variable expander.</param>
+    /// <param name="executorValidator">The executor validator (optional).</param>
+    /// <param name="ui">The console renderer.</param>
+    /// <param name="jsonFormatter">The JSON formatter.</param>
+    /// <param name="logger">The logger.</param>
+    /// <param name="imageMappingProvider">The runtime image mapping (optional; a built-in table is used when null).</param>
+    /// <param name="secretMasker">The secret masker applied to displayed values (optional).</param>
     public DryRunService(
         IEnumerable<IValidationPhase> validationPhases,
         IVariableResolver variableResolver,
@@ -27,15 +42,19 @@ public class DryRunService
         IExecutorValidator? executorValidator,
         DryRunUI ui,
         JsonOutputFormatter jsonFormatter,
-        ILogger<DryRunService> logger)
+        ILogger<DryRunService> logger,
+        IImageMappingProvider? imageMappingProvider = null,
+        ISecretMasker? secretMasker = null)
     {
-        _validationPhases = validationPhases;
-        _variableResolver = variableResolver;
-        _variableExpander = variableExpander;
+        _validationPhases = validationPhases ?? throw new ArgumentNullException(nameof(validationPhases));
+        _variableResolver = variableResolver ?? throw new ArgumentNullException(nameof(variableResolver));
+        _variableExpander = variableExpander ?? throw new ArgumentNullException(nameof(variableExpander));
         _executorValidator = executorValidator;
-        _ui = ui;
-        _jsonFormatter = jsonFormatter;
-        _logger = logger;
+        _ui = ui ?? throw new ArgumentNullException(nameof(ui));
+        _jsonFormatter = jsonFormatter ?? throw new ArgumentNullException(nameof(jsonFormatter));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _imageMappingProvider = imageMappingProvider;
+        _secretMasker = secretMasker;
     }
 
     /// <summary>
@@ -44,7 +63,8 @@ public class DryRunService
     /// <param name="pipeline">The parsed pipeline to validate.</param>
     /// <param name="filePath">The path to the pipeline file.</param>
     /// <param name="runnerType">The selected runner type.</param>
-    /// <param name="jsonOutputPath">Optional path for JSON output.</param>
+    /// <param name="jsonOutputPath">Optional path for JSON output (<c>-</c> writes to stdout).</param>
+    /// <param name="request">Optional job selection and step filter; the plan reflects both.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The dry-run result.</returns>
     public async Task<DryRunResult> ExecuteAsync(
@@ -52,8 +72,11 @@ public class DryRunService
         string filePath,
         string runnerType = "auto",
         string? jsonOutputPath = null,
+        DryRunRequest? request = null,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(pipeline);
+
         var stopwatch = Stopwatch.StartNew();
         var allErrors = new List<DryRunValidationError>();
         var phaseResults = new Dictionary<string, PhaseResult>();
@@ -70,10 +93,31 @@ public class DryRunService
             RunnerType = runnerType
         };
 
+        // A job selection that matches nothing is an error, reported like any other
+        var jobName = request?.JobName;
+        if (!string.IsNullOrWhiteSpace(jobName) &&
+            !pipeline.Jobs.Any(kv => ExecutionPlanBuilder.JobMatches(kv.Key, kv.Value, jobName)))
+        {
+            allErrors.Add(new DryRunValidationError
+            {
+                ErrorCode = "PDK-E-FILTER-005",
+                Message = $"Job '{jobName}' was not found in the pipeline",
+                Severity = ValidationSeverity.Error,
+                Category = ValidationCategory.Configuration,
+                Suggestions =
+                [
+                    $"Available jobs: {string.Join(", ", pipeline.Jobs.Keys)}",
+                    "Check the job id or name passed to --job"
+                ]
+            });
+        }
+
         // Run validation phases in order
         var orderedPhases = _validationPhases.OrderBy(p => p.Order);
         foreach (var phase in orderedPhases)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var phaseStopwatch = Stopwatch.StartNew();
 
             _logger.LogDebug("Running validation phase: {PhaseName}", phase.Name);
@@ -108,9 +152,17 @@ public class DryRunService
                 _variableResolver,
                 _variableExpander,
                 _executorValidator,
-                GetSecretNames());
+                GetSecretNames(),
+                _imageMappingProvider,
+                _secretMasker);
 
-            var plan = planBuilder.Build(pipeline, filePath, context.JobExecutionOrder, runnerType);
+            var plan = planBuilder.Build(
+                pipeline,
+                filePath,
+                context.JobExecutionOrder,
+                runnerType,
+                jobName,
+                request?.Filter);
 
             result = DryRunResult.Success(plan, stopwatch.Elapsed, warnings, phaseResults);
             _logger.LogInformation("Dry-run validation succeeded in {Duration}ms", stopwatch.ElapsedMilliseconds);
@@ -136,13 +188,15 @@ public class DryRunService
         return result;
     }
 
+    /// <summary>
+    /// Names of variables that must be masked: secrets by source, plus names that look like secrets.
+    /// </summary>
     private IEnumerable<string> GetSecretNames()
     {
-        // Get secret names from the resolver
         return _variableResolver.GetAllVariables()
-            .Where(v => v.Key.Contains("SECRET", StringComparison.OrdinalIgnoreCase) ||
-                       v.Key.Contains("PASSWORD", StringComparison.OrdinalIgnoreCase) ||
-                       v.Key.Contains("TOKEN", StringComparison.OrdinalIgnoreCase))
-            .Select(v => v.Key);
+            .Where(v => _variableResolver.GetSource(v.Key) == VariableSource.Secret ||
+                        ExecutionPlanBuilder.LooksLikeSecret(v.Key))
+            .Select(v => v.Key)
+            .ToList();
     }
 }

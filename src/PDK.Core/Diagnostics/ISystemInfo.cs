@@ -36,12 +36,6 @@ public interface ISystemInfo
     string GetArchitecture();
 
     /// <summary>
-    /// Gets the build date from assembly metadata.
-    /// </summary>
-    /// <returns>The build date if available; otherwise, null.</returns>
-    DateTime? GetBuildDate();
-
-    /// <summary>
     /// Gets the Git commit hash from the informational version.
     /// </summary>
     /// <returns>The commit hash if available; otherwise, null.</returns>

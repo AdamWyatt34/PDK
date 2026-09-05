@@ -49,8 +49,8 @@ public class DependencyAnalyzerTests
         var graph = _analyzer.BuildGraph(pipeline);
 
         // First step has no dependencies
-        var step = pipeline.Jobs["build"].Steps[0];
-        var stepId = DependencyGraph.GetStepId(step, 1);
+        var job = pipeline.Jobs["build"];
+        var stepId = DependencyGraph.GetStepId(job, 1);
         Assert.Empty(graph.GetDirectDependencies(stepId));
     }
 
@@ -64,15 +64,15 @@ public class DependencyAnalyzerTests
         );
 
         var graph = _analyzer.BuildGraph(pipeline);
-        var steps = pipeline.Jobs["build"].Steps;
+        var job = pipeline.Jobs["build"];
 
         // Step 2 (Test) depends on step 1 (Build)
-        var testStepId = DependencyGraph.GetStepId(steps[1], 2);
-        var buildStepId = DependencyGraph.GetStepId(steps[0], 1);
+        var testStepId = DependencyGraph.GetStepId(job, 2);
+        var buildStepId = DependencyGraph.GetStepId(job, 1);
         Assert.Contains(buildStepId, graph.GetDirectDependencies(testStepId));
 
         // Step 3 (Deploy) depends on step 2 (Test)
-        var deployStepId = DependencyGraph.GetStepId(steps[2], 3);
+        var deployStepId = DependencyGraph.GetStepId(job, 3);
         Assert.Contains(testStepId, graph.GetDirectDependencies(deployStepId));
     }
 
@@ -86,15 +86,15 @@ public class DependencyAnalyzerTests
         );
 
         var graph = _analyzer.BuildGraph(pipeline);
-        var steps = pipeline.Jobs["build"].Steps;
+        var job = pipeline.Jobs["build"];
 
         // Get transitive dependencies of step 3
-        var step3Id = DependencyGraph.GetStepId(steps[2], 3);
+        var step3Id = DependencyGraph.GetStepId(job, 3);
         var allDeps = graph.GetTransitiveDependencies(step3Id);
 
         // Step 3 should transitively depend on steps 1 and 2
-        var step1Id = DependencyGraph.GetStepId(steps[0], 1);
-        var step2Id = DependencyGraph.GetStepId(steps[1], 2);
+        var step1Id = DependencyGraph.GetStepId(job, 1);
+        var step2Id = DependencyGraph.GetStepId(job, 2);
 
         Assert.Contains(step1Id, allDeps);
         Assert.Contains(step2Id, allDeps);
@@ -239,9 +239,9 @@ public class DependencyAnalyzerTests
         );
 
         var graph = _analyzer.BuildGraph(pipeline);
-        var step = pipeline.Jobs["build"].Steps[2];  // Deploy
+        var job = pipeline.Jobs["build"];
 
-        var dependencies = _analyzer.GetDependencies(step, 3, graph);
+        var dependencies = _analyzer.GetDependencies(job, 3, graph);  // Deploy
 
         // Deploy depends on Build and Test
         Assert.Equal(2, dependencies.Count);

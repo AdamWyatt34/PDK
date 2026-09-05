@@ -353,7 +353,7 @@ public class ListCommandTests
     }
 
     [Fact]
-    public async Task ExecuteAsync_JsonFormat_ExcludesStepsWhenNoDetails()
+    public async Task ExecuteAsync_JsonFormat_IncludesStepMetadataWithoutDetails()
     {
         // Arrange
         var pipeline = CreateTestPipeline();
@@ -366,7 +366,8 @@ public class ListCommandTests
         // Act
         var result = await _command.ExecuteAsync();
 
-        // Assert
+        // Assert - steps (id, name, type, enabled, actionReference) are always part of the JSON,
+        // only the script/inputs are reserved for --details
         result.Should().Be(0);
         var output = _testConsole.Output;
 
@@ -374,7 +375,49 @@ public class ListCommandTests
         var jobs = doc.RootElement.GetProperty("jobs");
         var firstJob = jobs[0];
 
-        firstJob.TryGetProperty("steps", out _).Should().BeFalse();
+        firstJob.TryGetProperty("steps", out var steps).Should().BeTrue();
+        steps.GetArrayLength().Should().BeGreaterThan(0);
+        var firstStep = steps[0];
+        firstStep.TryGetProperty("name", out _).Should().BeTrue();
+        firstStep.TryGetProperty("type", out _).Should().BeTrue();
+        firstStep.GetProperty("enabled").GetBoolean().Should().BeTrue();
+        firstStep.TryGetProperty("script", out _).Should().BeFalse();
+        firstJob.TryGetProperty("dependsOn", out _).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_JsonFormat_IncludesStageMatrixContainerAndActionReference()
+    {
+        // Arrange
+        var pipeline = CreateTestPipeline();
+        var job = pipeline.Jobs.Values.First();
+        job.Stage = "Build";
+        job.Container = "node:20";
+        job.Matrix = new Dictionary<string, string> { ["os"] = "ubuntu-latest" };
+        job.Steps[0].Id = "checkout";
+        job.Steps[0].ActionReference = "actions/checkout@v4";
+        job.Steps[0].Enabled = false;
+        SetupMocks(pipeline);
+
+        _command.File = CreateTempFile();
+        _command.Format = OutputFormat.Json;
+
+        // Act
+        var result = await _command.ExecuteAsync();
+
+        // Assert
+        result.Should().Be(0);
+        using var doc = JsonDocument.Parse(_testConsole.Output);
+        var jsonJob = doc.RootElement.GetProperty("jobs").EnumerateArray()
+            .First(j => j.GetProperty("id").GetString() == job.Id);
+
+        jsonJob.GetProperty("stage").GetString().Should().Be("Build");
+        jsonJob.GetProperty("container").GetString().Should().Be("node:20");
+        jsonJob.GetProperty("matrix").GetProperty("os").GetString().Should().Be("ubuntu-latest");
+        var step = jsonJob.GetProperty("steps")[0];
+        step.GetProperty("id").GetString().Should().Be("checkout");
+        step.GetProperty("actionReference").GetString().Should().Be("actions/checkout@v4");
+        step.GetProperty("enabled").GetBoolean().Should().BeFalse();
     }
 
     #endregion

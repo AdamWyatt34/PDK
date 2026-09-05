@@ -2,7 +2,7 @@ namespace PDK.CLI.WatchMode;
 
 /// <summary>
 /// Manages pipeline execution queue (REQ-11-001.5).
-/// Ensures at most one pending execution, dropping intermediate changes.
+/// Runs are strictly sequential; at most one execution is pending, intermediate requests are dropped.
 /// </summary>
 public interface IExecutionQueue
 {
@@ -103,4 +103,9 @@ public class ExecutionCompletedEventArgs : EventArgs
     /// Gets the error message if the execution failed.
     /// </summary>
     public string? ErrorMessage { get; init; }
+
+    /// <summary>
+    /// Gets whether the execution was cancelled rather than failed.
+    /// </summary>
+    public bool Cancelled { get; init; }
 }

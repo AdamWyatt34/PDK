@@ -4,16 +4,75 @@ namespace PDK.Core.Filtering;
 /// Represents a range of steps to include in filtered execution.
 /// Can be specified as numeric indices or step names.
 /// </summary>
+/// <remarks>
+/// Ranges are stateless: named ranges are resolved against the step names of the job being
+/// evaluated on every call, so the same range instance can be applied to several jobs.
+/// </remarks>
 public abstract record StepRange
 {
     /// <summary>
     /// Determines if a step at the given index is within this range.
     /// </summary>
-    /// <param name="stepIndex">The 1-based index of the step.</param>
+    /// <param name="stepIndex">The 1-based index of the step within its job.</param>
     /// <param name="stepName">The name of the step.</param>
-    /// <param name="allStepNames">All step names in order, for name-based range resolution.</param>
+    /// <param name="allStepNames">All step names of the job, in order, for name-based range resolution.</param>
     /// <returns>True if the step is within this range.</returns>
     public abstract bool Contains(int stepIndex, string stepName, IReadOnlyList<string> allStepNames);
+
+    /// <summary>
+    /// Parses a range specification. Specifications made only of digits and dashes are numeric
+    /// (e.g. <c>2-5</c>); anything else is a named range (e.g. <c>Build-Test</c>).
+    /// </summary>
+    /// <param name="spec">The specification to parse.</param>
+    /// <returns>The parsed range.</returns>
+    /// <exception cref="FormatException">If the specification is malformed.</exception>
+    public static StepRange Parse(string spec)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+
+        if (TryParse(spec, out var range, out var error))
+        {
+            return range!;
+        }
+
+        throw new FormatException(error);
+    }
+
+    /// <summary>
+    /// Tries to parse a range specification without throwing.
+    /// </summary>
+    /// <param name="spec">The specification to parse.</param>
+    /// <param name="range">The parsed range when successful.</param>
+    /// <param name="error">The error message when parsing failed.</param>
+    /// <returns>True if parsing succeeded.</returns>
+    public static bool TryParse(string? spec, out StepRange? range, out string? error)
+    {
+        range = null;
+        error = null;
+
+        if (string.IsNullOrWhiteSpace(spec))
+        {
+            error = "Range specification must not be empty. Expected 'start-end' (e.g. '2-5' or 'Build-Test').";
+            return false;
+        }
+
+        try
+        {
+            var trimmed = spec.Trim();
+            range = IsNumericSpecification(trimmed)
+                ? NumericRange.Parse(trimmed)
+                : NamedRange.Parse(trimmed);
+            return true;
+        }
+        catch (Exception ex) when (ex is FormatException or ArgumentException)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    private static bool IsNumericSpecification(string spec)
+        => spec.All(c => char.IsDigit(c) || c == '-' || char.IsWhiteSpace(c));
 }
 
 /// <summary>
@@ -35,8 +94,10 @@ public record NumericRange(int Start, int End) : StepRange
     /// <summary>
     /// Parses a numeric range from a string like "2-5".
     /// </summary>
-    public static NumericRange Parse(string input)
+    public static new NumericRange Parse(string input)
     {
+        ArgumentNullException.ThrowIfNull(input);
+
         var parts = input.Split('-');
         if (parts.Length != 2)
         {
@@ -45,22 +106,22 @@ public record NumericRange(int Start, int End) : StepRange
 
         if (!int.TryParse(parts[0].Trim(), out var start))
         {
-            throw new FormatException($"Invalid start index in range: '{parts[0]}'.");
+            throw new FormatException($"Invalid start index in range '{input}': '{parts[0]}'.");
         }
 
         if (!int.TryParse(parts[1].Trim(), out var end))
         {
-            throw new FormatException($"Invalid end index in range: '{parts[1]}'.");
+            throw new FormatException($"Invalid end index in range '{input}': '{parts[1]}'.");
         }
 
         if (start < 1)
         {
-            throw new ArgumentOutOfRangeException(nameof(start), "Start index must be at least 1.");
+            throw new FormatException($"Invalid range '{input}': start index must be at least 1.");
         }
 
         if (end < start)
         {
-            throw new ArgumentException($"End index ({end}) cannot be less than start index ({start}).");
+            throw new FormatException($"Invalid range '{input}': end index ({end}) cannot be less than start index ({start}).");
         }
 
         return new NumericRange(start, end);
@@ -75,48 +136,40 @@ public record NumericRange(int Start, int End) : StepRange
 /// <param name="EndName">The name of the ending step (inclusive).</param>
 public record NamedRange(string StartName, string EndName) : StepRange
 {
-    private int? _resolvedStart;
-    private int? _resolvedEnd;
-
     /// <inheritdoc/>
+    /// <remarks>
+    /// Returns false when the range cannot be resolved against <paramref name="allStepNames"/>
+    /// (a name is missing, or the end step comes before the start step).
+    /// </remarks>
     public override bool Contains(int stepIndex, string stepName, IReadOnlyList<string> allStepNames)
     {
-        // Resolve names to indices on first call
-        if (_resolvedStart == null || _resolvedEnd == null)
-        {
-            ResolveIndices(allStepNames);
-        }
-
-        return stepIndex >= _resolvedStart && stepIndex <= _resolvedEnd;
+        return TryResolve(allStepNames, out var start, out var end)
+            && stepIndex >= start
+            && stepIndex <= end;
     }
 
-    private void ResolveIndices(IReadOnlyList<string> allStepNames)
+    /// <summary>
+    /// Resolves the start and end names to 1-based indices within the given step list.
+    /// </summary>
+    /// <param name="allStepNames">The step names of one job, in order.</param>
+    /// <param name="start">The resolved start index (1-based), or 0.</param>
+    /// <param name="end">The resolved end index (1-based), or 0.</param>
+    /// <returns>True when both names were found and the end does not precede the start.</returns>
+    public bool TryResolve(IReadOnlyList<string> allStepNames, out int start, out int end)
     {
-        _resolvedStart = FindStepIndex(allStepNames, StartName);
-        _resolvedEnd = FindStepIndex(allStepNames, EndName);
+        ArgumentNullException.ThrowIfNull(allStepNames);
 
-        if (_resolvedStart == null)
-        {
-            throw new InvalidOperationException($"Start step '{StartName}' not found in pipeline.");
-        }
+        start = FindStepIndex(allStepNames, StartName) ?? 0;
+        end = FindStepIndex(allStepNames, EndName) ?? 0;
 
-        if (_resolvedEnd == null)
-        {
-            throw new InvalidOperationException($"End step '{EndName}' not found in pipeline.");
-        }
-
-        if (_resolvedEnd < _resolvedStart)
-        {
-            throw new InvalidOperationException(
-                $"End step '{EndName}' (index {_resolvedEnd}) comes before start step '{StartName}' (index {_resolvedStart}).");
-        }
+        return start > 0 && end > 0 && end >= start;
     }
 
     private static int? FindStepIndex(IReadOnlyList<string> stepNames, string targetName)
     {
         for (int i = 0; i < stepNames.Count; i++)
         {
-            if (stepNames[i].Equals(targetName, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(stepNames[i], targetName, StringComparison.OrdinalIgnoreCase))
             {
                 return i + 1; // 1-based
             }
@@ -130,8 +183,10 @@ public record NamedRange(string StartName, string EndName) : StepRange
     /// <summary>
     /// Parses a named range from a string like "Build-Test".
     /// </summary>
-    public static NamedRange Parse(string input)
+    public static new NamedRange Parse(string input)
     {
+        ArgumentNullException.ThrowIfNull(input);
+
         // Find the separator - handle cases like "Step-Name-Other-Step"
         // We look for a dash that's not at the start or end
         var dashIndex = input.IndexOf('-', 1);

@@ -8,6 +8,8 @@ using Spectre.Console;
 /// <summary>
 /// State machine for interactive pipeline exploration and execution (FR-06-003).
 /// Provides a guided menu interface for exploring and running pipeline jobs.
+/// Every user-controlled string (job and step names, scripts, environment values, output) is
+/// escaped before it reaches Spectre.Console markup.
 /// </summary>
 public sealed class InteractiveMenu
 {
@@ -48,6 +50,11 @@ public sealed class InteractiveMenu
     /// Back navigation option.
     /// </summary>
     public const string NavBack = "<- Back to main menu";
+
+    /// <summary>
+    /// A selectable job. <see cref="Job"/> is null for the "back" entry.
+    /// </summary>
+    private sealed record JobChoice(string Key, Job? Job, string Label);
 
     /// <summary>
     /// Initializes a new instance of <see cref="InteractiveMenu"/>.
@@ -116,6 +123,13 @@ public sealed class InteractiveMenu
         DisplayBreadcrumb("Main Menu");
         DisplayShortcuts();
 
+        if (!string.IsNullOrEmpty(_context.ErrorMessage))
+        {
+            WriteLine($"[red]{Markup.Escape(_context.ErrorMessage)}[/]", $"Error: {_context.ErrorMessage}");
+            _context.ErrorMessage = null;
+            _console.WriteLine();
+        }
+
         var choices = new List<string>
         {
             MenuViewJobs,
@@ -129,7 +143,7 @@ public sealed class InteractiveMenu
             new SelectionPrompt<string>()
                 .Title("What would you like to do?")
                 .PageSize(10)
-                .HighlightStyle(_noColor ? Style.Plain : new Style(foreground: Color.Aqua))
+                .HighlightStyle(HighlightStyle)
                 .AddChoices(choices));
 
         return choice switch
@@ -150,8 +164,6 @@ public sealed class InteractiveMenu
     {
         _console.WriteLine();
 
-        var sortedJobs = SortByDependencyOrder(_context.Pipeline.Jobs);
-
         var table = new Table();
         table.Border = TableBorder.Rounded;
         table.AddColumn("Job");
@@ -159,17 +171,18 @@ public sealed class InteractiveMenu
         table.AddColumn("Steps");
         table.AddColumn("Dependencies");
 
-        foreach (var job in sortedJobs)
+        foreach (var (key, job) in SortByDependencyOrder(_context.Pipeline.Jobs))
         {
             var deps = job.DependsOn.Count > 0
                 ? string.Join(", ", job.DependsOn)
                 : "-";
 
+            // Table cells are markup: escape every user-controlled value
             table.AddRow(
-                job.Name,
-                job.RunsOn,
+                Markup.Escape(DisplayName(key, job)),
+                Markup.Escape(job.RunsOn),
                 job.Steps.Count.ToString(),
-                deps);
+                Markup.Escape(deps));
         }
 
         _console.Write(table);
@@ -191,40 +204,44 @@ public sealed class InteractiveMenu
     {
         DisplayBreadcrumb("Job Selection");
 
-        var sortedJobs = SortByDependencyOrder(_context.Pipeline.Jobs);
-
-        var jobChoices = sortedJobs
-            .Select(j => FormatJobChoice(j))
-            .Concat([NavBack])
+        var choices = SortByDependencyOrder(_context.Pipeline.Jobs)
+            .Select(kv => new JobChoice(kv.Key, kv.Value, FormatJobChoice(kv.Key, kv.Value)))
             .ToList();
+        choices.Add(new JobChoice(string.Empty, null, NavBack));
 
-        var selection = _console.Prompt(
-            new SelectionPrompt<string>()
-                .Title("Select a job to run:")
-                .PageSize(15)
-                .HighlightStyle(_noColor ? Style.Plain : new Style(foreground: Color.Aqua))
-                .AddChoices(jobChoices));
+        var selection = PromptForJob("Select a job to run:", choices);
 
-        if (selection == NavBack)
+        if (selection.Job == null)
             return InteractiveState.MainMenu;
 
-        // Find selected job by matching the formatted name
-        var jobName = selection.Split(' ')[0];
-        var job = _context.Pipeline.Jobs.Values.First(j => j.Name == jobName);
         _context.SelectedJobs.Clear();
-        _context.SelectedJobs.Add(job);
+        _context.SelectedJobs.Add(selection.Job);
 
         // Confirmation prompt
-        return await ConfirmJobExecutionAsync(job, cancellationToken);
+        return await ConfirmJobExecutionAsync(selection.Key, selection.Job, cancellationToken);
+    }
+
+    /// <summary>
+    /// Prompts for a job. Choices are mapped to jobs directly, so labels may contain any character.
+    /// </summary>
+    private JobChoice PromptForJob(string title, List<JobChoice> choices)
+    {
+        return _console.Prompt(
+            new SelectionPrompt<JobChoice>()
+                .Title(title)
+                .PageSize(15)
+                .HighlightStyle(HighlightStyle)
+                .UseConverter(choice => Markup.Escape(choice.Label))
+                .AddChoices(choices));
     }
 
     /// <summary>
     /// Shows a confirmation dialog before job execution.
     /// </summary>
-    private Task<InteractiveState> ConfirmJobExecutionAsync(Job job, CancellationToken cancellationToken)
+    private Task<InteractiveState> ConfirmJobExecutionAsync(string key, Job job, CancellationToken cancellationToken)
     {
         var panelContent = new StringBuilder();
-        panelContent.AppendLine($"Job: {job.Name}");
+        panelContent.AppendLine($"Job: {DisplayName(key, job)}");
         panelContent.AppendLine($"Runner: {job.RunsOn}");
         panelContent.AppendLine($"Steps: {job.Steps.Count}");
         if (job.DependsOn.Count > 0)
@@ -232,7 +249,7 @@ public sealed class InteractiveMenu
             panelContent.AppendLine($"Dependencies: {string.Join(", ", job.DependsOn)}");
         }
 
-        var panel = new Panel(panelContent.ToString().TrimEnd())
+        var panel = new Panel(Markup.Escape(panelContent.ToString().TrimEnd()))
         {
             Header = new PanelHeader("Confirm Execution"),
             Border = BoxBorder.Rounded
@@ -275,27 +292,22 @@ public sealed class InteractiveMenu
     {
         DisplayBreadcrumb("Job Details");
 
-        // First, select which job to view
-        var jobChoices = _context.Pipeline.Jobs.Values
-            .Select(j => j.Name)
-            .Concat([NavBack])
+        // Jobs are identified by their pipeline id (the dictionary key), never by display name
+        var choices = _context.Pipeline.Jobs
+            .Select(kv => new JobChoice(kv.Key, kv.Value, FormatJobKeyLabel(kv.Key, kv.Value)))
             .ToList();
+        choices.Add(new JobChoice(string.Empty, null, NavBack));
 
-        var selection = _console.Prompt(
-            new SelectionPrompt<string>()
-                .Title("Select a job to view:")
-                .PageSize(15)
-                .HighlightStyle(_noColor ? Style.Plain : new Style(foreground: Color.Aqua))
-                .AddChoices(jobChoices));
+        var selection = PromptForJob("Select a job to view:", choices);
 
-        if (selection == NavBack)
+        if (selection.Job == null)
             return Task.FromResult(InteractiveState.MainMenu);
 
-        var job = _context.Pipeline.Jobs[selection];
+        var job = _context.Pipeline.Jobs[selection.Key];
         _context.CurrentJob = job;
 
         // Display job details panel
-        DisplayJobDetailsPanel(job);
+        DisplayJobDetailsPanel(selection.Key, job);
 
         // Actions after viewing
         var action = _console.Prompt(
@@ -306,7 +318,7 @@ public sealed class InteractiveMenu
                     NavBack
                 ]));
 
-        if (action.StartsWith("Run"))
+        if (action.StartsWith("Run", StringComparison.Ordinal))
         {
             _context.SelectedJobs.Clear();
             _context.SelectedJobs.Add(job);
@@ -319,7 +331,7 @@ public sealed class InteractiveMenu
     /// <summary>
     /// Displays a detailed panel for a job.
     /// </summary>
-    private void DisplayJobDetailsPanel(Job job)
+    private void DisplayJobDetailsPanel(string key, Job job)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"Runner: {job.RunsOn}");
@@ -336,7 +348,9 @@ public sealed class InteractiveMenu
         {
             var step = job.Steps[i];
             var stepType = step.Type.ToString();
-            sb.AppendLine($"  {i + 1}. {step.Name} [{stepType}]");
+            var stepName = string.IsNullOrWhiteSpace(step.Name) ? $"Step {i + 1}" : step.Name;
+            var state = step.Enabled ? string.Empty : " (disabled)";
+            sb.AppendLine($"  {i + 1}. {stepName} [{stepType}]{state}");
             if (!string.IsNullOrEmpty(step.Script))
             {
                 var lines = step.Script.Split('\n');
@@ -362,9 +376,10 @@ public sealed class InteractiveMenu
             }
         }
 
-        var panel = new Panel(sb.ToString().TrimEnd())
+        // Panel content and header are markup: escape the whole text
+        var panel = new Panel(Markup.Escape(sb.ToString().TrimEnd()))
         {
-            Header = new PanelHeader($"Job: {job.Name}"),
+            Header = new PanelHeader(Markup.Escape($"Job: {DisplayName(key, job)}")),
             Border = BoxBorder.Rounded
         };
         _console.Write(panel);
@@ -377,8 +392,7 @@ public sealed class InteractiveMenu
     private Task<InteractiveState> RunAllJobsAsync(CancellationToken cancellationToken)
     {
         _context.SelectedJobs.Clear();
-        var sortedJobs = SortByDependencyOrder(_context.Pipeline.Jobs);
-        _context.SelectedJobs.AddRange(sortedJobs);
+        _context.SelectedJobs.AddRange(SortByDependencyOrder(_context.Pipeline.Jobs).Select(kv => kv.Value));
 
         return Task.FromResult(InteractiveState.JobExecution);
     }
@@ -440,28 +454,64 @@ public sealed class InteractiveMenu
     /// </summary>
     private Task<InteractiveState> ShowExecutionCompleteAsync(CancellationToken cancellationToken)
     {
-        var success = _context.ExecutionResults.All(r => r.Success);
-        var totalDuration = TimeSpan.FromTicks(
-            _context.ExecutionResults.Sum(r => r.Duration.Ticks));
+        var results = _context.ExecutionResults;
+        var success = results.All(r => r.Success);
+        var totalDuration = TimeSpan.FromTicks(results.Sum(r => r.Duration.Ticks));
 
         _console.WriteLine();
 
-        // Quick summary panel
+        var jobSummaries = results
+            .Select(r => ExecutionSummaryBuilder.ToJobSummary(r, FindJob(r.JobName)))
+            .ToList();
+        var steps = jobSummaries.SelectMany(j => j.Steps).ToList();
+
+        var succeeded = steps.Count(s => s.Status == StepStatusDisplay.StepStatus.Success);
+        var failed = steps.Count(s => s.Status == StepStatusDisplay.StepStatus.Failed);
+        var skipped = steps.Count(s => s.Status == StepStatusDisplay.StepStatus.Skipped);
+        var allowed = steps.Count(s => s.Status == StepStatusDisplay.StepStatus.AllowedFailure);
+        var notRun = steps.Count(s => s.Status == StepStatusDisplay.StepStatus.Pending);
+        var skippedJobs = jobSummaries.Count(j => j.Skipped);
+
+        // Quick summary panel (markup: every dynamic value is escaped)
         var statusText = success ? "+ completed successfully" : "x failed";
-        var statusColor = success ? Color.Green : Color.Red;
-        var totalSteps = _context.ExecutionResults.Sum(r => r.StepResults.Count);
+        var statusColor = success ? "green" : "red";
 
-        var panelContent = new StringBuilder();
-        panelContent.AppendLine(statusText);
-        panelContent.AppendLine($"Duration: {StepStatusDisplay.FormatDuration(totalDuration)}");
-        panelContent.AppendLine($"Jobs: {_context.ExecutionResults.Count}");
-        panelContent.AppendLine($"Steps: {totalSteps} total");
+        var lines = new List<string>
+        {
+            _noColor ? statusText : $"[{statusColor}]{Markup.Escape(statusText)}[/]",
+            $"Duration: {StepStatusDisplay.FormatDuration(totalDuration)}",
+            $"Jobs: {results.Count}" + (skippedJobs > 0 ? $" ({skippedJobs} skipped)" : string.Empty)
+        };
 
-        var panel = new Panel(panelContent.ToString().TrimEnd())
+        var stepCounts = new List<string>
+        {
+            $"{steps.Count} total",
+            $"{succeeded} succeeded",
+            $"{failed} failed",
+            $"{skipped} skipped"
+        };
+        if (allowed > 0) stepCounts.Add($"{allowed} failed (allowed)");
+        if (notRun > 0) stepCounts.Add($"{notRun} not run");
+        lines.Add($"Steps: {string.Join(", ", stepCounts)}");
+
+        // Skipped jobs / steps and allowed failures are listed with their reasons
+        foreach (var job in jobSummaries.Where(j => j.Skipped))
+        {
+            lines.Add(FormatDistinctLine(StepStatusDisplay.StepStatus.Skipped, job.Name, $"skipped: {job.SkipReason ?? "no reason given"}"));
+        }
+        foreach (var step in steps.Where(s => s.Status is StepStatusDisplay.StepStatus.Skipped or StepStatusDisplay.StepStatus.AllowedFailure).Take(10))
+        {
+            var detail = step.Status == StepStatusDisplay.StepStatus.Skipped
+                ? $"skipped: {step.SkipReason ?? "no reason given"}"
+                : "failed (allowed)";
+            lines.Add(FormatDistinctLine(step.Status, step.Name, detail));
+        }
+
+        var panel = new Panel(string.Join("\n", lines))
         {
             Header = new PanelHeader("Execution Complete"),
             Border = BoxBorder.Rounded,
-            BorderStyle = _noColor ? Style.Plain : new Style(statusColor)
+            BorderStyle = _noColor ? Style.Plain : new Style(success ? Color.Green : Color.Red)
         };
         _console.Write(panel);
         _console.WriteLine();
@@ -469,7 +519,7 @@ public sealed class InteractiveMenu
         // Show error context for failed jobs
         if (!success)
         {
-            DisplayErrorContext();
+            DisplayErrorContext(steps);
         }
 
         // Post-execution options
@@ -493,31 +543,37 @@ public sealed class InteractiveMenu
         });
     }
 
-    /// <summary>
-    /// Displays error context for failed steps.
-    /// </summary>
-    private void DisplayErrorContext()
+    private string FormatDistinctLine(StepStatusDisplay.StepStatus status, string name, string detail)
     {
-        var failedResults = _context.ExecutionResults
-            .SelectMany(j => j.StepResults)
-            .Where(s => !s.Success)
-            .ToList();
+        var symbol = StepStatusDisplay.GetSymbol(status, _noColor);
+        if (_noColor)
+        {
+            return $"  {symbol} {name} ({detail})";
+        }
 
-        if (failedResults.Count == 0)
-            return;
+        var color = StepStatusDisplay.GetColor(status);
+        return $"  [{color}]{symbol}[/] {Markup.Escape(name)} [dim]({Markup.Escape(detail)})[/]";
+    }
 
-        foreach (var failedStep in failedResults)
+    /// <summary>
+    /// Displays error context for failed steps (allowed failures and skipped steps are not errors).
+    /// </summary>
+    private void DisplayErrorContext(IEnumerable<StepSummary> steps)
+    {
+        foreach (var failedStep in steps.Where(s => s.IsFailure))
         {
             var sb = new StringBuilder();
-            sb.AppendLine($"Step: {failedStep.StepName}");
-            sb.AppendLine($"Exit Code: {failedStep.ExitCode}");
+            sb.AppendLine($"Step: {failedStep.Name}");
+            if (failedStep.ExitCode.HasValue)
+            {
+                sb.AppendLine($"Exit Code: {failedStep.ExitCode.Value}");
+            }
 
             if (!string.IsNullOrEmpty(failedStep.ErrorOutput))
             {
                 sb.AppendLine();
                 sb.AppendLine("Error Output:");
-                var errorLines = failedStep.ErrorOutput.Split('\n').Take(10);
-                foreach (var line in errorLines)
+                foreach (var line in failedStep.ErrorOutput.Split('\n').Take(10))
                 {
                     sb.AppendLine($"  {line}");
                 }
@@ -527,14 +583,13 @@ public sealed class InteractiveMenu
             {
                 sb.AppendLine();
                 sb.AppendLine("Last output lines:");
-                var outputLines = failedStep.Output.Split('\n').TakeLast(10);
-                foreach (var line in outputLines)
+                foreach (var line in failedStep.Output.Split('\n').TakeLast(10))
                 {
                     sb.AppendLine($"  {line}");
                 }
             }
 
-            var panel = new Panel(sb.ToString().TrimEnd())
+            var panel = new Panel(Markup.Escape(sb.ToString().TrimEnd()))
             {
                 Header = new PanelHeader("Error Context"),
                 Border = BoxBorder.Rounded,
@@ -570,7 +625,7 @@ public sealed class InteractiveMenu
         headerContent.AppendLine($"Pipeline: {fileName}");
         headerContent.AppendLine($"Jobs: {jobCount} | Steps: {stepCount}");
 
-        var panel = new Panel(headerContent.ToString().TrimEnd())
+        var panel = new Panel(Markup.Escape(headerContent.ToString().TrimEnd()))
         {
             Border = BoxBorder.Rounded,
             BorderStyle = _noColor ? Style.Plain : new Style(Color.Aqua)
@@ -587,14 +642,7 @@ public sealed class InteractiveMenu
     {
         var breadcrumb = $"PDK Interactive > {location}";
 
-        if (_noColor)
-        {
-            _console.WriteLine(breadcrumb);
-        }
-        else
-        {
-            _console.MarkupLine($"[dim]{breadcrumb}[/]");
-        }
+        WriteLine($"[dim]{Markup.Escape(breadcrumb)}[/]", breadcrumb);
         _console.WriteLine();
     }
 
@@ -603,15 +651,7 @@ public sealed class InteractiveMenu
     /// </summary>
     private void DisplayShortcuts()
     {
-        if (_noColor)
-        {
-            _console.WriteLine("[Up/Down Move | Enter Select | Ctrl+C Quit]");
-        }
-        else
-        {
-            // Escape brackets for Spectre.Console markup
-            _console.MarkupLine("[dim][[Up/Down Move | Enter Select | Ctrl+C Quit]][/]");
-        }
+        WriteLine("[dim][[Up/Down Move | Enter Select | Ctrl+C Quit]][/]", "[Up/Down Move | Enter Select | Ctrl+C Quit]");
         _console.WriteLine();
     }
 
@@ -621,63 +661,104 @@ public sealed class InteractiveMenu
     private void DisplayExitMessage()
     {
         _console.WriteLine();
-        if (_noColor)
-        {
-            _console.WriteLine("Goodbye!");
-        }
-        else
-        {
-            _console.MarkupLine("[dim]Goodbye![/]");
-        }
+        WriteLine("[dim]Goodbye![/]", "Goodbye!");
     }
 
     /// <summary>
-    /// Formats a job choice for the selection menu.
+    /// Writes markup, or plain text when NO_COLOR is set.
     /// </summary>
-    private static string FormatJobChoice(Job job)
+    private void WriteLine(string markup, string plain)
+    {
+        if (_noColor)
+        {
+            _console.WriteLine(plain);
+        }
+        else
+        {
+            _console.MarkupLine(markup);
+        }
+    }
+
+    private Style HighlightStyle => _noColor ? Style.Plain : new Style(foreground: Color.Aqua);
+
+    private Job? FindJob(string jobName)
+    {
+        foreach (var (key, job) in _context.Pipeline.Jobs)
+        {
+            if (string.Equals(key, jobName, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(job.Id, jobName, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(job.Name, jobName, StringComparison.OrdinalIgnoreCase))
+            {
+                return job;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Gets the display name of a job (its name, or its id when it has no name).
+    /// </summary>
+    private static string DisplayName(string key, Job job)
+        => string.IsNullOrWhiteSpace(job.Name) ? key : job.Name;
+
+    /// <summary>
+    /// Formats a job choice for the selection menu (plain text; escaped when rendered).
+    /// </summary>
+    private static string FormatJobChoice(string key, Job job)
     {
         var deps = job.DependsOn.Count > 0
             ? $", depends on: {string.Join(", ", job.DependsOn)}"
             : "";
-        return $"{job.Name} ({job.RunsOn}, {job.Steps.Count} steps{deps})";
+        return $"{DisplayName(key, job)} ({job.RunsOn}, {job.Steps.Count} steps{deps})";
+    }
+
+    /// <summary>
+    /// Formats a job for the details menu, showing the id and the display name when they differ.
+    /// </summary>
+    private static string FormatJobKeyLabel(string key, Job job)
+    {
+        return string.IsNullOrWhiteSpace(job.Name) || string.Equals(job.Name, key, StringComparison.Ordinal)
+            ? key
+            : $"{key} ({job.Name})";
     }
 
     /// <summary>
     /// Sorts jobs by their dependency order (topological sort).
     /// Jobs with no dependencies come first, then jobs that depend on them.
     /// </summary>
-    private static List<Job> SortByDependencyOrder(Dictionary<string, Job> jobs)
+    private static List<KeyValuePair<string, Job>> SortByDependencyOrder(Dictionary<string, Job> jobs)
     {
-        var result = new List<Job>();
+        var result = new List<KeyValuePair<string, Job>>();
         var visited = new HashSet<string>();
         var visiting = new HashSet<string>();
 
-        void Visit(Job job)
+        void Visit(string key)
         {
-            if (visited.Contains(job.Name))
+            if (visited.Contains(key))
                 return;
 
-            if (visiting.Contains(job.Name))
+            if (visiting.Contains(key))
                 return; // Circular dependency, skip
 
-            visiting.Add(job.Name);
+            if (!jobs.TryGetValue(key, out var job))
+                return;
+
+            visiting.Add(key);
 
             foreach (var dep in job.DependsOn)
             {
-                if (jobs.TryGetValue(dep, out var depJob))
-                {
-                    Visit(depJob);
-                }
+                Visit(dep);
             }
 
-            visiting.Remove(job.Name);
-            visited.Add(job.Name);
-            result.Add(job);
+            visiting.Remove(key);
+            visited.Add(key);
+            result.Add(new KeyValuePair<string, Job>(key, job));
         }
 
-        foreach (var job in jobs.Values)
+        foreach (var key in jobs.Keys)
         {
-            Visit(job);
+            Visit(key);
         }
 
         return result;

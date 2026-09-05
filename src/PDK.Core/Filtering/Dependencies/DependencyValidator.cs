@@ -48,17 +48,17 @@ public class DependencyValidator
     {
         var warnings = new List<DependencyWarning>();
         var graph = _analyzer.BuildGraph(job);
-        var jobName = job.Name ?? job.Id ?? "Unknown";
+        var jobName = !string.IsNullOrEmpty(job.Name) ? job.Name : DependencyGraph.GetJobKey(job);
 
         // Determine which steps will execute and which will be skipped
-        var executingStepIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var skippedStepIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var stepInfos = new Dictionary<string, (Step Step, int Index, FilterResult Result)>(StringComparer.OrdinalIgnoreCase);
+        var executingStepIds = new HashSet<string>(StringComparer.Ordinal);
+        var skippedStepIds = new HashSet<string>(StringComparer.Ordinal);
+        var stepInfos = new Dictionary<string, (Step Step, int Index, FilterResult Result)>(StringComparer.Ordinal);
 
         for (int i = 0; i < job.Steps.Count; i++)
         {
             var step = job.Steps[i];
-            var stepId = DependencyGraph.GetStepId(step, i + 1);
+            var stepId = DependencyGraph.GetStepId(job, i + 1);
             var result = filter.ShouldExecute(step, i + 1, job);
 
             stepInfos[stepId] = (step, i + 1, result);
@@ -81,9 +81,8 @@ public class DependencyValidator
 
             foreach (var depId in dependencies)
             {
-                if (skippedStepIds.Contains(depId))
+                if (skippedStepIds.Contains(depId) && stepInfos.TryGetValue(depId, out var depInfo))
                 {
-                    var depInfo = stepInfos[depId];
                     warnings.Add(new DependencyWarning
                     {
                         StepName = step.Name ?? $"Step {index}",
@@ -104,18 +103,18 @@ public class DependencyValidator
     /// <summary>
     /// Checks if a specific step has all its dependencies satisfied.
     /// </summary>
-    /// <param name="step">The step to check.</param>
-    /// <param name="stepIndex">The step's index.</param>
-    /// <param name="executedSteps">Steps that have or will execute.</param>
+    /// <param name="job">The job containing the step.</param>
+    /// <param name="stepIndex">The step's 1-based index within the job.</param>
+    /// <param name="executedSteps">Graph ids of steps that have or will execute.</param>
     /// <param name="graph">The dependency graph.</param>
     /// <returns>True if all dependencies are satisfied.</returns>
     public bool HasSatisfiedDependencies(
-        Step step,
+        Job job,
         int stepIndex,
         IReadOnlySet<string> executedSteps,
         DependencyGraph graph)
     {
-        var stepId = DependencyGraph.GetStepId(step, stepIndex);
+        var stepId = DependencyGraph.GetStepId(job, stepIndex);
         var dependencies = graph.GetTransitiveDependencies(stepId);
 
         return dependencies.All(dep => executedSteps.Contains(dep));

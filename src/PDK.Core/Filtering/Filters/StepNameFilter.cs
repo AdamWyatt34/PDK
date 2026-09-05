@@ -3,29 +3,26 @@ using PDK.Core.Models;
 namespace PDK.Core.Filtering.Filters;
 
 /// <summary>
-/// Filters steps by name using case-insensitive, partial, and fuzzy matching.
+/// Filters steps by name using case-insensitive exact or substring matching.
 /// </summary>
 public sealed class StepNameFilter : IStepFilter
 {
     private readonly IReadOnlyList<string> _patterns;
-    private readonly int _fuzzyThreshold;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="StepNameFilter"/> class.
     /// </summary>
     /// <param name="patterns">The name patterns to match.</param>
-    /// <param name="fuzzyThreshold">Maximum Levenshtein distance for fuzzy matching.</param>
-    public StepNameFilter(IEnumerable<string> patterns, int fuzzyThreshold = StringMatcher.DefaultFuzzyThreshold)
+    public StepNameFilter(IEnumerable<string> patterns)
     {
         _patterns = patterns.Where(p => !string.IsNullOrWhiteSpace(p)).ToList();
-        _fuzzyThreshold = fuzzyThreshold;
     }
 
     /// <summary>
     /// Creates a filter from a single pattern.
     /// </summary>
-    public static StepNameFilter FromPattern(string pattern, int fuzzyThreshold = StringMatcher.DefaultFuzzyThreshold)
-        => new([pattern], fuzzyThreshold);
+    public static StepNameFilter FromPattern(string pattern)
+        => new([pattern]);
 
     /// <inheritdoc/>
     public FilterResult ShouldExecute(Step step, int stepIndex, Job job)
@@ -40,7 +37,7 @@ public sealed class StepNameFilter : IStepFilter
 
         foreach (var pattern in _patterns)
         {
-            if (StringMatcher.Matches(stepName, pattern, _fuzzyThreshold))
+            if (StringMatcher.Matches(stepName, pattern))
             {
                 return FilterResult.Execute($"Matched name pattern '{pattern}'");
             }

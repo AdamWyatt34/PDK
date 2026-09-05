@@ -63,6 +63,27 @@ public interface IProgressReporter
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Reports that a step was skipped without being executed (condition evaluated to false,
+    /// filtered out, disabled, or unsupported step type).
+    /// </summary>
+    /// <param name="stepName">Name of the skipped step.</param>
+    /// <param name="currentStep">Step number within the job (1-based).</param>
+    /// <param name="totalSteps">Total number of steps in the job.</param>
+    /// <param name="reason">Human-readable reason the step was skipped, or null.</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
+    /// <remarks>
+    /// This member has a default no-op implementation so that existing reporters keep compiling.
+    /// </remarks>
+    Task ReportStepSkippedAsync(
+        string stepName,
+        int currentStep,
+        int totalSteps,
+        string? reason,
+        CancellationToken cancellationToken = default)
+        => Task.CompletedTask;
+
+    /// <summary>
     /// Reports a single line of output from step execution.
     /// </summary>
     /// <param name="line">The output line to report.</param>
@@ -112,6 +133,10 @@ public sealed class NullProgressReporter : IProgressReporter
 
     /// <inheritdoc/>
     public Task ReportStepCompleteAsync(string stepName, bool success, TimeSpan duration, CancellationToken cancellationToken = default)
+        => Task.CompletedTask;
+
+    /// <inheritdoc/>
+    public Task ReportStepSkippedAsync(string stepName, int currentStep, int totalSteps, string? reason, CancellationToken cancellationToken = default)
         => Task.CompletedTask;
 
     /// <inheritdoc/>

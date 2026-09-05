@@ -3,22 +3,26 @@ namespace PDK.Core.Filtering;
 /// <summary>
 /// Provides string matching utilities for step name filtering.
 /// </summary>
+/// <remarks>
+/// Selection (include / exclude) uses exact or substring matching only, so a filter never
+/// silently runs a step whose name merely resembles the requested one. Levenshtein distance is
+/// used solely to produce "did you mean" suggestions when a name does not match anything.
+/// </remarks>
 public static class StringMatcher
 {
     /// <summary>
-    /// Default maximum Levenshtein distance for fuzzy matching.
+    /// Default maximum Levenshtein distance used when computing suggestions.
     /// </summary>
     public const int DefaultFuzzyThreshold = 2;
 
     /// <summary>
     /// Determines if a step name matches a filter pattern.
-    /// Matching is case-insensitive and supports exact, contains, and fuzzy matching.
+    /// Matching is case-insensitive and succeeds on an exact or substring match.
     /// </summary>
     /// <param name="stepName">The actual step name.</param>
     /// <param name="filterPattern">The pattern to match against.</param>
-    /// <param name="fuzzyThreshold">Maximum Levenshtein distance for fuzzy matching (default: 2).</param>
     /// <returns>True if the step name matches the pattern.</returns>
-    public static bool Matches(string stepName, string filterPattern, int fuzzyThreshold = DefaultFuzzyThreshold)
+    public static bool Matches(string? stepName, string? filterPattern)
     {
         if (string.IsNullOrWhiteSpace(stepName) || string.IsNullOrWhiteSpace(filterPattern))
         {
@@ -32,14 +36,7 @@ public static class StringMatcher
         }
 
         // 2. Contains match (case-insensitive)
-        if (stepName.Contains(filterPattern, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        // 3. Fuzzy match using Levenshtein distance
-        var distance = LevenshteinDistance(stepName.ToLowerInvariant(), filterPattern.ToLowerInvariant());
-        return distance <= fuzzyThreshold;
+        return stepName.Contains(filterPattern, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -54,9 +51,9 @@ public static class StringMatcher
         string pattern,
         IEnumerable<string> stepNames,
         int maxSuggestions = 3,
-        int maxDistance = 5)
+        int maxDistance = DefaultFuzzyThreshold)
     {
-        if (string.IsNullOrWhiteSpace(pattern))
+        if (string.IsNullOrWhiteSpace(pattern) || maxSuggestions <= 0)
         {
             return [];
         }
@@ -64,12 +61,14 @@ public static class StringMatcher
         var patternLower = pattern.ToLowerInvariant();
 
         return stepNames
+            .Where(name => !string.IsNullOrWhiteSpace(name))
             .Select(name => new { Name = name, Distance = LevenshteinDistance(name.ToLowerInvariant(), patternLower) })
             .Where(x => x.Distance <= maxDistance)
             .OrderBy(x => x.Distance)
             .ThenBy(x => x.Name)
-            .Take(maxSuggestions)
             .Select(x => x.Name)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(maxSuggestions)
             .ToList();
     }
 

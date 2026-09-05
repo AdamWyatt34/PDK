@@ -1,3 +1,4 @@
+using PDK.Core.Configuration;
 using PDK.Core.Models;
 
 namespace PDK.Core.Runners;
@@ -39,7 +40,8 @@ public record RunnerSelectionResult
 public interface IRunnerSelector
 {
     /// <summary>
-    /// Selects the runner to use for job execution.
+    /// Selects the runner to use for job execution, using the configuration discovered by the
+    /// configuration loader (loaded once and cached, including the "no configuration file" case).
     /// </summary>
     /// <param name="requestedType">The explicitly requested runner type.</param>
     /// <param name="job">The job to execute (for capability validation). Optional.</param>
@@ -55,4 +57,21 @@ public interface IRunnerSelector
         RunnerType requestedType,
         Job? job = null,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Selects the runner to use for job execution, honouring the supplied (already merged)
+    /// configuration instead of discovering one. When <paramref name="config"/> is null the
+    /// discovered configuration is used, exactly like the three-argument overload.
+    /// </summary>
+    /// <param name="requestedType">The explicitly requested runner type.</param>
+    /// <param name="job">The job to execute (for capability validation). Optional.</param>
+    /// <param name="config">The configuration whose <see cref="PdkConfig.Runner"/> section drives the selection.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The selection result with runner type and rationale.</returns>
+    Task<RunnerSelectionResult> SelectRunnerAsync(
+        RunnerType requestedType,
+        Job? job,
+        PdkConfig? config,
+        CancellationToken cancellationToken = default)
+        => SelectRunnerAsync(requestedType, job, cancellationToken);
 }

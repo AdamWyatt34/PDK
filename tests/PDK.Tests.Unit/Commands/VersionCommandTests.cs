@@ -38,7 +38,6 @@ public class VersionCommandTests
         _systemInfo.Setup(s => s.GetDotNetVersion()).Returns(".NET 8.0.0");
         _systemInfo.Setup(s => s.GetOperatingSystem()).Returns("Microsoft Windows 10");
         _systemInfo.Setup(s => s.GetArchitecture()).Returns("x64");
-        _systemInfo.Setup(s => s.GetBuildDate()).Returns(new DateTime(2024, 1, 15, 12, 0, 0, DateTimeKind.Utc));
         _systemInfo.Setup(s => s.GetCommitHash()).Returns("abc1234");
         _systemInfo.Setup(s => s.GetDockerInfoAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(new DockerInfo
@@ -115,17 +114,6 @@ public class VersionCommandTests
     }
 
     [Fact]
-    public async Task ExecuteAsync_DisplaysBuildDate_WhenAvailable()
-    {
-        // Act
-        await _command.ExecuteAsync();
-
-        // Assert
-        var output = _console.Output;
-        output.Should().Contain("2024-01-15");
-    }
-
-    [Fact]
     public async Task ExecuteAsync_DisplaysCommitHash_WhenAvailable()
     {
         // Act
@@ -137,15 +125,11 @@ public class VersionCommandTests
     }
 
     [Fact]
-    public async Task ExecuteAsync_OmitsBuildDate_WhenNull()
+    public async Task ExecuteAsync_DoesNotDisplayBuildDate()
     {
-        // Arrange
-        _systemInfo.Setup(s => s.GetBuildDate()).Returns((DateTime?)null);
-
-        // Act
+        // The BuildDate assembly metadata was removed for deterministic builds, so no build line is shown.
         await _command.ExecuteAsync();
 
-        // Assert
         var output = _console.Output;
         output.Should().NotContain("Build:");
     }
@@ -341,5 +325,57 @@ public class VersionCommandTests
 
         // Assert
         result.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SkipsUpdateCheck_WhenConfigurationDisablesIt()
+    {
+        // Arrange
+        var configLoader = new Mock<PDK.Core.Configuration.IConfigurationLoader>();
+        configLoader.Setup(l => l.LoadAsync(It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PDK.Core.Configuration.PdkConfig
+            {
+                Version = "1.0",
+                Features = new PDK.Core.Configuration.FeaturesConfig { CheckUpdates = false }
+            });
+        _updateChecker.Setup(u => u.ShouldCheckForUpdates()).Returns(true);
+        var command = new VersionCommand(_systemInfo.Object, _updateChecker.Object, _console, configLoader.Object);
+
+        // Act
+        await command.ExecuteAsync();
+
+        // Assert
+        _updateChecker.Verify(u => u.CheckForUpdatesAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_JsonFormat_Full_IncludesDockerEndpoint()
+    {
+        // Arrange
+        _systemInfo.Setup(s => s.GetDockerInfoAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DockerInfo
+            {
+                IsAvailable = true,
+                IsRunning = true,
+                Version = "24.0.0",
+                Platform = "linux/amd64",
+                Endpoint = "unix:///var/run/docker.sock"
+            });
+        _command.Format = VersionOutputFormat.Json;
+        _command.Full = true;
+
+        // Act
+        await _command.ExecuteAsync();
+
+        // Assert
+        using var doc = System.Text.Json.JsonDocument.Parse(_console.Output);
+        doc.RootElement.GetProperty("docker").GetProperty("endpoint").GetString().Should().Be("unix:///var/run/docker.sock");
+        doc.RootElement.GetProperty("pdk").TryGetProperty("buildDate", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void UpdateCommandText_IsDotnetToolUpdate()
+    {
+        VersionCommand.UpdateCommandText.Should().Be("dotnet tool update -g pdk");
     }
 }
