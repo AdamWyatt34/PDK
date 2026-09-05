@@ -39,10 +39,10 @@ dotnet tool install --global pdk
 pdk --version
 ```
 
-You should see output like:
+You should see the version, for example:
 
 ```
-PDK version 1.0.0
+1.0.0+b45694f80797763319dacabc938a359187fcce92
 ```
 
 For detailed installation instructions including troubleshooting, see the [Installation Guide](installation.md).
@@ -93,20 +93,31 @@ pdk run --file .github/workflows/hello.yml
 You'll see output like:
 
 ```
-Pipeline: Hello PDK
-Runner: ubuntu-latest
+i Using Docker runner: Docker is available
 
-Job: hello
-  Step: Say Hello
-    Hello from PDK!
-  Step: Show Date
-    Wed Dec 25 12:00:00 UTC 2024
-  Step: Show Environment
-    Running on: Linux
-    Home directory: /root
+> Running job 1 of 1: hello
+    * Step 1/3: Say Hello
+      + Say Hello (0.31s)
+    * Step 2/3: Show Date
+      + Show Date (0.28s)
+    * Step 3/3: Show Environment
+      + Show Environment (0.29s)
+  + Job hello completed in 2.1s
 
-Pipeline completed successfully in 2.3s
+╭─Execution Summary────────────────────────────────╮
+│ Pipeline: Hello PDK                              │
+│ Status: ✓ Success                                │
+│ Duration: 2.3s                                   │
+│                                                  │
+│ Jobs:  1 total, 1 succeeded, 0 failed            │
+│ Steps: 3 total, 3 succeeded, 0 failed            │
+╰──────────────────────────────────────────────────╯
+
++ Pipeline execution complete!
 ```
+
+Add `--verbose` to see the commands' output (`Hello from PDK!`, `Running on: Linux`, ...) as it is
+produced; without it the output of a failed step is shown in an error panel at the end.
 
 **Congratulations!** You've run your first pipeline with PDK.
 
@@ -123,7 +134,7 @@ pdk run
 # Run specific pipeline file
 pdk run --file .github/workflows/ci.yml
 
-# Run specific job only
+# Run one job (the jobs it depends on run first; --no-deps skips them)
 pdk run --job build
 
 # Run on host (no Docker)
@@ -248,7 +259,9 @@ steps:
 A: Docker is recommended for isolated execution but optional. Use `--host` mode to run without Docker.
 
 **Q: Which pipeline formats are supported?**
-A: GitHub Actions (`.github/workflows/*.yml`) and Azure DevOps (`azure-pipelines.yml`).
+A: GitHub Actions (`.github/workflows/*.yml`) and Azure DevOps (`azure-pipelines.yml`, including
+multi-stage pipelines). Expressions, conditions, matrix jobs and job outputs are evaluated locally;
+see [Expressions and Execution Semantics](expressions.md) for what is supported.
 
 **Q: Can I use PDK in my CI/CD?**
 A: Yes! PDK can validate pipelines before they run remotely. See [CI/CD Integration](guides/cicd-integration.md).
@@ -268,6 +281,7 @@ Now that you've run your first pipeline, explore:
 - **[Step Filtering](configuration/filtering.md)** - Run specific steps
 - **[Examples](examples/README.md)** - Real-world pipeline examples
 - **[Configuration](configuration/README.md)** - Customize PDK behavior
+- **[Expressions and Execution Semantics](expressions.md)** - What runs, in which order, and why steps are skipped
 
 ## Getting Help
 

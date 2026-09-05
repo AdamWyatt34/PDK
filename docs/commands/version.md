@@ -10,7 +10,9 @@ pdk version [options]
 
 ## Description
 
-The `version` command displays the PDK version and optionally shows detailed system information including Docker status, available providers, and system resources.
+The `version` command displays the PDK version and optionally shows detailed system information
+including Docker status, available providers and step executors, and system resources.
+`pdk --version` prints only the version string.
 
 ## Options
 
@@ -29,8 +31,14 @@ pdk version
 ```
 
 ```
-PDK version 1.0.0
+PDK v1.0.0+b45694f80797763319dacabc938a359187fcce92
+.NET Runtime: .NET 8.0.30
+OS: Ubuntu 24.04.4 LTS (x64)
+Commit: b45694f
 ```
+
+The informational version carries the commit the build was made from (after the `+`); `Commit:` is
+omitted when the build did not have one. No build date is printed: builds are deterministic.
 
 ### Full System Information
 
@@ -39,31 +47,38 @@ pdk version --full
 ```
 
 ```
-PDK version 1.0.0
-Build: Release
-Commit: abc1234
-
-System Information:
-  .NET Runtime: 8.0.0
-  OS: Windows 11 (10.0.22631)
-  Architecture: X64
-  CPU Cores: 8
-  Memory: 16 GB
+PDK v1.0.0+b45694f80797763319dacabc938a359187fcce92
+.NET Runtime: .NET 8.0.30
+OS: Ubuntu 24.04.4 LTS (x64)
+Commit: b45694f
 
 Docker:
-  Status: Available
-  Version: 24.0.7
-  API Version: 1.43
+  Status: Running ✓
+  Version: 27.3.1
+  Platform: linux
+  Endpoint: unix:///var/run/docker.sock
 
 Providers:
-  - GitHub Actions
-  - Azure DevOps
+  ✓ GitHubActions
+  ✓ AzureDevOps
 
 Step Executors:
-  - Script (bash, powershell, cmd)
-  - Action (uses)
-  - Docker (container)
+  ✓ Checkout (checkout)
+  ✓ Script (script)
+  ✓ PowerShell (pwsh)
+  ✓ Dotnet (dotnet)
+  ✓ Npm (npm)
+  ✓ Docker (docker)
+  ✓ UploadArtifactExecutor (uploadartifact)
+  ✓ DownloadArtifactExecutor (downloadartifact)
+
+System:
+  CPU Cores: 8
+  Memory: 16.0 GB
 ```
+
+When Docker is not reachable the Docker section shows `Status: Not available`, the error and the
+endpoint that was tried.
 
 ### JSON Output
 
@@ -73,26 +88,39 @@ pdk version --full --format Json
 
 ```json
 {
-  "version": "1.0.0",
-  "build": "Release",
-  "commit": "abc1234",
-  "system": {
-    "dotnetVersion": "8.0.0",
-    "os": "Windows 11",
-    "osVersion": "10.0.22631",
-    "architecture": "X64",
-    "cpuCores": 8,
-    "memoryGb": 16
+  "pdk": {
+    "version": "1.0.0.0",
+    "informationalVersion": "1.0.0+b45694f80797763319dacabc938a359187fcce92",
+    "commitHash": "b45694f80797763319dacabc938a359187fcce92"
+  },
+  "runtime": {
+    "dotnet": ".NET 8.0.30",
+    "os": "Ubuntu 24.04.4 LTS",
+    "architecture": "x64"
   },
   "docker": {
     "available": true,
-    "version": "24.0.7",
-    "apiVersion": "1.43"
+    "running": true,
+    "version": "27.3.1",
+    "platform": "linux"
   },
-  "providers": ["GitHubActions", "AzureDevOps"],
-  "executors": ["Script", "Action", "Docker"]
+  "providers": [
+    { "name": "GitHubActions", "version": "1.0.0", "available": true },
+    { "name": "AzureDevOps", "version": "1.0.0", "available": true }
+  ],
+  "executors": [
+    { "name": "Checkout", "stepType": "checkout" },
+    { "name": "Script", "stepType": "script" }
+  ],
+  "system": {
+    "processorCount": 8,
+    "totalMemoryBytes": 17179869184,
+    "availableMemoryBytes": 8589934592
+  }
 }
 ```
+
+Without `--full` only the `pdk` and `runtime` objects are written.
 
 ## Examples
 
@@ -123,9 +151,8 @@ pdk version --no-update-check
 ### Use in Scripts
 
 ```bash
-# Get version only
-VERSION=$(pdk version | grep -oP '[\d.]+')
-echo "PDK version: $VERSION"
+# Get the version only
+pdk --version
 
 # Check Docker status
 pdk version --full --format Json | jq '.docker.available'
@@ -133,19 +160,24 @@ pdk version --full --format Json | jq '.docker.available'
 
 ## Update Notifications
 
-By default, PDK checks for updates when displaying version information. If a newer version is available:
+By default, PDK checks NuGet for a newer stable version when displaying version information (at most
+once every 24 hours, tracked in `~/.pdk/update-check.json`; never in CI, and a failed check is
+retried next time). If a newer version is available a panel is shown:
 
 ```
-PDK version 1.0.0
+Update Available
+Current:  1.0.0
+Latest:   1.1.0
 
-Update available: 1.1.0
-Run 'dotnet tool update --global PDK.CLI' to update.
+Update with:
+  dotnet tool update -g pdk
 ```
 
 Disable update checks with `--no-update-check` or in configuration:
 
 ```json
 {
+  "version": "1.0",
   "features": {
     "checkUpdates": false
   }
@@ -157,6 +189,7 @@ Disable update checks with `--no-update-check` or in configuration:
 | Code | Meaning |
 |------|---------|
 | 0 | Success |
+| 1 | Unexpected error |
 
 ## See Also
 

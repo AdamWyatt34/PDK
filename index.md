@@ -21,9 +21,10 @@ pdk run --watch
 ## Features
 
 - Run pipelines locally before pushing
-- Support for GitHub Actions and Azure DevOps
+- Support for GitHub Actions and Azure DevOps (multi-stage pipelines, matrix jobs)
+- Expressions, conditions and job outputs evaluated as on the CI service
 - Docker-based execution for isolation
-- Tool-specific executors (.NET, npm, Docker)
+- Tool-specific executors (.NET, npm, Docker, Maven, Gradle)
 - Fast iteration with host-based execution option
 - Watch Mode for automatic re-execution
 - Dry-Run Mode for validation
@@ -35,6 +36,8 @@ pdk run --watch
 - [Installation Guide](docs/installation.md)
 - [Command Reference](docs/commands/README.md)
 - [Configuration](docs/configuration/README.md)
+- [Expressions and Execution Semantics](docs/expressions.md)
+- [Error Codes](docs/errors.md)
 - [Examples](docs/examples/README.md)
 - [Troubleshooting](docs/guides/troubleshooting.md)
 

@@ -395,3 +395,5 @@ Thank you for contributing to PDK!
 - [Development Setup Guide](docs/developers/setup.md)
 - [Testing Guide](docs/developers/testing.md)
 - [Extension Guide](docs/developers/extending/)
+- [Expressions and Execution Semantics](docs/expressions.md) - what PDK evaluates and how runs behave
+- [Error Codes](docs/errors.md) - add a section there when you introduce a new `PDK-E-...` code

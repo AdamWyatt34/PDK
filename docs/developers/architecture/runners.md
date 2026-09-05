@@ -6,7 +6,7 @@ This document describes how PDK executes pipeline jobs and steps.
 
 The runner layer is responsible for executing parsed pipelines. It supports two execution modes:
 
-- **Docker Mode**: Steps run in isolated Docker containers
+- **Docker Mode**: Steps run in an isolated Docker container (one container per job)
 - **Host Mode**: Steps run directly on the local machine
 
 ```mermaid
@@ -23,6 +23,10 @@ flowchart TB
         Filtering[FilteringJobRunner]
     end
 
+    subgraph "Per-job state"
+        Session[JobExecutionSession]
+    end
+
     subgraph "Step Executors"
         DockerFactory[StepExecutorFactory]
         HostFactory[HostStepExecutorFactory]
@@ -37,6 +41,8 @@ flowchart TB
     DockerCheck -->|No| Host
     Docker --> Filtering
     Host --> Filtering
+    Docker --> Session
+    Host --> Session
     Docker --> DockerFactory
     Host --> HostFactory
     DockerFactory --> Script
@@ -53,7 +59,16 @@ flowchart TB
 public interface IJobRunner
 {
     /// <summary>
-    /// Executes a job and returns the result.
+    /// Executes a job with the run-wide context (pipeline, secrets, variables,
+    /// dependency results and outputs, event name, run id, policies).
+    /// </summary>
+    Task<JobExecutionResult> RunJobAsync(
+        Job job,
+        JobRunContext runContext,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Legacy overload: runs the job with a minimal context for the workspace.
     /// </summary>
     Task<JobExecutionResult> RunJobAsync(
         Job job,
@@ -61,6 +76,10 @@ public interface IJobRunner
         CancellationToken cancellationToken);
 }
 ```
+
+`PipelineExecutor` builds one `JobRunContext` per job (`src/PDK.Runners/JobRunContext.cs`) with the
+results and outputs of the jobs it depends on, then asks `JobConditionEvaluator` whether the job runs
+at all before calling the runner.
 
 ### IStepExecutor
 
@@ -104,7 +123,11 @@ public interface IHostStepExecutor
 
 ## Runner Selection
 
-The `RunnerFactory` chooses the appropriate runner:
+`RunnerSelector` chooses the runner for the requested `RunnerType` (`--docker`, `--host`,
+`--runner auto` or the `runner` configuration section) and the first job's needs
+(`RunnerCapabilities`: custom images and Docker steps require Docker). With `auto`, Docker is
+preferred and the host runner is the fallback when no daemon is reachable; `--docker` without a
+daemon fails with exit code 4. `RunnerFactory` then creates the runner:
 
 ```csharp
 public class RunnerFactory : IRunnerFactory
@@ -115,20 +138,8 @@ public class RunnerFactory : IRunnerFactory
         {
             RunnerType.Docker => _dockerRunner,
             RunnerType.Host => _hostRunner,
-            RunnerType.Auto => SelectAutomatically(),
             _ => throw new NotSupportedException()
         };
-    }
-
-    private IJobRunner SelectAutomatically()
-    {
-        // Check Docker availability
-        if (_dockerDetector.IsAvailable)
-            return _dockerRunner;
-
-        // Fall back to host mode with warning
-        _logger.LogWarning("Docker unavailable, using host mode");
-        return _hostRunner;
     }
 }
 ```
@@ -143,66 +154,72 @@ Location: `src/PDK.Runners/DockerJobRunner.cs`
 sequenceDiagram
     participant Client
     participant DockerRunner
+    participant Session
     participant ContainerManager
     participant ExecutorFactory
     participant StepExecutor
     participant Container
 
-    Client->>DockerRunner: RunJobAsync(job)
+    Client->>DockerRunner: RunJobAsync(job, runContext)
+    DockerRunner->>Session: new JobExecutionSession(job, runContext, image)
     DockerRunner->>ContainerManager: PullImageIfNeeded(image)
     DockerRunner->>ContainerManager: CreateContainer(image, workspace)
     ContainerManager-->>DockerRunner: containerId
 
     loop For each step
+        DockerRunner->>Session: PrepareStep(step, index)
+        Session-->>DockerRunner: StepPlan (skip / fail / run + environment)
         DockerRunner->>ExecutorFactory: GetExecutor(step.Type)
         ExecutorFactory-->>DockerRunner: executor
         DockerRunner->>StepExecutor: ExecuteAsync(step, context)
         StepExecutor->>Container: Execute command
         Container-->>StepExecutor: output, exitCode
         StepExecutor-->>DockerRunner: StepResult
+        DockerRunner->>Session: Record(step, index, result)
     end
 
-    DockerRunner->>ContainerManager: RemoveContainer(containerId)
-    DockerRunner-->>Client: JobResult
+    DockerRunner->>ContainerManager: RemoveContainer(containerId) (unless --keep-containers)
+    DockerRunner-->>Client: JobResult (with outputs)
 ```
 
 ### Container Setup
 
 ```csharp
-private async Task<string> CreateContainerAsync(Job job, string workspacePath)
-{
-    var image = _imageMapper.Map(job.RunsOn);
+// 1. Resolve the image: an explicit job container wins over the runner label mapping
+var image = string.IsNullOrWhiteSpace(job.Container)
+    ? _imageMapper.MapRunnerToImage(job.RunsOn)
+    : job.Container.Trim();
 
-    return await _containerManager.CreateContainerAsync(
-        new ContainerConfig
-        {
-            Image = image,
-            Name = $"pdk-job-{job.Id}-{Guid.NewGuid():N}",
-            WorkDir = "/workspace",
-            Mounts = new[]
-            {
-                new Mount
-                {
-                    Source = workspacePath,
-                    Target = "/workspace",
-                    Type = "bind"
-                }
-            },
-            Environment = job.Environment
-        });
-}
+// 2. Session: expression contexts, exported environment, step outcomes
+session = new JobExecutionSession(job, effectiveRun, ContainerWorkspace, image, _logger);
+
+// 3. Create the container with the workspace bind-mounted at /workspace
+containerId = await _containerManager.CreateContainerAsync(new ContainerConfig
+{
+    Image = image,
+    WorkspacePath = workspacePath,
+    MountDockerSocket = job.Steps.Any(s => s.Type == StepType.Docker),
+    MemoryLimit = runContext.ContainerMemoryLimit,
+    CpuLimit = runContext.ContainerCpuLimit
+});
 ```
+
+The Docker socket is mounted into the container only when the job contains Docker steps; memory and
+CPU limits come from the `docker` configuration section; `--no-cache` forces an image pull.
 
 ### Image Mapping
 
-The `ImageMapper` converts runner names to Docker images:
+The `ImageMapper` (`src/PDK.Runners/Docker/ImageMapper.cs`) converts runner labels to Docker images;
+anything that is not a known label is treated as an image name (`runs-on: node:18`), and an
+unresolved `${{ }}` expression falls back to the `ubuntu-latest` image:
 
 | Runner Name | Docker Image |
 |-------------|--------------|
-| `ubuntu-latest` | `ubuntu:latest` |
-| `ubuntu-22.04` | `ubuntu:22.04` |
-| `ubuntu-20.04` | `ubuntu:20.04` |
-| `windows-latest` | `mcr.microsoft.com/windows/servercore:ltsc2022` |
+| `ubuntu-latest`, `ubuntu-22.04` | `buildpack-deps:jammy` |
+| `ubuntu-20.04` | `buildpack-deps:focal` |
+| `windows-latest`, `windows-2022` | `mcr.microsoft.com/windows/servercore:ltsc2022` |
+| `windows-2019` | `mcr.microsoft.com/windows/servercore:ltsc2019` |
+| `node:18`, `mcr.microsoft.com/dotnet/sdk:8.0`, ... | used as-is |
 
 ## Host Job Runner
 
@@ -214,24 +231,33 @@ Location: `src/PDK.Runners/HostJobRunner.cs`
 sequenceDiagram
     participant Client
     participant HostRunner
+    participant Session
     participant ExecutorFactory
     participant StepExecutor
     participant ProcessExecutor
 
-    Client->>HostRunner: RunJobAsync(job)
+    Client->>HostRunner: RunJobAsync(job, runContext)
     HostRunner->>HostRunner: Show security warning
+    HostRunner->>Session: new JobExecutionSession(job, runContext, workspace)
 
     loop For each step
+        HostRunner->>Session: PrepareStep(step, index)
+        Session-->>HostRunner: StepPlan
         HostRunner->>ExecutorFactory: GetExecutor(step.Type)
         ExecutorFactory-->>HostRunner: executor
         HostRunner->>StepExecutor: ExecuteAsync(step, context)
         StepExecutor->>ProcessExecutor: ExecuteAsync(command)
         ProcessExecutor-->>StepExecutor: output, exitCode
         StepExecutor-->>HostRunner: StepResult
+        HostRunner->>Session: Record(step, index, result)
     end
 
     HostRunner-->>Client: JobResult
 ```
+
+Host steps run in the workspace directory with the exported environment on top of the environment of
+the `pdk` process. Custom images and Docker steps need Docker (`RunnerCapabilities`); `--runner auto`
+falls back to the host runner only when the job does not need them.
 
 ### Security Warning
 
@@ -243,11 +269,36 @@ _logger.LogWarning(
     "without sandboxing. Ensure you trust the pipeline content.");
 ```
 
+## Job Execution Session
+
+`JobExecutionSession` (`src/PDK.Runners/JobExecutionSession.cs`) holds the per-job state that both
+runners share and implements the execution semantics described in
+[Expressions](../../expressions.md#execution-semantics):
+
+- `PrepareStep(step, index)` builds the expression context for the step (`steps.*`, dynamic `env`,
+  job status), evaluates the condition (default `success()` / `succeeded()`), expands `${{ }}` /
+  `$( )` / `$[ ]` in the step's name, script, inputs, env, working directory and artifact fields, and
+  returns a `StepPlan`: skip (with reason: disabled, condition false, setup no-op, unsupported step),
+  fail (invalid expression, unsupported step with `--strict`) or run with the complete environment
+  (platform variables, PDK variables and secrets by name, the `GITHUB_OUTPUT` / `GITHUB_ENV` /
+  `GITHUB_PATH` / `GITHUB_STEP_SUMMARY` files, `PATH` additions) and the per-step timeout.
+- `Record(step, index, result)` updates the job status (a failure that is not `continue-on-error`
+  flips it to `Failure`), appends the `steps.<id>` outcome, and harvests outputs and environment
+  additions from the command files and from `::set-output` / `::set-env` / `::add-path` /
+  `::add-mask` / `##vso[task.setvariable]` / `##vso[task.prependpath]` / `##vso[task.setsecret]`.
+- `Outputs` are returned in `JobExecutionResult.Outputs` and become `needs.*` / `dependencies.*`
+  for dependent jobs; `AdditionalMaskValues` feed the output masking.
+
+The per-run scratch files live in `.pdk/runtime/<run id>/<job>/step-<n>/` and are removed after the
+run. PDK's own `${VAR}` expansion of step inputs, environment values and working directories
+(`VariableExpander`) is applied by the runner right before the executor is called; scripts are not
+rewritten.
+
 ## Step Executors
 
 ### Script Executor
 
-Executes bash/shell scripts:
+Executes shell scripts (bash, sh, pwsh, python, ...):
 
 ```csharp
 public class ScriptStepExecutor : IStepExecutor
@@ -340,6 +391,9 @@ public class StepExecutorFactory
 }
 ```
 
+`Setup` and `Unknown` steps never reach an executor: the session skips them (or fails them with
+`--strict`) before the runner looks one up.
+
 ## Execution Context
 
 ### Docker Context
@@ -353,7 +407,9 @@ public record ExecutionContext(
     Dictionary<string, string> Environment,
     string? WorkingDirectory,
     JobMetadata JobInfo,
-    ArtifactContext? ArtifactContext);
+    ArtifactContext? ArtifactContext,
+    Action<string>? OutputLineHandler,
+    TimeSpan? Timeout);
 ```
 
 ### Host Context
@@ -366,7 +422,9 @@ public record HostExecutionContext(
     string? WorkingDirectory,
     OSPlatform Platform,
     JobMetadata JobInfo,
-    ArtifactContext? ArtifactContext)
+    ArtifactContext? ArtifactContext,
+    Action<string>? OutputLineHandler,
+    TimeSpan? Timeout)
 {
     public string ResolvePath(string relativePath)
     {
@@ -401,16 +459,16 @@ public class FilteringJobRunner : IJobRunner
     private readonly IStepFilter _filter;
 
     public async Task<JobExecutionResult> RunJobAsync(
-        Job job, string workspace, CancellationToken ct)
+        Job job, JobRunContext runContext, CancellationToken ct)
     {
         // Categorize steps
-        var (toExecute, toSkip) = CategorizeSteps(job.Steps);
+        var (toExecute, toSkip) = CategorizeSteps(job);
 
         // Create filtered job
-        var filteredJob = job with { Steps = toExecute };
+        var filteredJob = CloneWithSteps(job, toExecute);
 
         // Execute filtered job
-        var result = await _inner.RunJobAsync(filteredJob, workspace, ct);
+        var result = await _inner.RunJobAsync(filteredJob, runContext, ct);
 
         // Merge skipped steps into results
         return MergeWithSkipped(result, toSkip);
@@ -425,14 +483,18 @@ public class FilteringJobRunner : IJobRunner
 ```csharp
 public record StepExecutionResult
 {
-    public required string StepName { get; init; }
-    public required bool Success { get; init; }
-    public required int ExitCode { get; init; }
-    public required string Output { get; init; }
-    public string? ErrorOutput { get; init; }
-    public required TimeSpan Duration { get; init; }
-    public required DateTime StartTime { get; init; }
-    public required DateTime EndTime { get; init; }
+    public string StepName { get; init; }
+    public bool Success { get; init; }
+    public int ExitCode { get; init; }
+    public string Output { get; init; }
+    public string ErrorOutput { get; init; }
+    public TimeSpan Duration { get; init; }
+    public DateTimeOffset StartTime { get; init; }
+    public DateTimeOffset EndTime { get; init; }
+    public bool Skipped { get; init; }          // condition false, disabled, filtered, unsupported
+    public string? SkipReason { get; init; }
+    public bool AllowedFailure { get; init; }   // failed with continue-on-error
+    public bool CountsAsSuccess => Success || Skipped || AllowedFailure;
 }
 ```
 
@@ -441,60 +503,79 @@ public record StepExecutionResult
 ```csharp
 public record JobExecutionResult
 {
-    public required string JobName { get; init; }
-    public required bool Success { get; init; }
-    public required IList<StepExecutionResult> StepResults { get; init; }
-    public required TimeSpan Duration { get; init; }
-    public required DateTime StartTime { get; init; }
-    public required DateTime EndTime { get; init; }
+    public string JobName { get; init; }
+    public bool Success { get; init; }          // every step CountsAsSuccess
+    public List<StepExecutionResult> StepResults { get; init; }
+    public TimeSpan Duration { get; init; }
+    public DateTimeOffset StartTime { get; init; }
+    public DateTimeOffset EndTime { get; init; }
     public string? ErrorMessage { get; init; }
+    public bool Skipped { get; init; }          // dependency failed or job condition false
+    public string? SkipReason { get; init; }
+    public IReadOnlyDictionary<string, string> Outputs { get; init; }   // stepId.name and name
 }
 ```
 
-## Error Handling
+## Execution Semantics
 
-### Continue on Error
+### Conditions and failures
 
-Steps with `ContinueOnError = true` don't fail the job:
+A failed step does not abort the job. The session marks the job status as failed and keeps
+evaluating the remaining steps: their default condition is false, so they are recorded as skipped
+("a previous step failed"), while `always()` / `failure()` / `succeededOrFailed()` steps still run.
 
 ```csharp
-foreach (var step in job.Steps)
+for (int i = 0; i < job.Steps.Count; i++)
 {
-    var result = await ExecuteStepAsync(step, context, ct);
-    stepResults.Add(result);
+    var plan = session.PrepareStep(job.Steps[i], i);
 
-    if (!result.Success && !step.ContinueOnError)
-    {
-        // Stop execution
-        break;
-    }
+    StepExecutionResult result;
+    if (plan.Skip)
+        result = JobExecutionSession.SkippedResult(plan.Step.Name, plan.SkipReason!);
+    else if (plan.Failed)
+        result = JobExecutionSession.FailedResult(plan.Step.Name, plan.FailureMessage!, step.ContinueOnError);
+    else
+        result = (await ExecuteStepAsync(plan.Step, context, plan.Timeout, job.Name, token))
+            with { AllowedFailure = !success && step.ContinueOnError };
+
+    stepResults.Add(result);
+    session.Record(job.Steps[i], i, result);
 }
+
+return BuildJobResult(job.Name, stepResults, startTime, session.Outputs); // Success = all CountsAsSuccess
 ```
 
+### Timeouts and cancellation
+
+Each step runs under a linked cancellation token with the step's `timeout-minutes` /
+`timeoutInMinutes`; the job token carries the job timeout. A timed-out step is returned as a failed
+result ("timed out") and the loop continues with the failure rules above; a timed-out job returns a
+failed `JobExecutionResult` with "Job timed out". Ctrl+C cancels the outer token: the step is killed,
+the container is removed in `finally` (unless `--keep-containers`) and the `OperationCanceledException`
+propagates so the CLI exits with 130.
+
 ### Exception Handling
+
+Executor problems are converted into failed step results so that a single bad step never aborts the
+whole job:
 
 ```csharp
 try
 {
-    var result = await executor.ExecuteAsync(step, context, ct);
-    return result;
+    var executor = _executorFactory.GetExecutor(stepTypeName);
+    return await executor.ExecuteAsync(step, context, stepCts.Token);
 }
-catch (OperationCanceledException)
+catch (NotSupportedException ex)
 {
-    return new StepExecutionResult
-    {
-        Success = false,
-        Output = "Step cancelled"
-    };
+    return JobExecutionSession.FailedResult(step.Name, ex.Message, step.ContinueOnError);
+}
+catch (OperationCanceledException) when (stepCts.IsCancellationRequested && !token.IsCancellationRequested)
+{
+    return JobExecutionSession.FailedResult(step.Name, $"Step timed out after {timeout}", step.ContinueOnError, exitCode: 124);
 }
 catch (Exception ex)
 {
-    _logger.LogError(ex, "Step {Step} failed", step.Name);
-    return new StepExecutionResult
-    {
-        Success = false,
-        Output = ex.Message
-    };
+    return JobExecutionSession.FailedResult(step.Name, $"Step failed: {ex.Message}", step.ContinueOnError);
 }
 ```
 
@@ -523,6 +604,7 @@ See [Custom Executor Guide](../extending/custom-executor.md) for details.
 
 ## Next Steps
 
+- [Expressions and Execution Semantics](../../expressions.md) - Conditions, contexts and outputs
 - [CLI Architecture](cli.md) - How commands work
 - [Data Flow](data-flow.md) - Complete execution flow
 - [Custom Executor Guide](../extending/custom-executor.md) - Adding executors

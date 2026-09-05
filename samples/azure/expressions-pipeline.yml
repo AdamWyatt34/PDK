@@ -1,0 +1,73 @@
+# Exercises the Azure Pipelines expression and execution semantics that PDK supports locally.
+# It needs no project: run it with `pdk run --file samples/azure/expressions-pipeline.yml --host`.
+# See docs/expressions.md for the details.
+name: Expressions Sample
+
+trigger: none
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  - name: buildConfiguration
+    value: Release
+  - name: Some.Dotted
+    value: dotted-value
+
+jobs:
+  - job: Produce
+    displayName: Produce variables and outputs
+    variables:
+      jobVar: job-value
+    steps:
+      - script: |
+          echo "macro: $(buildConfiguration)  env: $BUILDCONFIGURATION  dotted: $SOME_DOTTED  job: $(jobVar)"
+          echo "unknown macros reach the shell: $(date +%Y)"
+          echo "branch: $(Build.SourceBranch)  tf_build: $TF_BUILD  agent: $(Agent.OS)"
+          echo "template: ${{ variables.buildConfiguration }}  runtime: $[ variables.buildConfiguration ]"
+          echo "##vso[task.setvariable variable=later]set-by-earlier-step"
+          echo "##vso[task.setvariable variable=artifactName;isOutput=true]drop-1.2.3"
+          echo "##vso[task.prependpath]$PWD/tools"
+        name: produce
+        displayName: Set variables and an output
+
+      - script: echo "later=$(later) LATER=$LATER output=$(produce.artifactName) PATH starts with ${PATH%%:*}"
+        displayName: Read them in the same job
+
+      - script: exit 2
+        displayName: A step that fails
+
+      - script: echo "never printed"
+        displayName: Skipped because a previous step failed
+
+      - script: echo "failed() is true"
+        condition: failed()
+        displayName: Runs only after a failure
+
+      - script: echo "succeededOrFailed() is true"
+        condition: succeededOrFailed()
+        displayName: Runs unless cancelled
+
+      - script: echo "never printed"
+        enabled: false
+        displayName: Disabled step
+
+      - task: SomeUnknownTask@1
+        displayName: Unknown tasks are skipped with a warning (fail with --strict)
+
+  - job: Consume
+    displayName: Read dependency results and outputs
+    dependsOn: Produce
+    condition: always()
+    steps:
+      - script: |
+          echo "Produce result: $[ dependencies.Produce.result ]"
+          echo "Produce output: $[ dependencies.Produce.outputs['produce.artifactName'] ]"
+          echo "in(): $[ in(variables['buildConfiguration'], 'Debug', 'Release') ]  coalesce(): $[ coalesce(variables['missing'], 'fallback') ]"
+        displayName: Use dependencies context
+
+  - job: SkippedDependent
+    displayName: Skipped because Produce failed
+    dependsOn: Produce
+    steps:
+      - script: echo "never printed"

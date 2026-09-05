@@ -215,25 +215,43 @@ Error: Failed to parse .github/workflows/ci.yml
 3. Use a YAML validator: https://www.yamllint.com/
 4. Check PDK examples for correct syntax
 
-### "Unknown step type"
+### "unsupported action or task ... was skipped"
 
 **Symptom:**
 ```
-Error: Job 'build', Step 3: Unknown step type
+Warning: Task 'SomeTask@1' (step 'Publish') is not supported locally and will be skipped.
+  Step 3: Publish - SKIPPED (unsupported action or task 'SomeTask@1' was skipped)
 ```
 
-**Cause:** Pipeline uses a step type not yet supported by PDK.
+**Cause:** The pipeline uses an action or task PDK cannot run locally (marketplace actions, local
+`./actions`, `docker://` actions, unknown Azure tasks). Tool setup steps (`actions/setup-*`,
+`UseDotNet@2`, ...) are no-ops for the same reason: the image or host must provide the tool.
 
 **Solution:**
 
-1. Check supported step types in `pdk version --full`
+1. Check the supported actions and tasks in the [README](../../README.md#what-runs-locally)
 2. Use a script step as a workaround:
    ```yaml
    - name: Alternative
      run: |
        # Your commands here
    ```
-3. Report the unsupported feature on GitHub Issues
+3. Run with `--strict` if a skipped step should fail the run instead
+4. Report the unsupported feature on GitHub Issues
+
+### "Job 'build' was not found in the pipeline"
+
+**Cause:** Matrix jobs are expanded into one job per combination (`build-ubuntu-latest`,
+`build-windows-latest`, ...) and Azure stage jobs get `<Stage>_<Job>` ids.
+
+**Solution:** `pdk list` shows the ids; pass one of them to `--job` (exit code 2 otherwise).
+
+### "Multiple pipeline files found"
+
+**Cause:** Without `--file`, PDK requires exactly one candidate in the current directory
+(`.github/workflows/*.yml`, `azure-pipelines.yml`, `.azure-pipelines/*.yml`, `*.pipeline.yml`).
+
+**Solution:** Pass `--file`.
 
 ### "Invalid action reference"
 
@@ -284,29 +302,37 @@ uses: my-action
      run: apt-get update && apt-get install -y <tool>
    ```
 
-3. Set required environment variables explicitly:
-   ```yaml
-   env:
-     CI: true
-     GITHUB_WORKSPACE: ${{ github.workspace }}
-   ```
+3. Check the environment PDK provides: `CI`, `GITHUB_*` / `RUNNER_*` (GitHub) or `BUILD_*` /
+   `SYSTEM_*` / `AGENT_*` / `TF_BUILD` (Azure) are set from the local git repository; values that
+   only exist on the CI service (tokens, PR numbers) are empty. See
+   [Expressions](../expressions.md).
 
 4. Check working directory matches expectations
 
 ### "Step timed out"
 
-**Symptom:** Step takes too long and times out.
+**Symptom:** The step is reported as failed with "timed out".
 
-**Cause:** Long-running operation or infinite loop.
+**Cause:** The step ran longer than its `timeout-minutes` / `timeoutInMinutes` (or the job's
+timeout); PDK terminates the process tree.
 
 **Solution:**
 
-1. Increase timeout (if available)
+1. Increase the timeout in the pipeline file
 2. Check for infinite loops in scripts
 3. Use step filtering to isolate the issue:
    ```bash
    pdk run --step-filter "Problem Step" --verbose
    ```
+
+### Steps after a failure are skipped
+
+**Symptom:** After one step fails the remaining steps show `SKIPPED (a previous step failed)`.
+
+**Cause:** This mirrors CI: the default step condition is `success()` / `succeeded()`.
+
+**Solution:** Use `if: always()` / `condition: always()` (or `failure()`) on steps that must run
+anyway, or `continue-on-error: true` on the step that is allowed to fail.
 
 ### "Container exited with non-zero code"
 
@@ -385,12 +411,7 @@ Error: Container exited with code 1
    }
    ```
 
-2. Run fewer parallel steps:
-   ```bash
-   pdk run --max-parallel 2
-   ```
-
-3. Clean up Docker:
+2. Clean up Docker:
    ```bash
    docker system prune
    ```
@@ -452,21 +473,22 @@ Error: Container exited with code 1
 
 ## Secret and Variable Issues
 
-### Secret not found
+### Secret not found or "(unreadable)"
 
 **Symptom:**
 ```
 Error: Secret 'API_KEY' not found
 ```
+or `pdk secret list` shows `API_KEY (unreadable: cannot be decrypted with the current key; set it again)`.
 
 **Solution:**
 
-1. Check secret exists:
+1. Check the secret exists:
    ```bash
    pdk secret list
    ```
 
-2. Set the secret:
+2. Set (or re-set) the secret:
    ```bash
    pdk secret set API_KEY
    ```
@@ -476,16 +498,20 @@ Error: Secret 'API_KEY' not found
    export PDK_SECRET_API_KEY="value"
    ```
 
+Unreadable entries appear when `~/.pdk/secrets.json` was copied without its `~/.pdk/secret.key`.
+
 ### Variable not expanding
 
-**Symptom:** Variable shows as literal `${VAR_NAME}` instead of value.
+**Symptom:** A step input shows the literal `${VAR_NAME}` instead of a value.
 
 **Solution:**
 
-1. Check syntax: Use `${VAR_NAME}` not `$VAR_NAME`
-2. Verify variable is defined
+1. PDK leaves unknown `${VAR_NAME}` references as written; define the variable with `--var`,
+   the configuration file or `PDK_VAR_VAR_NAME`
+2. Plain host environment variables are not PDK variables (only `PDK_VAR_*` / `PDK_SECRET_*` are
+   imported); in scripts the shell expands them, in inputs they need the `PDK_VAR_` prefix
 3. Check for circular references
-4. Use `--verbose` to see variable resolution
+4. Use `pdk run --dry-run` to see the resolved variables
 
 ## Getting More Help
 
@@ -495,7 +521,9 @@ Error: Secret 'API_KEY' not found
 pdk run --trace --log-file pdk-trace.log
 ```
 
-This creates an extremely detailed log file you can share when reporting issues.
+This creates an extremely detailed log file you can share when reporting issues (secrets are masked;
+a rotated log is always kept in `~/.pdk/logs/pdk.log`). Every error panel carries a code such as
+`PDK-E-RUNNER-001`; the [error code reference](../errors.md) explains each one.
 
 ### Report a Bug
 
@@ -516,3 +544,5 @@ If you've found a bug:
 - [Installation Guide](../installation.md)
 - [Command Reference](../commands/README.md)
 - [Configuration Guide](../configuration/README.md)
+- [Error Codes](../errors.md)
+- [Expressions and Execution Semantics](../expressions.md)

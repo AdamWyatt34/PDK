@@ -95,51 +95,44 @@ jobs:
 pdk run --file .github/workflows/artifacts.yml
 ```
 
-**Expected output:**
+The three jobs run in dependency order (`build`, `test`, `deploy`). Every `pdk run` gets one run id,
+and all uploads and downloads of that run share it, so `test` and `deploy` receive exactly what
+`build` produced.
+
+**Expected output (abridged):**
 
 ```
-Pipeline: Artifacts Demo
-Runner: ubuntu-latest
-
-Job: build
-  Step: Checkout
-    Cloning repository...
-  Step: Build application
-    Building...
-    Created dist/build-info.txt
-  Step: Upload build artifacts
-    Uploading to .pdk/artifacts/build-output...
-    Uploaded 2 files
-
-Job: test
-  Step: Download build artifacts
-    Downloading from .pdk/artifacts/build-output...
-  Step: Verify artifacts
-    Downloaded artifacts:
-    total 8
-    -rw-r--r-- 1 user user 45 Dec 25 12:00 build-info.txt
-    Built at Wed Dec 25 12:00:00 UTC 2024
-    Version: 1.0.0
-  Step: Run tests
-    Running tests...
-
-Job: deploy
-  Step: Download artifacts
-    Downloading...
-  Step: Deploy
-    Deploying artifacts...
-
-Pipeline completed successfully
+> Running job 1 of 3: build
+    * Step 1/3: Checkout
+    * Step 2/3: Build application
+    * Step 3/3: Upload build artifacts
+  + Job build completed in 1.2s
+> Running job 2 of 3: test
+    * Step 1/3: Download build artifacts
+    * Step 2/3: Verify artifacts
+    * Step 3/3: Run tests
+  + Job test completed in 0.4s
+> Running job 3 of 3: deploy
+    ...
+╭─Execution Summary────────────────────────────────╮
+│ Pipeline: Artifacts Demo                         │
+│ Status: ✓ Success                                │
+│ Jobs:  3 total, 3 succeeded, 0 failed            │
+│ Steps: 8 total, 8 succeeded, 0 failed            │
+╰──────────────────────────────────────────────────╯
 ```
 
 ### Development Workflow
 
 ```bash
-# Run only build job
+# Run only the build job
 pdk run --job build
 
-# Skip deployment
-pdk run --skip-step "Deploy"
+# Run the test job: build runs first because test needs it
+pdk run --job test
+
+# Run the test job alone; the download falls back to the newest previous upload of "build-output"
+pdk run --job test --no-deps
 
 # Verify artifact handling
 pdk run --verbose
@@ -147,19 +140,41 @@ pdk run --verbose
 
 ## PDK Artifact Storage
 
-PDK stores artifacts locally:
+Artifacts are stored inside the workspace, scoped by run, job and step:
 
 ```
 .pdk/
 └── artifacts/
-    └── build-output/
-        └── build-info.txt
+    └── run-20260905-103045-123/
+        └── job-build/
+            └── step-2-Upload_build_artifacts/
+                └── artifact-build-output/
+                    ├── artifact.metadata.json
+                    └── artifact.tar.gz        # or artifact.zip, or files/ when uncompressed
 ```
+
+- The run directory name is the run id (`yyyyMMdd-HHmmss-fff`, UTC); one id per `pdk run`.
+- Job and step names are sanitised for the file system; the artifact name is kept in
+  `artifact.metadata.json`. Names may not contain `" : < > | * ? \ /` or line breaks.
+- Uploading the same artifact name again in a later step creates a new version; downloads take the
+  newest one.
+- A download first looks in the current run. When the artifact was not uploaded in this run (for
+  example with `--job test --no-deps`), PDK falls back to the newest upload from a previous run and
+  prints a warning that names the run it used.
+- `if-no-files-found` (`error` default for Azure tasks, `warn` default for `actions/upload-artifact`,
+  or `ignore`) decides what happens when the patterns match nothing.
+- `retention-days` on the upload step (or `artifacts.retentionDays` in the configuration, default 7)
+  is recorded in the metadata and used by cleanup; `0` disables cleanup.
+
+Azure Pipelines steps use the same store: `PublishBuildArtifacts@1`, `PublishPipelineArtifact@1`,
+`publish:`, `DownloadBuildArtifacts@1`, `DownloadPipelineArtifact@2` and `download:` (`download: none`
+is honoured).
 
 ### View Artifacts
 
 ```bash
 ls -la .pdk/artifacts/
+find .pdk/artifacts -name artifact.metadata.json
 ```
 
 ### Clean Artifacts
@@ -196,15 +211,11 @@ rm -rf .pdk/artifacts/
     path: |
       **/*.log
       !node_modules/**
+    if-no-files-found: warn
 ```
 
-### Download Multiple
-
-```yaml
-- name: Download all artifacts
-  uses: actions/download-artifact@v4
-  # Downloads all artifacts to current directory
-```
+Paths are relative to the workspace. As on GitHub, the artifact root is the least common ancestor
+of the matched files, so `dist/` uploads the content of `dist` without the `dist` prefix.
 
 ### Retention
 
@@ -223,19 +234,22 @@ Configure artifact storage in `.pdkrc`:
 
 ```json
 {
+  "version": "1.0",
   "artifacts": {
     "basePath": ".pdk/artifacts",
-    "retentionDays": 7,
-    "compression": "gzip"
+    "retentionDays": 7
   }
 }
 ```
 
+`basePath` is resolved relative to the workspace.
+
 ## Common Issues
 
-### Artifact not found
+### Artifact not found (`PDK-E-ARTIFACT-004`)
 
-Ensure names match between upload and download:
+Ensure names match between upload and download, and that the uploading job runs before the
+downloading one (`needs`):
 
 ```yaml
 # Upload
@@ -246,6 +260,11 @@ with:
 with:
   name: my-artifact  # Must match
 ```
+
+### No files matched (`PDK-E-ARTIFACT-002`)
+
+Check the path pattern relative to the workspace and that the files are produced by an earlier step;
+use `if-no-files-found: warn` when an empty upload is acceptable.
 
 ### Path issues
 
@@ -291,3 +310,4 @@ artifacts-example/
 - [Multi-Stage Pipeline](multi-stage.md)
 - [.NET Publish Example](dotnet-publish.md)
 - [Configuration Guide](../configuration/README.md)
+- [Error codes](../errors.md#artifacts)

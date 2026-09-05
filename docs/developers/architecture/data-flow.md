@@ -136,18 +136,19 @@ sequenceDiagram
     CLI->>VarResolver: LoadFromEnvironment()
     CLI->>VarResolver: SetVariable() (CLI vars)
 
-    CLI->>Expander: Expand(pipeline)
-    Expander->>Expander: Resolve ${VAR} references
-    Expander-->>CLI: Expanded pipeline
-
     CLI->>Filter: ApplyFilters(pipeline, options)
     Filter-->>CLI: Filtered steps
 ```
 
 **Outputs:**
 - Validated pipeline
-- Resolved variables
+- Resolved variables and secrets (exported to steps by name)
 - Filtered step list
+
+Variables are not substituted into the pipeline up front: `${VAR}` references in step inputs,
+environment values and working directories are expanded by the job runner right before each step
+(`VariableExpander`), and `${{ }}` / `$( )` / `$[ ]` expressions are evaluated per step by
+`JobExecutionSession` with the results of the steps and jobs that ran before.
 
 ### 4. Plan Phase
 
@@ -171,9 +172,11 @@ sequenceDiagram
 ```
 
 **Outputs:**
-- Ordered list of jobs
-- Dependency resolution
-- Execution context per job
+- Ordered list of jobs (`JobGraph.Select`: topological order, declaration order for ties; with
+  `--job` the transitive dependencies unless `--no-deps`)
+- Dependency resolution (unknown dependencies and cycles are rejected with `PDK-E-JOB-001/002`)
+- Execution context per job (`JobRunContext`: dependency results and outputs, event name, run id,
+  `--strict`, container limits, `--keep-containers`)
 
 ### 5. Execute Phase
 
@@ -209,9 +212,15 @@ sequenceDiagram
     end
 ```
 
+Before each job `JobConditionEvaluator` decides whether it runs (dependency failed or skipped, job
+`if:` / `condition:` false → skipped). Inside a job the runner asks `JobExecutionSession.PrepareStep`
+for a `StepPlan` (condition evaluated, expressions expanded, environment built) and records the
+result with `Record`, which harvests `$GITHUB_OUTPUT` / `##vso` outputs for the following steps and
+for dependent jobs (`JobExecutionResult.Outputs` → `needs.*` / `dependencies.*`).
+
 **Outputs:**
-- Step execution results
-- Job execution results
+- Step execution results (success, skipped with reason, allowed failure, failure)
+- Job execution results with outputs
 - Container outputs
 
 ### 6. Output Phase

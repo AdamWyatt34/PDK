@@ -38,6 +38,12 @@
       href: configuration/variables.md
     - name: Secrets
       href: configuration/secrets.md
+- name: Reference
+  items:
+    - name: Expressions and Execution Semantics
+      href: expressions.md
+    - name: Error Codes
+      href: errors.md
 - name: Guides
   items:
     - name: Troubleshooting
