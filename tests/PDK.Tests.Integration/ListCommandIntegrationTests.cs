@@ -337,7 +337,7 @@ public class ListCommandIntegrationTests
         var result = await command.ExecuteAsync();
 
         // Assert
-        result.Should().Be(1);
+        result.Should().Be(PDK.CLI.ExitCodes.FileNotFound);
         _testConsole.Output.Should().Contain("File not found");
     }
 
@@ -391,8 +391,9 @@ metadata:
 
             // Assert
             result.Should().Be(1);
-            // Should indicate no parser found
-            _testConsole.Output.Should().Contain("No parser found");
+            // Should explain that the file is not a supported pipeline definition (console output may wrap)
+            System.Text.RegularExpressions.Regex.Replace(_testConsole.Output, @"\s+", " ")
+                .Should().Contain("not a GitHub Actions workflow, an Azure DevOps pipeline or a GitLab CI configuration");
         }
         finally
         {

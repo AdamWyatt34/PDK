@@ -1,5 +1,6 @@
 namespace PDK.Tests.Unit.Logging;
 
+using FluentAssertions;
 using PDK.Core.Logging;
 using Xunit;
 
@@ -237,5 +238,156 @@ public class SecretMaskerEnhancedTests
 
         // Assert
         Assert.Null(result);
+    }
+    [Theory]
+    [InlineData("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc123", "Authorization: Bearer ***")]
+    [InlineData("Authorization: Basic dXNlcjpwYXNzd29yZA==", "Authorization: Basic ***")]
+    [InlineData("authorization=Bearer abc.def.ghi", "authorization=Bearer ***")]
+    [InlineData("Authorization: token ghp_abcdefghijklmnop", "Authorization: token ***")]
+    [InlineData("Authorization: rawcredential123", "Authorization: ***")]
+    [InlineData("curl -H \"Authorization: Bearer abcdef123456\" https://api", "curl -H \"Authorization: Bearer ***\" https://api")]
+    [InlineData("curl -H 'Authorization: Bearer abcdef123456' https://api", "curl -H 'Authorization: Bearer ***' https://api")]
+    [InlineData("Bearer abcdefgh12345678", "Bearer ***")]
+    public void MaskSecretsEnhanced_MasksBearerAndAuthorizationHeaders(string input, string expected)
+    {
+        var masker = new SecretMasker();
+
+        masker.MaskSecretsEnhanced(input).Should().Be(expected);
+    }
+
+    [Fact]
+    public void MaskSecretsEnhanced_BearerFollowedByOrdinaryWords_IsLeftAlone()
+    {
+        var masker = new SecretMasker();
+
+        masker.MaskSecretsEnhanced("bearer tokens are used here").Should().Be("bearer tokens are used here");
+    }
+
+    [Theory]
+    [InlineData("password: \"with spaces\"", "password: \"***\"")]
+    [InlineData("password: 'single quoted value'", "password: '***'")]
+    [InlineData("password=\"quoted=with;separators\"", "password=\"***\"")]
+    [InlineData("token=abc123", "token=***")]
+    [InlineData("token: abc123", "token: ***")]
+    [InlineData("--password=hunter2", "--password=***")]
+    [InlineData("--password hunter2 stays", "--password hunter2 stays")]
+    [InlineData("password : hunter2", "password : ***")]
+    [InlineData("DB_PASSWORD=hunter2", "DB_PASSWORD=***")]
+    [InlineData("db.password=hunter2", "db.password=***")]
+    [InlineData("SECRET2=abc", "SECRET2=***")]
+    [InlineData("api-key=abc", "api-key=***")]
+    [InlineData("MyApiKey=abc", "MyApiKey=***")]
+    [InlineData("token=abc&user=bob", "token=***&user=bob")]
+    [InlineData("token=abc; next", "token=***; next")]
+    [InlineData("(password=abc)", "(password=***)")]
+    public void MaskSecretsEnhanced_KeywordPatterns_PreserveKeyAndSeparator(string input, string expected)
+    {
+        var masker = new SecretMasker();
+
+        masker.MaskSecretsEnhanced(input).Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("AUTHOR=Jane")]
+    [InlineData("MONKEY=banana")]
+    [InlineData("TOKEN_URL=https://example.com/token")]
+    [InlineData("token_count: 5")]
+    [InlineData("PASSWORD_LENGTH=12")]
+    [InlineData("authorization_mode: strict")]
+    [InlineData("tokens=abc")]
+    [InlineData("password=")]
+    [InlineData("secret: null")]
+    [InlineData("auth: true")]
+    public void MaskSecretsEnhanced_NonSecretKeys_AreNotMasked(string input)
+    {
+        var masker = new SecretMasker();
+
+        masker.MaskSecretsEnhanced(input).Should().Be(input);
+    }
+
+    [Fact]
+    public void MaskSecretsEnhanced_Json_StaysValidJson()
+    {
+        // Arrange
+        var masker = new SecretMasker();
+        const string input = """{"password": "s3cret", "token": null, "count": 3, "api_key": 12345, "nested": {"secret": "a\"b\\c"}, "user": "bob"}""";
+
+        // Act
+        var result = masker.MaskSecretsEnhanced(input);
+
+        // Assert
+        result.Should().NotContain("s3cret").And.NotContain("12345").And.NotContain("a\\\"b");
+        result.Should().Contain("\"token\": null").And.Contain("\"user\": \"bob\"");
+
+        using var document = System.Text.Json.JsonDocument.Parse(result);
+        document.RootElement.GetProperty("password").GetString().Should().Be("***");
+        document.RootElement.GetProperty("api_key").GetString().Should().Be("***");
+        document.RootElement.GetProperty("nested").GetProperty("secret").GetString().Should().Be("***");
+        document.RootElement.GetProperty("token").ValueKind.Should().Be(System.Text.Json.JsonValueKind.Null);
+    }
+
+    [Fact]
+    public void MaskSecretsEnhanced_IsIdempotent()
+    {
+        var masker = new SecretMasker();
+        masker.RegisterSecret("registered-value");
+        const string input = "registered-value password=abc Authorization: Bearer abcdefghijkl {\"token\": \"x\"} https://u:p@h/";
+
+        var once = masker.MaskSecretsEnhanced(input);
+        var twice = masker.MaskSecretsEnhanced(once);
+
+        twice.Should().Be(once);
+    }
+
+    [Theory]
+    [InlineData("postgres://admin:s3cret@db.internal:5432/app", "postgres://***:***@db.internal:5432/app")]
+    [InlineData("redis://:onlypass@cache/0", "redis://:onlypass@cache/0")]
+    [InlineData("https://user:p%40ss@example.com/x", "https://***:***@example.com/x")]
+    public void MaskSecretsEnhanced_MasksCredentialsInAnyUrlScheme(string input, string expected)
+    {
+        var masker = new SecretMasker();
+
+        masker.MaskSecretsEnhanced(input).Should().Be(expected);
+    }
+
+    [Fact]
+    public void MaskDictionary_KeysThatMerelyContainKeywords_AreNotMasked()
+    {
+        // Arrange
+        var masker = new SecretMasker();
+        var data = new Dictionary<string, object?>
+        {
+            ["monkey"] = "banana",
+            ["author"] = "jane",
+            ["turkey_region"] = "eu",
+            ["apiKey"] = "abc"
+        };
+
+        // Act
+        var result = masker.MaskDictionary(data);
+
+        // Assert
+        result["monkey"].Should().Be("banana");
+        result["author"].Should().Be("jane");
+        result["turkey_region"].Should().Be("eu");
+        result["apiKey"].Should().Be("***");
+    }
+
+    [Fact]
+    public void MaskDictionary_MasksStringsInsideLists()
+    {
+        var masker = new SecretMasker();
+        masker.RegisterSecret("list-secret");
+        var data = new Dictionary<string, object?>
+        {
+            ["args"] = new List<object> { "--token=abc", "list-secret", 42 }
+        };
+
+        var result = masker.MaskDictionary(data);
+
+        var args = ((IEnumerable<object?>)result["args"]!).ToList();
+        args[0].Should().Be("--token=***");
+        args[1].Should().Be("***");
+        args[2].Should().Be(42);
     }
 }

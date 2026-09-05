@@ -1,6 +1,13 @@
 namespace PDK.Core.Artifacts;
 
 /// <summary>
+/// A file to add to an archive.
+/// </summary>
+/// <param name="SourceFilePath">The file on disk.</param>
+/// <param name="EntryPath">The path of the entry inside the archive (forward slashes).</param>
+public sealed record ArchiveFileEntry(string SourceFilePath, string EntryPath);
+
+/// <summary>
 /// Compresses and decompresses artifact directories.
 /// </summary>
 public interface IArtifactCompressor
@@ -22,13 +29,30 @@ public interface IArtifactCompressor
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Decompresses an archive to a directory.
+    /// Compresses an explicit list of files to an archive file, using the given entry paths.
+    /// </summary>
+    /// <param name="files">The files to add.</param>
+    /// <param name="targetPath">Output archive file path.</param>
+    /// <param name="type">Compression type to use.</param>
+    /// <param name="progress">Optional progress callback.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <exception cref="ArtifactException">Thrown when compression fails.</exception>
+    Task CompressFilesAsync(
+        IReadOnlyList<ArchiveFileEntry> files,
+        string targetPath,
+        CompressionType type,
+        IProgress<ArtifactProgress>? progress = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Decompresses an archive to a directory. Entries that would land outside the target
+    /// directory (absolute paths, "..", etc.) are rejected.
     /// </summary>
     /// <param name="archivePath">Archive file to decompress.</param>
     /// <param name="targetPath">Directory to extract files to.</param>
     /// <param name="progress">Optional progress callback.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <exception cref="ArtifactException">Thrown when decompression fails.</exception>
+    /// <exception cref="ArtifactException">Thrown when decompression fails or the archive is unsafe.</exception>
     Task DecompressAsync(
         string archivePath,
         string targetPath,

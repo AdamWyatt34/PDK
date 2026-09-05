@@ -66,7 +66,8 @@ public class WatchModeIntegrationTests : IDisposable
 
         // Assert
         var result = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        result.ChangeType.Should().Be(FileChangeType.Created);
+        // macOS (FSEvents) may report the creation and the first write as a single Modified notification.
+        result.ChangeType.Should().BeOneOf(FileChangeType.Created, FileChangeType.Modified);
         result.RelativePath.Should().Be("test.yml");
     }
 
@@ -150,7 +151,7 @@ public class WatchModeIntegrationTests : IDisposable
         var loggerFactory = LoggerFactory.Create(b => b.SetMinimumLevel(LogLevel.Debug));
         using var debouncer = new DebounceEngine(loggerFactory.CreateLogger<DebounceEngine>())
         {
-            DebounceMs = 200
+            DebounceMs = 500 // generous: a loaded runner must not split the burst into two batches
         };
 
         var debounceEvents = new List<IReadOnlyList<FileChangeEvent>>();
@@ -174,7 +175,6 @@ public class WatchModeIntegrationTests : IDisposable
                 RelativePath = $"file{i}.yml",
                 ChangeType = FileChangeType.Modified
             });
-            await Task.Delay(30); // Small delay, but within debounce window
         }
 
         // Wait for debounce
@@ -392,7 +392,7 @@ public class WatchModeIntegrationTests : IDisposable
         var loggerFactory = LoggerFactory.Create(b => b.SetMinimumLevel(LogLevel.Debug));
         using var debouncer = new DebounceEngine(loggerFactory.CreateLogger<DebounceEngine>())
         {
-            DebounceMs = 200
+            DebounceMs = 500 // generous: a loaded runner must not split the burst
         };
         using var queue = new ExecutionQueue(loggerFactory.CreateLogger<ExecutionQueue>());
 

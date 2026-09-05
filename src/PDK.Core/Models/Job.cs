@@ -49,4 +49,34 @@ public class Job
     /// Gets or sets the maximum duration allowed for this job. Null means no timeout.
     /// </summary>
     public TimeSpan? Timeout { get; set; }
+
+    /// <summary>
+    /// Gets or sets the container image the job should run in (GitHub <c>container:</c>, Azure <c>container:</c>).
+    /// When set, Docker mode uses this image instead of the one mapped from <see cref="RunsOn"/>.
+    /// </summary>
+    public string? Container { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether <see cref="Container"/> is only a preference for Docker mode rather than a requirement:
+    /// when true the job also runs directly on the host (GitLab <c>image:</c>, which GitLab's own shell executor
+    /// ignores). When false (GitHub/Azure <c>container:</c>) the host runner rejects the job.
+    /// </summary>
+    public bool ContainerOptional { get; set; }
+
+    /// <summary>
+    /// Gets or sets the matrix values this job instance was expanded from (GitHub <c>strategy.matrix</c>,
+    /// Azure <c>strategy.matrix</c>). Null for jobs that are not part of a matrix.
+    /// </summary>
+    public Dictionary<string, string>? Matrix { get; set; }
+
+    /// <summary>
+    /// Gets or sets pipeline variables scoped to this job (Azure DevOps job- and stage-level <c>variables:</c>,
+    /// merged with the pipeline-level ones). These are resolved for <c>$(name)</c> macros and exported to steps.
+    /// </summary>
+    public Dictionary<string, string> Variables { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets the stage this job belongs to (Azure DevOps multi-stage pipelines), or null.
+    /// </summary>
+    public string? Stage { get; set; }
 }

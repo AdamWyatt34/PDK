@@ -51,4 +51,14 @@ public record ExecutionContext
     /// Contains run ID, job name, step info for organizing artifacts.
     /// </summary>
     public ArtifactContext? ArtifactContext { get; init; }
+
+    /// <summary>
+    /// Gets an optional callback that receives output lines while the step runs (live output).
+    /// </summary>
+    public Action<string>? OutputLineHandler { get; init; }
+
+    /// <summary>
+    /// Gets the per-step timeout, or null for none.
+    /// </summary>
+    public TimeSpan? Timeout { get; init; }
 }

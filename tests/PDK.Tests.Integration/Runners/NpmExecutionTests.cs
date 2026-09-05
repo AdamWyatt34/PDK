@@ -76,7 +76,7 @@ public class NpmExecutionTests : IAsyncDisposable
 
     #region Install Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task NpmInstall_WithPackageJson_InstallsSuccessfully()
@@ -117,7 +117,7 @@ public class NpmExecutionTests : IAsyncDisposable
         result.ExitCode.Should().Be(0);
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task NpmInstall_DefaultCommand_UsesInstall()
@@ -155,7 +155,7 @@ public class NpmExecutionTests : IAsyncDisposable
         result.ExitCode.Should().Be(0);
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task NpmInstall_MissingPackageJson_Fails()
@@ -212,7 +212,7 @@ public class NpmExecutionTests : IAsyncDisposable
 
     #region Build Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task NpmRunBuild_WithBuildScript_BuildsSuccessfully()
@@ -272,7 +272,7 @@ public class NpmExecutionTests : IAsyncDisposable
 
     #region Test Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task NpmTest_WithTestScript_RunsTests()
@@ -332,7 +332,7 @@ public class NpmExecutionTests : IAsyncDisposable
 
     #region Custom Script Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task NpmRunCustomScript_ExecutesSuccessfully()
@@ -379,10 +379,10 @@ public class NpmExecutionTests : IAsyncDisposable
 
     #region Tool Validation Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
-    public async Task NpmNotInstalled_ThrowsToolNotFoundException()
+    public async Task NpmNotInstalled_ReturnsFailedStep()
     {
         // Arrange - Use Alpine image without npm
         await _containerManager.PullImageIfNeededAsync("alpine:latest");
@@ -422,17 +422,19 @@ public class NpmExecutionTests : IAsyncDisposable
             }
         };
 
-        // Act & Assert
-        await executor.Invoking(e => e.ExecuteAsync(step, context))
-            .Should().ThrowAsync<ToolNotFoundException>()
-            .WithMessage("*npm*not found*");
+        // Act
+        var result = await executor.ExecuteAsync(step, context);
+
+        // Assert: executors report a missing tool as a failed step (so continue-on-error applies) instead of throwing
+        result.Success.Should().BeFalse();
+        result.ErrorOutput.Should().ContainEquivalentOf("npm").And.ContainEquivalentOf("not found");
     }
 
     #endregion
 
     #region CI Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task NpmCi_WithPackageLock_InstallsSuccessfully()
@@ -505,7 +507,7 @@ public class NpmExecutionTests : IAsyncDisposable
 
     #region End-to-End Workflow Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task NpmWorkflow_InstallBuildTest_SucceedsEndToEnd()

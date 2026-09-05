@@ -447,6 +447,29 @@ public class VariableResolverTests
     }
 
     [Fact]
+    public void LoadFromEnvironment_DoesNotStoreUnprefixedHostVariables()
+    {
+        // Arrange
+        var resolver = new VariableResolver();
+        var testVar = $"PDK_TEST_{Guid.NewGuid():N}";
+        Environment.SetEnvironmentVariable(testVar, "host_value");
+
+        try
+        {
+            // Act
+            resolver.LoadFromEnvironment();
+
+            // Assert: resolvable for ${VAR} expansion, but not part of the exported/enumerated set
+            resolver.Resolve(testVar).Should().Be("host_value");
+            resolver.GetAllVariables().Should().NotContainKey(testVar);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(testVar, null);
+        }
+    }
+
+    [Fact]
     public void LoadFromEnvironment_StripsPdkVarPrefix()
     {
         // Arrange

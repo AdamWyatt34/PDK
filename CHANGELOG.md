@@ -4,7 +4,68 @@ All notable changes to PDK (Pipeline Development Kit) will be documented in this
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
 ## [Unreleased]
+
+### Added
+- `--parallel` runs independent jobs concurrently (up to `--max-parallel`, default 4), preserving dependency order; step names and output lines are prefixed with the job name.
+- `--param NAME=VALUE` (alias `--input`) supplies Azure `parameters:` values and GitHub `inputs`; parsers receive parameters, variables, workspace and event through `PipelineParseOptions`.
+- Expression engine for both providers: GitHub `${{ }}` expressions and `if:` conditions (contexts `github`, `env`, `vars`, `secrets`, `inputs`, `matrix`, `needs`, `steps`, `runner`, `job`; functions `contains`, `startsWith`, `endsWith`, `format`, `join`, `toJSON`, `fromJSON`, `hashFiles`; status functions), Azure `$(macro)` for known variables, `${{ }}` and `$[ ]` expressions and function-style `condition:` (`eq`, `ne`, `and`, `or`, `not`, `in`, `notIn`, `contains`, `startsWith`, `endsWith`, `coalesce`, ..., `succeeded`, `failed`, `canceled`, `succeededOrFailed`, `always`, `variables[...]`, `dependencies.X.result/outputs`). See docs/expressions.md.
+- Job graph: jobs run in dependency order, `--job` runs the transitive dependencies first (`--no-deps` to skip them), job `if:`/`condition:` is evaluated against the dependency results, and a job whose dependency failed (GitHub: or was skipped) is skipped.
+- Job outputs flow into `needs.X.outputs` / `dependencies.X.outputs`; `$GITHUB_OUTPUT`, `$GITHUB_ENV`, `$GITHUB_PATH`, `$GITHUB_STEP_SUMMARY`, `::set-output`, `::set-env`, `::add-path`, `::add-mask`, `##vso[task.setvariable ...]` (including `isOutput` / `isSecret`) and `##vso[task.prependpath]` are honoured.
+- Platform environment exported to steps: `GITHUB_*` / `RUNNER_*` / `CI` for GitHub, `BUILD_*` / `SYSTEM_*` / `AGENT_*` / `TF_BUILD` for Azure (variables also as upper-cased env names); variables and secrets are exported by name.
+- Per-step `timeout-minutes` / `timeoutInMinutes` and job timeouts are enforced.
+- `pdk run` options `--no-deps`, `--strict`, `--event <name>` and `--keep-containers`; `--metrics` prints a performance table after the run.
+- GitHub parser: `strategy.matrix` expansion (job ids `<job>-<value>-<value>`, `include` / `exclude`), `defaults.run`, `container:`, `runs-on` lists and groups, `timeout-minutes`; warnings for `services:` and reusable-workflow jobs.
+- GitLab CI support: `.gitlab-ci.yml` is auto-detected and parsed (`stages`, `variables`, `default`, `workflow`, `script` / `before_script` / `after_script`, `image`, `needs`, `dependencies`, `rules`, `only` / `except`, `when`, `allow_failure`, `timeout`, `artifacts`, `extends`, `!reference`, anchors, `parallel` and `parallel:matrix`, `include: local`). `rules`, `only` / `except` and `workflow` decide at parse time which jobs run and `pdk list` shows why a job is skipped; the `CI_*` predefined variables are exported to steps; `image:` is a preference that host mode ignores. `trigger`, remote / template / project includes, `services`, `cache`, `environment` and similar keywords are ignored or reported with a warning. See docs/providers/gitlab.md.
+- Azure templates and parameters: `template:` includes for steps, jobs, stages and variables (paths relative to the including file, `@self`, nested includes with cycle detection), `extends:`, typed `parameters:` (all twelve types, `default`, `values`, `--param` conversion), `${{ if / elseif / else }}`, `${{ each }}`, `${{ insert }}` and compile-time `${{ }}` expressions over `parameters`, `variables` and the predefined `Build.*` / `System.*` / `Agent.*` variables; errors name the template file and line. Templates from other repositories (`file@repo`) are reported as unsupported.
+- Azure `strategy.matrix` and `strategy.parallel` expansion: one job per leg (`<job>_<leg>`, `<job>_<n>`), leg variables merged into the job (`$(var)` in `pool` / `container` resolved), `System.JobPositionInPhase` / `System.TotalJobsInPhase`, `dependsOn` rewritten to every leg; `maxParallel` is ignored with a warning.
+- Azure parser: `variables:` mapping and list forms at pipeline, stage and job level, stage `dependsOn` and conditions, deployment jobs (`runOnce` / `rolling` / `canary` `deploy` steps), `checkout: none`, `publish:` / `download:` shortcuts, `enabled: false`, `timeoutInMinutes`, `container:`; additional task mappings (`Npm`, `Maven`, `Gradle`, `CopyFiles`, tool installers as setup steps); warnings for variable groups, `resources:` and deployment lifecycle hooks.
+- Artifact store scoped per run: `.pdk/artifacts/run-<id>/job-<job>/step-<n>-<step>/artifact-<name>/`; `if-no-files-found` and `retention-days` honoured; downloads fall back to the newest previous run with a warning; host-mode upload and download executors.
+- Dry run: unsupported actions/tasks are reported as warnings and labelled in the execution plan, setup steps are labelled as no-ops, every step carries `willRun` and a skip reason, `--job` and step filters narrow the plan, and secrets known to the resolver are written as `***MASKED***` in `--dry-run-json` output.
+- Watch mode: `includePatterns` / `excludePatterns` and a `watch` configuration section.
+- Watch mode: cancelling a run that was queued a moment earlier now cancels it instead of letting it finish (the run owns its cancellation token from the moment it is queued).
+- `pdk list --format json` now includes stage, container, matrix values, dependencies, conditions and steps.
+- Error panels reference `docs/errors.md#<code>`; new parser codes `PDK-E-PARSER-007` (missing dependency) and `PDK-E-PARSER-008` (self dependency).
+- Documentation: expressions and execution semantics page, error code reference, runnable expression samples under `samples/`.
+- Build: central package management (`Directory.Packages.props`), deterministic builds, Docker-dependent integration tests skip automatically without a daemon (`PDK_DOCKER_TESTS=require|skip`), 70% line coverage gate in CI.
+
+### Changed
+- Exit codes: 0 success, 1 pipeline or validation failure, 2 invalid arguments (also unknown `--job` and several candidate pipeline files), 3 pipeline file not found, 4 Docker unavailable, 130 cancelled.
+- Pipeline auto-detection searches `.github/workflows/*.yml|yaml`, `azure-pipelines.yml|yaml`, `.azure-pipelines/*.yml|yaml`, `.gitlab-ci.yml|yaml` and `*.pipeline.yml|yaml`; more than one candidate is an error instead of a silent pick.
+- A failed step no longer aborts the job: later steps are skipped, `always()` / `failure()` steps still run, and `continue-on-error` keeps the job green while reporting the step as an allowed failure. `enabled: false` steps are skipped.
+- Setup actions/tasks (`actions/setup-*`, `actions/cache`, `UseDotNet@2`, `NodeTool@0`, ...) are no-ops; unsupported actions/tasks are skipped with a warning instead of failing the run (`--strict` restores the failure).
+- `--step` is shorthand for a single `--step-filter`; `--job` selects jobs and is no longer a step filter.
+- Verbosity flags (`--verbose`, `--trace`, `--quiet`, `--silent`), `--log-file`, `--log-json` and `--no-redact` now drive the logging pipeline; a rotated log is always written to `~/.pdk/logs/pdk.log`; `--verbose` / `--trace` mirror the log to stderr.
+- Only `PDK_VAR_*` and `PDK_SECRET_*` are imported from the environment; other host variables can still be referenced by `${VAR}` in step inputs but are never exported to steps or listed as variables. An unknown `${VAR}` is left as written (`${VAR:-default}` and `${VAR:?message}` keep working).
+- Scripts are no longer rewritten: variables and secrets are exported to the shell by name, and PDK's `${VAR}` expansion applies to step inputs, environment values and working directories. Azure `$(var)` is no longer converted to `${var}` at parse time; unknown macros stay literal.
+- `--secret NAME=value` overrides a stored secret of the same name.
+- Secrets are encrypted with AES-256-GCM using a random key stored in `~/.pdk/secret.key` (mode 0600; additionally DPAPI-protected on Windows) instead of a machine-derived key; `secrets.json` uses format version 2.0 and legacy entries are migrated on first read; entries that cannot be decrypted are listed as `(unreadable)` by `pdk secret list`; missing secrets raise an error instead of returning null.
+- Masking covers multi-line secrets, URL-, base64- and JSON-encoded variants, and `Authorization` / `Bearer` headers in logs.
+- Docker mode uses the job's `container:` image when present and mounts the Docker socket only for jobs with Docker steps; `--no-cache` forces image pulls.
+- Before creating a job container, Docker mode removes containers left behind by PDK processes that are no longer running on this machine (they are labelled with the creating process); containers of a running `pdk`, `--keep-containers` containers and containers created from another host are never touched.
+- Script steps start their interpreter by the path the `PATH` lookup yields, so `shell: bash` on a Windows host runs the bash installed with Git for Windows instead of the WSL launcher.
+- `--no-reuse` never changed behaviour; it is now hidden, still accepted, and prints a warning.
+- `pdk version` no longer prints a build date; `--full` shows the Docker endpoint, and `pdk doctor` names the endpoint it probed and where it came from (`DOCKER_HOST`, Docker context, socket search or default).
+- Docker diagnostics report a missing socket as *not installed* on every platform (Windows and macOS surface it differently from Linux), explain Unix socket paths longer than the 91 bytes the Docker client can address, and report `Platform` as plain `os/arch` with the endpoint listed separately; socket and config paths are joined with `/` on Unix hosts even when PDK runs elsewhere.
+- The `logging` configuration section now supplies the defaults for the log level, file paths, rotation and redaction; command-line flags override it.
+- Azure `Build.Reason` follows `--event` (`IndividualCI`, `PullRequest`, `Schedule`, `Manual`).
+- Azure expressions: `eq` / `ne` / `in` / `notIn` / `containsValue` coerce operands the way Azure does (`eq('true', true)` and `eq(variables.count, 3)` are true), `containsValue` searches lists, and `join` accepts Azure's `join(separator, list)` argument order.
+- `scripts/self-test.sh` / `.ps1` run in host mode and no longer abort when Docker is missing.
+- Parser warnings are printed before a run.
+- Dependencies: SharpCompress 1.0.0, FluentAssertions 7.x, BenchmarkDotNet 0.15.
+
+### Fixed
+- Ctrl+C cancels the running step, removes job containers and exits with 130 instead of hanging or reporting success.
+- `pdk run --job` with an unknown job name reports the available jobs and exits with 2.
+- Filter validation errors (unknown steps, out-of-range indices, bad ranges or presets) are reported with `PDK-E-FILTER-*` codes instead of being ignored.
+- Artifacts are always stored relative to the workspace, and uploads from containers no longer lose the directory layout.
+- The per-run scratch directory (`.pdk/runtime/<run id>`) is removed after the run.
+
+### Security
+- The secret store key is random per user instead of derived from machine information; key and store files are created with owner-only permissions.
+- Host environment variables are no longer exported into job containers or exposed as pipeline variables.
+- `--dry-run-json` never writes secret values in clear text.
 
 
 ## [1.0.0] - 2025-12-26

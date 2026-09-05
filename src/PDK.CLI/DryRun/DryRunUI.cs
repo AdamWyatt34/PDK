@@ -79,7 +79,8 @@ public class DryRunUI
     private void DisplayJob(JobPlanNode job)
     {
         // Job header with execution order
-        var orderPrefix = job.ExecutionOrder > 0 ? $"[{job.ExecutionOrder}] " : "";
+        // Double brackets: "[1]" would otherwise be parsed as a Spectre markup colour tag.
+        var orderPrefix = job.ExecutionOrder > 0 ? $"[[{job.ExecutionOrder}]] " : "";
         _console.MarkupLine($"[cyan bold]{orderPrefix}Job: {Markup.Escape(job.JobName)}[/] [dim]({Markup.Escape(job.RunsOn)})[/]");
 
         // Dependencies
@@ -116,10 +117,18 @@ public class DryRunUI
 
     private void DisplayStep(StepPlanNode step)
     {
+        if (!step.WillRun)
+        {
+            // Excluded by the step filter or disabled: shown dimmed with the reason, nothing else
+            var reason = string.IsNullOrWhiteSpace(step.SkipReason) ? "excluded" : step.SkipReason;
+            _console.MarkupLine($"    [grey][[{step.Index}]] {Markup.Escape(step.StepName)}[/] [dim](will not run: {Markup.Escape(reason)})[/]");
+            return;
+        }
+
         // Step with type and executor
         var stepColor = GetStepTypeColor(step.TypeName);
-        _console.MarkupLine($"    [{stepColor}][{step.Index}][/] {Markup.Escape(step.StepName)}");
-        _console.MarkupLine($"        [dim]Type:[/] {step.TypeName} [dim]->[/] {Markup.Escape(step.ExecutorName)}");
+        _console.MarkupLine($"    [{stepColor}][[{step.Index}]][/] {Markup.Escape(step.StepName)}");
+        _console.MarkupLine($"        [dim]Type:[/] {Markup.Escape(step.TypeName)} [dim]->[/] {Markup.Escape(step.ExecutorName)}");
 
         // Shell if applicable
         if (!string.IsNullOrEmpty(step.Shell))
@@ -233,12 +242,14 @@ public class DryRunUI
 
         if (result.IsValid && result.ExecutionPlan != null)
         {
-            _console.MarkupLine($"[green bold]Validation: PASSED[/]");
-            _console.MarkupLine($"  {result.ExecutionPlan.TotalJobs} job(s), {result.ExecutionPlan.TotalSteps} step(s)");
+            _console.MarkupLine("[green bold]Validation: PASSED[/]");
+            var plan = result.ExecutionPlan;
+            var toRun = plan.StepsToRun != plan.TotalSteps ? $", {plan.StepsToRun} to run" : string.Empty;
+            _console.MarkupLine($"  {plan.TotalJobs} job(s), {plan.TotalSteps} step(s){toRun}");
         }
         else
         {
-            _console.MarkupLine($"[red bold]Validation: FAILED[/]");
+            _console.MarkupLine("[red bold]Validation: FAILED[/]");
             _console.MarkupLine($"  {result.Errors.Count} error(s), {result.Warnings.Count} warning(s)");
         }
 
@@ -279,6 +290,7 @@ public class DryRunUI
             "docker" => "magenta",
             "npm" or "dotnet" or "python" or "maven" or "gradle" => "cyan",
             "uploadartifact" or "downloadartifact" => "yellow",
+            "setup" => "blue",
             _ => "white"
         };
     }

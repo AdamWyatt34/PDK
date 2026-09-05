@@ -40,4 +40,21 @@ public record JobExecutionResult
     /// Gets the error message if the job failed, otherwise null.
     /// </summary>
     public string? ErrorMessage { get; init; }
+
+    /// <summary>
+    /// Gets a value indicating whether the job was skipped without running any step
+    /// (a dependency failed, or the job condition evaluated to false).
+    /// </summary>
+    public bool Skipped { get; init; }
+
+    /// <summary>
+    /// Gets the reason the job was skipped, when <see cref="Skipped"/> is true.
+    /// </summary>
+    public string? SkipReason { get; init; }
+
+    /// <summary>
+    /// Gets the outputs produced by the job's steps (<c>$GITHUB_OUTPUT</c>, <c>##vso[task.setvariable;isOutput=true]</c>),
+    /// keyed as <c>stepId.name</c> and also as <c>name</c> for the last step that produced it.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Outputs { get; init; } = new Dictionary<string, string>();
 }

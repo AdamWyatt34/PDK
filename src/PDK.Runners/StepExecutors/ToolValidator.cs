@@ -100,6 +100,18 @@ public static class ToolValidator
     }
 
     /// <summary>
+    /// Creates the exception describing a missing tool (with tool-specific suggestions) without throwing it,
+    /// so executors can turn it into a failed step result.
+    /// </summary>
+    /// <param name="toolName">The name of the missing tool.</param>
+    /// <param name="imageName">The container image name (for the message).</param>
+    /// <returns>The exception describing the missing tool.</returns>
+    public static ToolNotFoundException CreateNotFoundException(string toolName, string imageName)
+    {
+        return new ToolNotFoundException(toolName, imageName, GetToolSuggestions(toolName));
+    }
+
+    /// <summary>
     /// Gets tool-specific suggestions for resolving missing tool issues.
     /// </summary>
     /// <param name="toolName">The name of the tool.</param>

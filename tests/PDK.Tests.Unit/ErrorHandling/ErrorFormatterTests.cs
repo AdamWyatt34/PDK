@@ -181,7 +181,7 @@ public class ErrorFormatterTests
     }
 
     [Fact]
-    public void DisplayError_ShowsDocumentationLink()
+    public void DisplayError_ShowsDocumentationReference()
     {
         // Arrange
         var exception = new PdkException(
@@ -193,7 +193,106 @@ public class ErrorFormatterTests
 
         // Assert
         var output = _console.Output;
-        output.Should().Contain("https://docs.pdk.dev");
+        output.Should().Contain("docs/errors.md#pdk-e-docker-001");
+        output.Should().NotContain("https://docs.pdk.dev");
+    }
+
+    [Fact]
+    public void DisplayError_Cancellation_PrintsSingleLineWithoutPanel()
+    {
+        // Act
+        _formatter.DisplayError(new OperationCanceledException("The operation was canceled."));
+
+        // Assert
+        var output = _console.Output;
+        output.Trim().Should().Be(ErrorFormatter.CancelledMessage);
+        output.Should().NotContain("Error");
+        output.Should().NotContain("docs/errors.md");
+    }
+
+    [Fact]
+    public void DisplayError_TaskCanceled_PrintsCancelledLine()
+    {
+        _formatter.DisplayError(new TaskCanceledException());
+
+        _console.Output.Trim().Should().Be(ErrorFormatter.CancelledMessage);
+    }
+
+    [Fact]
+    public void DisplayError_UnwrapsAggregateException()
+    {
+        // Arrange
+        var inner = new PdkException(ErrorCodes.StepExecutionFailed, "Inner step failure");
+        var aggregate = new AggregateException(inner);
+
+        // Act
+        _formatter.DisplayError(aggregate);
+
+        // Assert
+        var output = _console.Output;
+        output.Should().Contain(ErrorCodes.StepExecutionFailed);
+        output.Should().Contain("Inner step failure");
+        output.Should().NotContain("One or more errors occurred");
+    }
+
+    [Fact]
+    public void DisplayError_UnwrapsTargetInvocationException()
+    {
+        // Arrange
+        var inner = new FileNotFoundException("Missing file: ci.yml");
+        var wrapper = new System.Reflection.TargetInvocationException(inner);
+
+        // Act
+        _formatter.DisplayError(wrapper);
+
+        // Assert
+        var output = _console.Output;
+        output.Should().Contain(ErrorCodes.FileNotFound);
+        output.Should().Contain("Missing file: ci.yml");
+    }
+
+    [Fact]
+    public void DisplayError_AggregateOfCancellations_PrintsCancelledLine()
+    {
+        var aggregate = new AggregateException(new TaskCanceledException());
+
+        _formatter.DisplayError(aggregate);
+
+        _console.Output.Trim().Should().Be(ErrorFormatter.CancelledMessage);
+    }
+
+    [Fact]
+    public void DisplayError_EscapesMarkupInEveryField()
+    {
+        // Arrange - brackets everywhere a value reaches the console
+        var context = new ErrorContext
+        {
+            PipelineFile = "[ci].yml",
+            JobName = "[build]",
+            StepName = "[test]",
+            ImageName = "[image]:latest",
+            ErrorOutput = "line with [bold] markup"
+        };
+        var exception = new PdkException(
+            "PDK-E-[CUSTOM]-001",
+            "Message with [red]markup[/]",
+            context,
+            new[] { "Suggestion with [markup]" });
+
+        // Act
+        var act = () => _formatter.DisplayError(exception, verbose: true);
+
+        // Assert
+        act.Should().NotThrow();
+        var output = _console.Output;
+        output.Should().Contain("Message with [red]markup[/]");
+        output.Should().Contain("[ci].yml");
+        output.Should().Contain("[build]");
+        output.Should().Contain("[test]");
+        output.Should().Contain("[image]:latest");
+        output.Should().Contain("Suggestion with [markup]");
+        output.Should().Contain("line with [bold] markup");
+        output.Should().Contain("PDK-E-[CUSTOM]-001");
     }
 
     [Fact]

@@ -18,12 +18,13 @@ public class DependencyAnalyzer : IDependencyAnalyzer
     /// <inheritdoc/>
     public DependencyGraph BuildGraph(Pipeline pipeline)
     {
+        ArgumentNullException.ThrowIfNull(pipeline);
+
         var graph = new DependencyGraph();
 
         foreach (var job in pipeline.Jobs.Values)
         {
-            var jobName = job.Name ?? job.Id ?? "Unknown";
-            BuildJobGraph(job, jobName, graph);
+            BuildJobGraph(job, graph);
         }
 
         return graph;
@@ -32,16 +33,20 @@ public class DependencyAnalyzer : IDependencyAnalyzer
     /// <inheritdoc/>
     public DependencyGraph BuildGraph(Job job)
     {
+        ArgumentNullException.ThrowIfNull(job);
+
         var graph = new DependencyGraph();
-        var jobName = job.Name ?? job.Id ?? "Unknown";
-        BuildJobGraph(job, jobName, graph);
+        BuildJobGraph(job, graph);
         return graph;
     }
 
     /// <inheritdoc/>
-    public IReadOnlyList<DependencyGraph.StepNode> GetDependencies(Step step, int stepIndex, DependencyGraph graph)
+    public IReadOnlyList<DependencyGraph.StepNode> GetDependencies(Job job, int stepIndex, DependencyGraph graph)
     {
-        var stepId = DependencyGraph.GetStepId(step, stepIndex);
+        ArgumentNullException.ThrowIfNull(job);
+        ArgumentNullException.ThrowIfNull(graph);
+
+        var stepId = DependencyGraph.GetStepId(job, stepIndex);
         var dependencyIds = graph.GetTransitiveDependencies(stepId);
 
         return dependencyIds
@@ -55,61 +60,44 @@ public class DependencyAnalyzer : IDependencyAnalyzer
     /// <inheritdoc/>
     public FilterOptions ExpandWithDependencies(FilterOptions options, Pipeline pipeline)
     {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(pipeline);
+
         if (!options.IncludeDependencies || !options.HasInclusionFilters)
         {
             return options;
         }
 
-        // Build the full dependency graph
-        var graph = BuildGraph(pipeline);
+        // Build a temporary filter to determine which steps are selected (without expansion)
+        var baseFilter = new StepFilterBuilder(dependencyAnalyzer: this)
+            .Build(options with { IncludeDependencies = false }, pipeline);
 
-        // Build a temporary filter to determine which steps are selected
-        var builder = new StepFilterBuilder();
-        var filter = builder.Build(options, pipeline);
-
-        // Collect all selected step IDs
-        var selectedStepIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var expandedIndices = new HashSet<int>();
 
         foreach (var job in pipeline.Jobs.Values)
         {
+            var graph = BuildGraph(job);
+            var selectedInJob = new HashSet<int>();
+
             for (int i = 0; i < job.Steps.Count; i++)
             {
-                var step = job.Steps[i];
-                var result = filter.ShouldExecute(step, i + 1, job);
-
-                if (result.ShouldExecute)
+                if (baseFilter.ShouldExecute(job.Steps[i], i + 1, job).ShouldExecute)
                 {
-                    var stepId = DependencyGraph.GetStepId(step, i + 1);
-                    selectedStepIds.Add(stepId);
+                    selectedInJob.Add(i + 1);
                 }
             }
-        }
 
-        // Expand to include all dependencies
-        var expandedStepIds = new HashSet<string>(selectedStepIds, StringComparer.OrdinalIgnoreCase);
-
-        foreach (var stepId in selectedStepIds)
-        {
-            var dependencies = graph.GetTransitiveDependencies(stepId);
-            foreach (var dep in dependencies)
+            foreach (var index in selectedInJob)
             {
-                expandedStepIds.Add(dep);
-            }
-        }
+                expandedIndices.Add(index);
 
-        // Convert expanded step IDs back to indices
-        var expandedIndices = new List<int>();
-
-        foreach (var job in pipeline.Jobs.Values)
-        {
-            for (int i = 0; i < job.Steps.Count; i++)
-            {
-                var step = job.Steps[i];
-                var stepId = DependencyGraph.GetStepId(step, i + 1);
-
-                if (expandedStepIds.Contains(stepId))
+                foreach (var dependencyId in graph.GetTransitiveDependencies(DependencyGraph.GetStepId(job, index)))
                 {
-                    expandedIndices.Add(i + 1);
+                    var node = graph.GetNode(dependencyId);
+                    if (node != null)
+                    {
+                        expandedIndices.Add(node.Index);
+                    }
                 }
             }
         }
@@ -118,35 +106,34 @@ public class DependencyAnalyzer : IDependencyAnalyzer
         return new FilterOptions
         {
             StepNames = [], // Clear name filter - we're using indices now
-            StepIndices = expandedIndices.Distinct().OrderBy(x => x).ToList(),
+            StepIndices = expandedIndices.OrderBy(x => x).ToList(),
             StepRanges = [], // Clear range filter - we're using indices now
             SkipSteps = options.SkipSteps, // Preserve skip steps
             Jobs = options.Jobs, // Preserve job filter
             IncludeDependencies = false, // Already expanded
             PreviewOnly = options.PreviewOnly,
-            Confirm = options.Confirm
+            Confirm = options.Confirm,
+            PresetName = options.PresetName,
+            Errors = options.Errors
         };
     }
 
-    private void BuildJobGraph(Job job, string jobName, DependencyGraph graph)
+    private static void BuildJobGraph(Job job, DependencyGraph graph)
     {
+        var jobKey = DependencyGraph.GetJobKey(job);
+
         // Add all steps as nodes
         for (int i = 0; i < job.Steps.Count; i++)
         {
-            var step = job.Steps[i];
-            graph.AddNode(step, i + 1, jobName);
+            graph.AddNode(job.Steps[i], i + 1, jobKey);
         }
 
         // Add sequential dependencies (step N depends on step N-1)
         for (int i = 1; i < job.Steps.Count; i++)
         {
-            var currentStep = job.Steps[i];
-            var previousStep = job.Steps[i - 1];
-
-            var currentId = DependencyGraph.GetStepId(currentStep, i + 1);
-            var previousId = DependencyGraph.GetStepId(previousStep, i);
-
-            graph.AddDependency(currentId, previousId);
+            graph.AddDependency(
+                DependencyGraph.GetStepId(jobKey, i + 1),
+                DependencyGraph.GetStepId(jobKey, i));
         }
 
         // Add explicit dependencies (via Step.Needs)
@@ -156,12 +143,12 @@ public class DependencyAnalyzer : IDependencyAnalyzer
 
             if (step.Needs is { Count: > 0 })
             {
-                var currentId = DependencyGraph.GetStepId(step, i + 1);
+                var currentId = DependencyGraph.GetStepId(jobKey, i + 1);
 
                 foreach (var neededStep in step.Needs)
                 {
                     // Find the step by ID or name
-                    var dependencyId = FindStepId(job, neededStep);
+                    var dependencyId = FindStepId(job, jobKey, neededStep);
                     if (dependencyId != null)
                     {
                         graph.AddDependency(currentId, dependencyId);
@@ -171,8 +158,13 @@ public class DependencyAnalyzer : IDependencyAnalyzer
         }
     }
 
-    private static string? FindStepId(Job job, string nameOrId)
+    private static string? FindStepId(Job job, string jobKey, string nameOrId)
     {
+        if (string.IsNullOrWhiteSpace(nameOrId))
+        {
+            return null;
+        }
+
         for (int i = 0; i < job.Steps.Count; i++)
         {
             var step = job.Steps[i];
@@ -180,13 +172,13 @@ public class DependencyAnalyzer : IDependencyAnalyzer
             // Match by ID
             if (step.Id != null && step.Id.Equals(nameOrId, StringComparison.OrdinalIgnoreCase))
             {
-                return DependencyGraph.GetStepId(step, i + 1);
+                return DependencyGraph.GetStepId(jobKey, i + 1);
             }
 
             // Match by name
             if (step.Name != null && step.Name.Equals(nameOrId, StringComparison.OrdinalIgnoreCase))
             {
-                return DependencyGraph.GetStepId(step, i + 1);
+                return DependencyGraph.GetStepId(jobKey, i + 1);
             }
         }
 

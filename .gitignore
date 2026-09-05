@@ -43,3 +43,17 @@ coveragereport/
 api/*.yml
 api/.manifest
 _site/
+
+# Build / release outputs
+publish/
+artifacts/
+*.nupkg
+coverage/
+BenchmarkDotNet.Artifacts/
+
+# Node / web sample outputs
+node_modules/
+dist/
+
+# Claude Code agent worktrees
+.claude/worktrees/

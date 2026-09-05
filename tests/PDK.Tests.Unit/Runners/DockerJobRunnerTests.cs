@@ -231,7 +231,7 @@ public class DockerJobRunnerTests : RunnerTestBase
     #region RunJobAsync - Error Scenarios
 
     [Fact]
-    public async Task RunJobAsync_StepFailure_StopsExecution()
+    public async Task RunJobAsync_StepFailure_SkipsRemainingSteps()
     {
         // Arrange
         var job = CreateTestJob(stepCount: 3);
@@ -276,9 +276,11 @@ public class DockerJobRunnerTests : RunnerTestBase
 
         // Assert
         result.Success.Should().BeFalse();
-        result.StepResults.Should().HaveCount(2); // Should stop after failed step
+        result.StepResults.Should().HaveCount(3);
+        executedStepCount.Should().Be(2, "the step after a failure must not run");
         result.StepResults[0].Success.Should().BeTrue();
         result.StepResults[1].Success.Should().BeFalse();
+        result.StepResults[2].Skipped.Should().BeTrue();
     }
 
     [Fact]
@@ -327,11 +329,125 @@ public class DockerJobRunnerTests : RunnerTestBase
         var result = await _runner.RunJobAsync(job, workspacePath);
 
         // Assert
-        result.Success.Should().BeFalse(); // Overall failure because one step failed
+        result.Success.Should().BeTrue("a continue-on-error failure does not fail the job");
         result.StepResults.Should().HaveCount(3); // Should execute all steps
         result.StepResults[0].Success.Should().BeTrue();
         result.StepResults[1].Success.Should().BeFalse();
+        result.StepResults[1].AllowedFailure.Should().BeTrue();
         result.StepResults[2].Success.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task RunJobAsync_UsesJobContainerImage_AndMountsDockerSocketForDockerSteps()
+    {
+        // Arrange
+        var job = CreateTestJob(stepCount: 2);
+        job.Container = "node:20";
+        job.Steps[1].Type = StepType.Docker;
+        var workspacePath = "/tmp/workspace";
+
+        string? usedImage = null;
+        ContainerOptions? usedOptions = null;
+
+        MockContainerManager
+            .Setup(x => x.PullImageIfNeededAsync(It.IsAny<string>(), It.IsAny<IProgress<string>>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        MockContainerManager
+            .Setup(x => x.CreateContainerAsync(It.IsAny<string>(), It.IsAny<ContainerOptions>(), It.IsAny<CancellationToken>()))
+            .Callback<string, ContainerOptions, CancellationToken>((image, options, _) => { usedImage = image; usedOptions = options; })
+            .ReturnsAsync("test-container-123");
+
+        MockContainerManager
+            .Setup(x => x.RemoveContainerAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        _mockStepExecutor
+            .Setup(x => x.ExecuteAsync(It.IsAny<Step>(), It.IsAny<ExecutionContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreateSuccessStepResult("step"));
+
+        // Act
+        await _runner.RunJobAsync(
+            job,
+            new JobRunContext { WorkspacePath = workspacePath, ContainerMemoryLimit = 1024, ContainerCpuLimit = 1.5, KeepContainers = false });
+
+        // Assert
+        usedImage.Should().Be("node:20");
+        _mockImageMapper.Verify(x => x.MapRunnerToImage(It.IsAny<string>()), Times.Never);
+        usedOptions.Should().NotBeNull();
+        usedOptions!.MountDockerSocket.Should().BeTrue();
+        usedOptions.MemoryLimit.Should().Be(1024);
+        usedOptions.CpuLimit.Should().Be(1.5);
+        usedOptions.Environment.Should().Contain("JOB_VAR", "job-value");
+        usedOptions.Environment.Should().Contain("CI", "true");
+    }
+
+    [Fact]
+    public async Task RunJobAsync_Cancelled_RemovesContainerAndPropagates()
+    {
+        // Arrange
+        var job = CreateTestJob(stepCount: 2);
+        var workspacePath = "/tmp/workspace";
+        using var cts = new CancellationTokenSource();
+
+        MockContainerManager
+            .Setup(x => x.PullImageIfNeededAsync(It.IsAny<string>(), It.IsAny<IProgress<string>>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        MockContainerManager
+            .Setup(x => x.CreateContainerAsync(It.IsAny<string>(), It.IsAny<ContainerOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("test-container-123");
+
+        MockContainerManager
+            .Setup(x => x.RemoveContainerAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        _mockStepExecutor
+            .Setup(x => x.ExecuteAsync(It.IsAny<Step>(), It.IsAny<ExecutionContext>(), It.IsAny<CancellationToken>()))
+            .Returns<Step, ExecutionContext, CancellationToken>((_, _, token) =>
+            {
+                cts.Cancel();
+                token.ThrowIfCancellationRequested();
+                return Task.FromResult(CreateSuccessStepResult("step"));
+            });
+
+        // Act
+        var act = () => _runner.RunJobAsync(job, workspacePath, cts.Token);
+
+        // Assert
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        MockContainerManager.Verify(
+            x => x.RemoveContainerAsync("test-container-123", It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task RunJobAsync_KeepContainers_DoesNotRemoveContainer()
+    {
+        // Arrange
+        var job = CreateTestJob(stepCount: 1);
+        var workspacePath = "/tmp/workspace";
+
+        MockContainerManager
+            .Setup(x => x.PullImageIfNeededAsync(It.IsAny<string>(), It.IsAny<IProgress<string>>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        MockContainerManager
+            .Setup(x => x.CreateContainerAsync(It.IsAny<string>(), It.IsAny<ContainerOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("test-container-123");
+
+        _mockStepExecutor
+            .Setup(x => x.ExecuteAsync(It.IsAny<Step>(), It.IsAny<ExecutionContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreateSuccessStepResult("step"));
+
+        // Act
+        var result = await _runner.RunJobAsync(job, new JobRunContext { WorkspacePath = workspacePath, KeepContainers = true });
+
+        // Assert
+        result.Success.Should().BeTrue();
+        MockContainerManager.Verify(
+            x => x.RemoveContainerAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     [Fact]

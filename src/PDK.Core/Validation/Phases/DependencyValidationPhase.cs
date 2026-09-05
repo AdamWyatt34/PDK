@@ -59,11 +59,22 @@ public class DependencyValidationPhase : IValidationPhase
 
             foreach (var dependency in job.DependsOn)
             {
+                // Check for self-dependency first: a job cannot depend on itself
+                if (dependency == jobId)
+                {
+                    errors.Add(DryRunValidationError.DependencyError(
+                        ErrorCodes.SelfDependency,
+                        $"Job '{jobId}' cannot depend on itself",
+                        jobId: jobId,
+                        suggestions: "Remove the self-reference from 'needs' or 'dependsOn'"));
+                    continue;
+                }
+
                 // Check if dependency exists
                 if (!jobIds.Contains(dependency))
                 {
                     errors.Add(DryRunValidationError.DependencyError(
-                        ErrorCodes.CircularDependency,
+                        ErrorCodes.MissingDependency,
                         $"Job '{jobId}' depends on non-existent job '{dependency}'",
                         jobId: jobId,
                         suggestions: new[]
@@ -73,22 +84,12 @@ public class DependencyValidationPhase : IValidationPhase
                             "Ensure the dependent job is defined in the pipeline"
                         }));
                 }
-
-                // Check for self-dependency
-                if (dependency == jobId)
-                {
-                    errors.Add(DryRunValidationError.DependencyError(
-                        ErrorCodes.CircularDependency,
-                        $"Job '{jobId}' cannot depend on itself",
-                        jobId: jobId,
-                        suggestions: "Remove the self-reference from 'needs' or 'depends_on'"));
-                }
             }
         }
 
-        // Check for circular dependencies
+        // Check for circular dependencies (self-dependencies are reported above, not as cycles)
         var circularPath = DetectCircularJobDependencies(pipeline);
-        if (circularPath != null)
+        if (circularPath != null && circularPath.Count > 2)
         {
             var cyclePath = string.Join(" -> ", circularPath);
             errors.Add(DryRunValidationError.DependencyError(
@@ -145,11 +146,22 @@ public class DependencyValidationPhase : IValidationPhase
                     continue; // Already caught by SchemaValidationPhase
                 }
 
+                // Check for self-dependency first
+                if (step.Id != null && need == step.Id)
+                {
+                    errors.Add(DryRunValidationError.DependencyError(
+                        ErrorCodes.SelfDependency,
+                        $"Step '{stepName}' in job '{jobId}' cannot depend on itself",
+                        jobId: jobId,
+                        suggestions: "Remove the self-reference from 'needs'"));
+                    continue;
+                }
+
                 // Check if dependency exists
                 if (!stepIds.Contains(need))
                 {
                     errors.Add(DryRunValidationError.DependencyError(
-                        ErrorCodes.CircularDependency,
+                        ErrorCodes.MissingDependency,
                         $"Step '{stepName}' in job '{jobId}' depends on non-existent step '{need}'",
                         jobId: jobId,
                         suggestions: new[]
@@ -161,22 +173,12 @@ public class DependencyValidationPhase : IValidationPhase
                             "Ensure the dependent step is defined before the current step"
                         }));
                 }
-
-                // Check for self-dependency
-                if (step.Id != null && need == step.Id)
-                {
-                    errors.Add(DryRunValidationError.DependencyError(
-                        ErrorCodes.CircularDependency,
-                        $"Step '{stepName}' in job '{jobId}' cannot depend on itself",
-                        jobId: jobId,
-                        suggestions: "Remove the self-reference from 'needs'"));
-                }
             }
         }
 
-        // Check for circular step dependencies
+        // Check for circular step dependencies (self-dependencies are reported above, not as cycles)
         var circularPath = DetectCircularStepDependencies(job);
-        if (circularPath != null)
+        if (circularPath != null && circularPath.Count > 2)
         {
             var cyclePath = string.Join(" -> ", circularPath);
             errors.Add(DryRunValidationError.DependencyError(
@@ -201,10 +203,9 @@ public class DependencyValidationPhase : IValidationPhase
         {
             if (HasCycleJobDFS(jobId, pipeline.Jobs, visited, recursionStack, path))
             {
-                // Find the cycle start in the path
-                var cycleStart = path.Last();
-                var cycleStartIndex = path.IndexOf(cycleStart);
-                return path.Skip(cycleStartIndex).Append(cycleStart).ToList();
+                // The DFS appended the node that closes the cycle; the path from its first
+                // occurrence already ends with it (e.g. a -> c -> b -> a).
+                return ExtractCycle(path);
             }
         }
 
@@ -270,9 +271,7 @@ public class DependencyValidationPhase : IValidationPhase
         {
             if (HasCycleStepDFS(stepId, stepById, visited, recursionStack, path))
             {
-                var cycleStart = path.Last();
-                var cycleStartIndex = path.IndexOf(cycleStart);
-                return path.Skip(cycleStartIndex).Append(cycleStart).ToList();
+                return ExtractCycle(path);
             }
         }
 
@@ -316,6 +315,16 @@ public class DependencyValidationPhase : IValidationPhase
         recursionStack.Remove(stepId);
         path.RemoveAt(path.Count - 1);
         return false;
+    }
+
+    /// <summary>
+    /// Returns the closed cycle from a DFS path whose last element is the node that closes the cycle.
+    /// </summary>
+    private static List<string> ExtractCycle(List<string> path)
+    {
+        var cycleStart = path[^1];
+        var cycleStartIndex = path.IndexOf(cycleStart);
+        return path.Skip(cycleStartIndex).ToList();
     }
 
     private Dictionary<string, int> CalculateJobExecutionOrder(Pipeline pipeline)

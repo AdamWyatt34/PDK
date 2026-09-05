@@ -23,9 +23,10 @@ public sealed class GitHubWorkflow
 
     /// <summary>
     /// Dictionary of jobs in the workflow, keyed by job ID.
+    /// Values can be null at runtime for empty nodes (<c>jobs: { build: }</c>); the parser reports those.
     /// </summary>
     [YamlMember(Alias = "jobs")]
-    public Dictionary<string, GitHubJob> Jobs { get; set; } = new();
+    public Dictionary<string, GitHubJob>? Jobs { get; set; } = new();
 
     /// <summary>
     /// Workflow-level environment variables.
@@ -35,8 +36,8 @@ public sealed class GitHubWorkflow
     public Dictionary<string, string>? Env { get; set; }
 
     /// <summary>
-    /// Default values for the workflow (rarely used).
+    /// Workflow-level defaults (<c>defaults.run.shell</c> / <c>defaults.run.working-directory</c>).
     /// </summary>
     [YamlMember(Alias = "defaults")]
-    public object? Defaults { get; set; }
+    public GitHubDefaults? Defaults { get; set; }
 }

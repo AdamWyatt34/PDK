@@ -125,7 +125,7 @@ public class ArtifactParsingIntegrationTests
 
         // Assert - Verify the job contains a mix of step types
         buildJob.Steps.Should().Contain(s => s.Type == StepType.Checkout);
-        buildJob.Steps.Should().Contain(s => s.Type == StepType.Dotnet);
+        buildJob.Steps.Should().Contain(s => s.Type == StepType.Setup);
         buildJob.Steps.Should().Contain(s => s.Type == StepType.Script);
         buildJob.Steps.Should().Contain(s => s.Type == StepType.UploadArtifact);
     }
@@ -231,7 +231,7 @@ public class ArtifactParsingIntegrationTests
     }
 
     [Fact]
-    public async Task ParseAzureArtifactPipeline_ConvertsVariableSyntax()
+    public async Task ParseAzureArtifactPipeline_KeepsVariableSyntaxRaw()
     {
         // Arrange
         var pipelinePath = Path.Combine(_fixturesPath, "azure-artifact-pipeline.yml");
@@ -246,10 +246,10 @@ public class ArtifactParsingIntegrationTests
             s.Type == StepType.UploadArtifact &&
             s.With.GetValueOrDefault("_task") == "PublishBuildArtifacts");
 
-        // Assert - Variable syntax should be converted from $(var) to ${var}
+        // Assert - Variable syntax is kept raw ($(var)) for run-time resolution
         uploadStep.Should().NotBeNull();
         uploadStep!.Artifact.Should().NotBeNull();
-        uploadStep.Artifact!.Patterns[0].Should().Contain("${Build.ArtifactStagingDirectory}");
+        uploadStep.Artifact!.Patterns[0].Should().Contain("$(Build.ArtifactStagingDirectory)");
     }
 
     #endregion

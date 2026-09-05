@@ -24,11 +24,12 @@ public class InteractiveModeTests
     {
         // Arrange
         var console = new TestConsole();
-        var jobRunner = new Mock<IJobRunner>().Object;
+        var runnerFactory = new Mock<PDK.CLI.Runners.IRunnerFactory>().Object;
+        var runnerSelector = new Mock<PDK.Core.Runners.IRunnerSelector>().Object;
         var progressReporter = new Mock<IProgressReporter>().Object;
 
         // Act & Assert
-        var act = () => new InteractiveCommand(null!, console, jobRunner, progressReporter);
+        var act = () => new InteractiveCommand(null!, console, runnerFactory, runnerSelector, progressReporter);
         act.Should().Throw<ArgumentNullException>()
             .And.ParamName.Should().Be("parserFactory");
     }
@@ -38,11 +39,12 @@ public class InteractiveModeTests
     {
         // Arrange
         var parserFactory = new Mock<IPipelineParserFactory>().Object;
-        var jobRunner = new Mock<IJobRunner>().Object;
+        var runnerFactory = new Mock<PDK.CLI.Runners.IRunnerFactory>().Object;
+        var runnerSelector = new Mock<PDK.Core.Runners.IRunnerSelector>().Object;
         var progressReporter = new Mock<IProgressReporter>().Object;
 
         // Act & Assert
-        var act = () => new InteractiveCommand(parserFactory, null!, jobRunner, progressReporter);
+        var act = () => new InteractiveCommand(parserFactory, null!, runnerFactory, runnerSelector, progressReporter);
         act.Should().Throw<ArgumentNullException>()
             .And.ParamName.Should().Be("console");
     }
@@ -56,9 +58,9 @@ public class InteractiveModeTests
         var progressReporter = new Mock<IProgressReporter>().Object;
 
         // Act & Assert
-        var act = () => new InteractiveCommand(parserFactory, console, null!, progressReporter);
+        var act = () => new InteractiveCommand(parserFactory, console, null!, new Mock<PDK.Core.Runners.IRunnerSelector>().Object, progressReporter);
         act.Should().Throw<ArgumentNullException>()
-            .And.ParamName.Should().Be("jobRunner");
+            .And.ParamName.Should().Be("runnerFactory");
     }
 
     [Fact]
@@ -67,10 +69,11 @@ public class InteractiveModeTests
         // Arrange
         var parserFactory = new Mock<IPipelineParserFactory>().Object;
         var console = new TestConsole();
-        var jobRunner = new Mock<IJobRunner>().Object;
+        var runnerFactory = new Mock<PDK.CLI.Runners.IRunnerFactory>().Object;
+        var runnerSelector = new Mock<PDK.Core.Runners.IRunnerSelector>().Object;
 
         // Act & Assert
-        var act = () => new InteractiveCommand(parserFactory, console, jobRunner, null!);
+        var act = () => new InteractiveCommand(parserFactory, console, runnerFactory, runnerSelector, null!);
         act.Should().Throw<ArgumentNullException>()
             .And.ParamName.Should().Be("progressReporter");
     }
@@ -81,17 +84,18 @@ public class InteractiveModeTests
         // Arrange
         var parserFactory = new Mock<IPipelineParserFactory>().Object;
         var console = new TestConsole();
-        var jobRunner = new Mock<IJobRunner>().Object;
+        var runnerFactory = new Mock<PDK.CLI.Runners.IRunnerFactory>().Object;
+        var runnerSelector = new Mock<PDK.Core.Runners.IRunnerSelector>().Object;
         var progressReporter = new Mock<IProgressReporter>().Object;
 
-        var cmd = new InteractiveCommand(parserFactory, console, jobRunner, progressReporter);
+        var cmd = new InteractiveCommand(parserFactory, console, runnerFactory, runnerSelector, progressReporter);
         cmd.File = new FileInfo("nonexistent-file.yml");
 
         // Act
         var result = await cmd.ExecuteAsync();
 
         // Assert
-        result.Should().Be(1);
+        result.Should().Be(PDK.CLI.ExitCodes.FileNotFound);
         console.Output.Should().Contain("Error");
         console.Output.Should().Contain("File not found");
     }
@@ -114,13 +118,14 @@ public class InteractiveModeTests
                 .Returns(mockParser.Object);
 
             var console = new TestConsole();
-            var jobRunner = new Mock<IJobRunner>().Object;
+            var runnerFactory = new Mock<PDK.CLI.Runners.IRunnerFactory>().Object;
+        var runnerSelector = new Mock<PDK.Core.Runners.IRunnerSelector>().Object;
             var progressReporter = new Mock<IProgressReporter>().Object;
 
             var cts = new CancellationTokenSource();
             cts.Cancel();
 
-            var cmd = new InteractiveCommand(parserFactory.Object, console, jobRunner, progressReporter);
+            var cmd = new InteractiveCommand(parserFactory.Object, console, runnerFactory, runnerSelector, progressReporter);
             cmd.File = new FileInfo(tempFile);
 
             // Act

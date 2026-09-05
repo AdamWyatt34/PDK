@@ -1,281 +1,133 @@
 namespace PDK.Runners.StepExecutors;
 
 using PDK.Core.Models;
-using IContainerManager = PDK.Runners.IContainerManager;
 using PDK.Runners.Models;
 
 /// <summary>
-/// Executes .NET CLI commands including restore, build, test, publish, and run operations.
-/// Handles project path wildcards, configuration settings, and build arguments.
+/// Executes .NET CLI commands (restore, build, test, publish, run, pack, clean, custom, tool) inside the job
+/// container. Project globs (<c>**/*.csproj</c>, one pattern per line, <c>!</c> excludes) are expanded in the
+/// container; when several projects match, the command runs once per project and the outputs are aggregated
+/// (the first non-zero exit code wins). Configuration problems produce a failed result, never an exception.
 /// </summary>
 public class DotnetStepExecutor : IStepExecutor
 {
     /// <inheritdoc/>
     public string StepType => "dotnet";
 
-    private static readonly HashSet<string> SupportedCommands = new(StringComparer.OrdinalIgnoreCase)
+    /// <inheritdoc/>
+    public Task<StepExecutionResult> ExecuteAsync(
+        Step step,
+        ExecutionContext context,
+        CancellationToken cancellationToken = default)
     {
-        "restore",
-        "build",
-        "test",
-        "publish",
-        "run"
-    };
+        return ExecuteAsync(step, context, StepExecutionOptions.None, cancellationToken);
+    }
 
     /// <inheritdoc/>
     public async Task<StepExecutionResult> ExecuteAsync(
         Step step,
         ExecutionContext context,
+        StepExecutionOptions options,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(step);
+        ArgumentNullException.ThrowIfNull(context);
+
         var startTime = DateTimeOffset.Now;
+        var effectiveOptions = StepExecutionHelpers.ResolveOptions(context, options);
 
         try
         {
-            // 1. Validate dotnet CLI is available
-            await ToolValidator.ValidateToolOrThrowAsync(
-                context.ContainerManager,
-                context.ContainerId,
-                "dotnet",
-                context.JobInfo.Runner,
-                cancellationToken);
-
-            // 2. Extract and validate command
-            if (!step.With.TryGetValue("command", out var command) || string.IsNullOrWhiteSpace(command))
+            if (!await ToolValidator.IsToolAvailableAsync(context.ContainerManager, context.ContainerId, "dotnet", cancellationToken).ConfigureAwait(false))
             {
-                throw new ArgumentException(
-                    $"The 'command' input is required for dotnet step '{step.Name}'. " +
-                    "Supported commands: restore, build, test, publish, run",
-                    nameof(step));
+                var missing = ToolValidator.CreateNotFoundException("dotnet", context.JobInfo?.Runner ?? "unknown");
+                return StepExecutionHelpers.Failed(step.Name, StepExecutionHelpers.FormatException(missing), startTime);
             }
 
-            ValidateCommand(command, step.Name);
+            if (!DotnetCommandSupport.TryParse(step, out var inputs, out var error))
+            {
+                return StepExecutionHelpers.Failed(step.Name, error!, startTime);
+            }
 
-            // 3. Extract optional inputs
-            step.With.TryGetValue("projects", out var projects);
-            step.With.TryGetValue("configuration", out var configuration);
-            step.With.TryGetValue("arguments", out var arguments);
-            step.With.TryGetValue("outputPath", out var outputPath);
-
-            // 4. Merge environment variables
-            var mergedEnvironment = MergeEnvironments(context, step);
-
-            // 5. Resolve working directory
+            var environment = StepExecutionHelpers.MergeEnvironment(context.Environment, step.Environment);
             var workingDirectory = PathResolver.ResolveWorkingDirectory(step, context);
 
-            // 6. Handle wildcard expansion in project paths
-            var expandedProjects = await ExpandProjectPathsAsync(
-                projects,
-                workingDirectory,
-                context,
-                step.Name,
-                cancellationToken);
-
-            // 7. Build dotnet command
-            var dotnetCommand = BuildDotnetCommand(
-                command,
-                expandedProjects,
-                configuration,
-                outputPath,
-                arguments);
-
-            // 8. Execute dotnet command
-            var result = await context.ContainerManager.ExecuteCommandAsync(
-                context.ContainerId,
-                dotnetCommand,
-                workingDirectory,
-                mergedEnvironment,
-                cancellationToken);
-
-            var endTime = DateTimeOffset.Now;
-
-            // 9. Return result
-            return new StepExecutionResult
+            var projects = await ExpandProjectsAsync(inputs, workingDirectory, step.Name, context, cancellationToken).ConfigureAwait(false);
+            if (projects == null)
             {
-                StepName = step.Name,
-                Success = result.Success,
-                ExitCode = result.ExitCode,
-                Output = result.StandardOutput,
-                ErrorOutput = result.StandardError,
-                Duration = endTime - startTime,
-                StartTime = startTime,
-                EndTime = endTime
-            };
+                return StepExecutionHelpers.Failed(
+                    step.Name,
+                    $"No project files found matching pattern '{inputs.Projects}' in step '{step.Name}'. Please verify the project path or wildcard pattern.",
+                    startTime);
+            }
+
+            var commandLines = DotnetCommandSupport.BuildCommandLines(inputs, projects, ShellQuote.Posix);
+
+            return await CommandBatch.RunAsync(
+                step.Name,
+                commandLines,
+                commandLine => context.ContainerManager.ExecuteCommandAsync(
+                    new ContainerExecRequest
+                    {
+                        ContainerId = context.ContainerId,
+                        Command = commandLine,
+                        WorkingDirectory = workingDirectory,
+                        Environment = environment,
+                        Timeout = StepExecutionHelpers.GetTimeout(step, effectiveOptions),
+                        OnOutputLine = effectiveOptions.OnOutputLine,
+                        OnErrorLine = StepExecutionHelpers.GetErrorLineHandler(effectiveOptions)
+                    },
+                    cancellationToken),
+                startTime,
+                stopOnFailure: false).ConfigureAwait(false);
         }
-        catch (ContainerException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // Re-throw container exceptions as-is
-            throw;
-        }
-        catch (ToolNotFoundException)
-        {
-            // Re-throw tool not found exceptions as-is
             throw;
         }
         catch (Exception ex)
         {
-            var endTime = DateTimeOffset.Now;
-
-            // Return failed result for other exceptions
-            return new StepExecutionResult
-            {
-                StepName = step.Name,
-                Success = false,
-                ExitCode = -1,
-                Output = string.Empty,
-                ErrorOutput = $"dotnet step failed: {ex.Message}",
-                Duration = endTime - startTime,
-                StartTime = startTime,
-                EndTime = endTime
-            };
+            return StepExecutionHelpers.Failed(step.Name, StepExecutionHelpers.FormatException(ex, "dotnet step failed"), startTime);
         }
     }
 
     /// <summary>
-    /// Validates that the specified command is supported by the dotnet executor.
+    /// Expands the project patterns in the container. Returns null when a wildcard matches nothing.
     /// </summary>
-    /// <param name="command">The dotnet command to validate.</param>
-    /// <param name="stepName">The name of the step (for error messages).</param>
-    /// <exception cref="ArgumentException">Thrown when the command is not supported.</exception>
-    private static void ValidateCommand(string command, string stepName)
-    {
-        if (!SupportedCommands.Contains(command))
-        {
-            throw new ArgumentException(
-                $"Unsupported dotnet command '{command}' in step '{stepName}'. " +
-                $"Supported commands: {string.Join(", ", SupportedCommands)}",
-                nameof(command));
-        }
-    }
-
-    /// <summary>
-    /// Expands wildcard patterns in project paths to actual file paths.
-    /// </summary>
-    /// <param name="projects">The project path or wildcard pattern.</param>
-    /// <param name="workingDirectory">The working directory to search from.</param>
-    /// <param name="context">The execution context.</param>
-    /// <param name="stepName">The name of the step (for error messages).</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>A space-separated string of expanded project paths, or null if no projects specified.</returns>
-    /// <exception cref="ArgumentException">Thrown when wildcard pattern matches no files.</exception>
-    private static async Task<string?> ExpandProjectPathsAsync(
-        string? projects,
+    private static async Task<IReadOnlyList<string>?> ExpandProjectsAsync(
+        DotnetInputs inputs,
         string workingDirectory,
-        ExecutionContext context,
         string stepName,
+        ExecutionContext context,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(projects))
+        _ = stepName;
+        var patterns = DotnetCommandSupport.SplitProjectPatterns(inputs.Projects);
+        if (patterns.Count == 0)
         {
-            return null;
+            return Array.Empty<string>();
         }
 
-        // Check if projects contains wildcards
-        if (!ContainsWildcard(projects))
+        var results = patterns.Where(p => !DotnetCommandSupport.ContainsWildcard(p)).ToList();
+        var globs = patterns.Where(DotnetCommandSupport.ContainsWildcard).ToList();
+
+        if (globs.Count > 0)
         {
-            // No wildcards, return as-is
-            return projects.Trim();
-        }
+            var matches = await PathResolver.ExpandWildcardsAsync(
+                context.ContainerManager,
+                context.ContainerId,
+                globs,
+                workingDirectory,
+                cancellationToken).ConfigureAwait(false);
 
-        // Expand wildcards using PathResolver
-        var matchingFiles = await PathResolver.ExpandWildcardAsync(
-            context.ContainerManager,
-            context.ContainerId,
-            projects,
-            workingDirectory,
-            cancellationToken);
-
-        if (matchingFiles.Count == 0)
-        {
-            throw new ArgumentException(
-                $"No project files found matching pattern '{projects}' in step '{stepName}'. " +
-                "Please verify the project path or wildcard pattern.",
-                nameof(projects));
-        }
-
-        // Join multiple files with spaces
-        return string.Join(" ", matchingFiles);
-    }
-
-    /// <summary>
-    /// Builds the dotnet CLI command string from the provided inputs.
-    /// </summary>
-    /// <param name="command">The dotnet subcommand (restore, build, test, publish, run).</param>
-    /// <param name="projects">The expanded project paths (optional).</param>
-    /// <param name="configuration">The build configuration (optional).</param>
-    /// <param name="outputPath">The output path for publish command (optional).</param>
-    /// <param name="arguments">Additional CLI arguments (optional).</param>
-    /// <returns>The complete dotnet CLI command string.</returns>
-    private static string BuildDotnetCommand(
-        string command,
-        string? projects,
-        string? configuration,
-        string? outputPath,
-        string? arguments)
-    {
-        var parts = new List<string> { "dotnet", command };
-
-        // Add project/solution paths
-        if (!string.IsNullOrWhiteSpace(projects))
-        {
-            parts.Add(projects);
-        }
-
-        // Add configuration flag (for build, test, publish commands)
-        if (!string.IsNullOrWhiteSpace(configuration) &&
-            (command.Equals("build", StringComparison.OrdinalIgnoreCase) ||
-             command.Equals("test", StringComparison.OrdinalIgnoreCase) ||
-             command.Equals("publish", StringComparison.OrdinalIgnoreCase)))
-        {
-            parts.Add($"--configuration {configuration}");
-        }
-
-        // Add output path flag (for publish command)
-        if (!string.IsNullOrWhiteSpace(outputPath) &&
-            command.Equals("publish", StringComparison.OrdinalIgnoreCase))
-        {
-            parts.Add($"--output {outputPath}");
-        }
-
-        // Add additional arguments
-        if (!string.IsNullOrWhiteSpace(arguments))
-        {
-            parts.Add(arguments);
-        }
-
-        return string.Join(" ", parts);
-    }
-
-    /// <summary>
-    /// Checks if a path contains wildcard characters.
-    /// </summary>
-    /// <param name="path">The path to check.</param>
-    /// <returns>True if the path contains wildcards; otherwise, false.</returns>
-    private static bool ContainsWildcard(string path)
-    {
-        return path.Contains('*') || path.Contains('?');
-    }
-
-    /// <summary>
-    /// Merges environment variables from context and step, with step values taking precedence.
-    /// </summary>
-    /// <param name="context">The execution context containing base environment variables.</param>
-    /// <param name="step">The step containing additional environment variables.</param>
-    /// <returns>A merged dictionary of environment variables.</returns>
-    private static IDictionary<string, string> MergeEnvironments(
-        ExecutionContext context,
-        Step step)
-    {
-        var merged = new Dictionary<string, string>(context.Environment);
-
-        if (step.Environment != null)
-        {
-            foreach (var kvp in step.Environment)
+            if (matches.Count == 0)
             {
-                merged[kvp.Key] = kvp.Value; // Step overrides context
+                return null;
             }
+
+            results.AddRange(matches);
         }
 
-        return merged;
+        return results.Distinct(StringComparer.Ordinal).ToList();
     }
 }

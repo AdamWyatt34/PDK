@@ -58,10 +58,10 @@ public static class PdkLogger
             .Enrich.FromLogContext()
             .Enrich.With(new CorrelationIdEnricher());
 
-        // Add secret masking destructuring policy if masker provided
+        // Mask secrets inside structured properties (the destructuring policy never sees plain strings)
         if (secretMasker != null && options.MaskSecrets)
         {
-            loggerConfiguration.Destructure.With(new SecretMaskingDestructuringPolicy(secretMasker));
+            loggerConfiguration.Enrich.With(new SecretMaskingEnricher(secretMasker));
         }
 
         // Console sink
@@ -127,7 +127,7 @@ public static class PdkLogger
             if (secretMasker != null && options.MaskSecrets)
             {
                 loggerConfiguration.WriteTo.File(
-                    new MaskingTextFormatter(new CompactJsonFormatter(), secretMasker),
+                    new MaskingJsonFormatter(secretMasker),
                     options.JsonLogFilePath,
                     rollingInterval: RollingInterval.Infinite,
                     fileSizeLimitBytes: options.MaxFileSizeBytes,

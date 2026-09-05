@@ -76,7 +76,7 @@ public class DotnetExecutionTests : IAsyncDisposable
 
     #region Restore Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task DotnetRestore_WithCsprojFile_RestoresSuccessfully()
@@ -125,7 +125,7 @@ public class DotnetExecutionTests : IAsyncDisposable
 
     #region Build Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task DotnetBuild_WithConfiguration_BuildsSuccessfully()
@@ -183,7 +183,7 @@ public class DotnetExecutionTests : IAsyncDisposable
         result.Output.Should().Contain("Release");
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task DotnetBuild_Failure_ReturnsNonZeroExitCode()
@@ -229,7 +229,7 @@ public class DotnetExecutionTests : IAsyncDisposable
 
     #region Run Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task DotnetRun_WithConsoleApp_RunsSuccessfully()
@@ -289,7 +289,7 @@ public class DotnetExecutionTests : IAsyncDisposable
 
     #region Publish Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task DotnetPublish_WithOutputPath_PublishesSuccessfully()
@@ -351,10 +351,10 @@ public class DotnetExecutionTests : IAsyncDisposable
 
     #region Tool Validation Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
-    public async Task DotnetNotInstalled_ThrowsToolNotFoundException()
+    public async Task DotnetNotInstalled_ReturnsFailedStep()
     {
         // Arrange - Use Alpine image without .NET SDK
         await _containerManager.PullImageIfNeededAsync("alpine:latest");
@@ -394,17 +394,19 @@ public class DotnetExecutionTests : IAsyncDisposable
             }
         };
 
-        // Act & Assert
-        await executor.Invoking(e => e.ExecuteAsync(step, context))
-            .Should().ThrowAsync<ToolNotFoundException>()
-            .WithMessage("*dotnet*not found*");
+        // Act
+        var result = await executor.ExecuteAsync(step, context);
+
+        // Assert: executors report a missing tool as a failed step (so continue-on-error applies) instead of throwing
+        result.Success.Should().BeFalse();
+        result.ErrorOutput.Should().ContainEquivalentOf("dotnet").And.ContainEquivalentOf("not found");
     }
 
     #endregion
 
     #region End-to-End Workflow Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task DotnetWorkflow_RestoreBuildRun_SucceedsEndToEnd()

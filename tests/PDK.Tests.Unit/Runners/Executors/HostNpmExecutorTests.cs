@@ -11,421 +11,198 @@ using PDK.Runners.StepExecutors;
 /// <summary>
 /// Unit tests for the HostNpmExecutor class.
 /// </summary>
-public class HostNpmExecutorTests
+public class HostNpmExecutorTests : IDisposable
 {
     private readonly Mock<IProcessExecutor> _mockProcessExecutor;
-    private readonly Mock<ILogger<HostNpmExecutor>> _mockLogger;
     private readonly HostNpmExecutor _executor;
+    private readonly List<ProcessExecutionRequest> _requests = new();
+    private readonly List<string> _tempDirectories = new();
 
     public HostNpmExecutorTests()
     {
         _mockProcessExecutor = new Mock<IProcessExecutor>();
-        _mockProcessExecutor.Setup(x => x.Platform).Returns(OperatingSystemPlatform.Windows);
+        _mockProcessExecutor.Setup(x => x.Platform).Returns(OperatingSystemPlatform.Linux);
         _mockProcessExecutor
-            .Setup(x => x.IsToolAvailableAsync("npm", It.IsAny<CancellationToken>()))
+            .Setup(x => x.IsToolAvailableAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
+        _mockProcessExecutor.RecordProcesses(_requests, RunnerMockExtensions.Ok("added 100 packages"));
 
-        _mockLogger = new Mock<ILogger<HostNpmExecutor>>();
-        _executor = new HostNpmExecutor(_mockLogger.Object);
+        _executor = new HostNpmExecutor(new Mock<ILogger<HostNpmExecutor>>().Object);
     }
 
-    #region Constructor Tests
+    public void Dispose()
+    {
+        foreach (var directory in _tempDirectories)
+        {
+            try
+            {
+                Directory.Delete(directory, true);
+            }
+            catch (IOException)
+            {
+            }
+        }
+    }
+
+    private static Step CreateNpmStep(string? command = null, Action<Step>? configure = null)
+    {
+        var step = new Step
+        {
+            Id = Guid.NewGuid().ToString(),
+            Name = "npm step",
+            Type = StepType.Npm,
+            With = new Dictionary<string, string>(),
+            Environment = new Dictionary<string, string>()
+        };
+
+        if (command != null)
+        {
+            step.With["command"] = command;
+        }
+
+        configure?.Invoke(step);
+        return step;
+    }
+
+    private HostExecutionContext CreateTestContext()
+    {
+        var tempPath = Path.Combine(Path.GetTempPath(), $"pdk-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempPath);
+        _tempDirectories.Add(tempPath);
+
+        return new HostExecutionContext
+        {
+            ProcessExecutor = _mockProcessExecutor.Object,
+            WorkspacePath = tempPath,
+            Environment = new Dictionary<string, string> { ["WORKSPACE"] = tempPath },
+            WorkingDirectory = tempPath,
+            Platform = OperatingSystemPlatform.Linux,
+            JobInfo = new JobMetadata { JobName = "TestJob", JobId = "job-123", Runner = "host" }
+        };
+    }
 
     [Fact]
     public void Constructor_WithNullLogger_ThrowsArgumentNullException()
     {
-        // Act & Assert
         var act = () => new HostNpmExecutor(null!);
-        act.Should().Throw<ArgumentNullException>()
-            .WithParameterName("logger");
+        act.Should().Throw<ArgumentNullException>().WithParameterName("logger");
     }
-
-    #endregion
-
-    #region Property Tests
 
     [Fact]
     public void StepType_ReturnsNpm()
     {
-        // Act
-        var result = _executor.StepType;
-
-        // Assert
-        result.Should().Be("npm");
+        _executor.StepType.Should().Be("npm");
     }
-
-    #endregion
-
-    #region ExecuteAsync - npm Not Available
 
     [Fact]
     public async Task ExecuteAsync_NpmNotAvailable_ReturnsFailedResult()
     {
-        // Arrange
         _mockProcessExecutor
             .Setup(x => x.IsToolAvailableAsync("npm", It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
 
-        var step = CreateNpmStep("Install");
-        var context = CreateTestContext();
+        var result = await _executor.ExecuteAsync(CreateNpmStep("install"), CreateTestContext());
 
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
         result.Success.Should().BeFalse();
         result.ErrorOutput.Should().Contain("npm is not installed");
     }
 
-    #endregion
-
-    #region ExecuteAsync - Install Command (Default)
-
     [Fact]
-    public async Task ExecuteAsync_NoCommand_DefaultsToInstall()
+    public async Task ExecuteAsync_NpxNotAvailable_ReturnsFailedResult()
     {
-        // Arrange
-        var step = CreateNpmStep("Install");
-        // No command specified = default to install
-
-        string? capturedCommand = null;
         _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, string, IDictionary<string, string>, TimeSpan?, CancellationToken>(
-                (cmd, _, _, _, _) => capturedCommand = cmd)
-            .ReturnsAsync(CreateSuccessResult());
+            .Setup(x => x.IsToolAvailableAsync("npx", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
 
-        var context = CreateTestContext();
+        var result = await _executor.ExecuteAsync(CreateNpmStep("npx", s => s.With["arguments"] = "prettier --check ."), CreateTestContext());
 
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
+        result.Success.Should().BeFalse();
+        result.ErrorOutput.Should().Contain("npx is not installed");
+    }
 
-        // Assert
+    [Theory]
+    [InlineData(null, null, null, "npm install")]
+    [InlineData("install", null, null, "npm install")]
+    [InlineData("ci", null, null, "npm ci")]
+    [InlineData("build", null, null, "npm run build")]
+    [InlineData("test", null, null, "npm test")]
+    [InlineData("start", null, null, "npm start")]
+    [InlineData("publish", null, null, "npm publish")]
+    [InlineData("run", "lint", null, "npm run lint")]
+    [InlineData("run", "test", "--coverage", "npm run test -- --coverage")]
+    [InlineData("test", null, "--ci", "npm test -- --ci")]
+    [InlineData("install", null, "--production", "npm install --production")]
+    public async Task ExecuteAsync_BuildsExpectedCommandLine(string? command, string? script, string? arguments, string expected)
+    {
+        var step = CreateNpmStep(command, s =>
+        {
+            if (script != null)
+            {
+                s.With["script"] = script;
+            }
+
+            if (arguments != null)
+            {
+                s.With["arguments"] = arguments;
+            }
+        });
+
+        var result = await _executor.ExecuteAsync(step, CreateTestContext());
+
         result.Success.Should().BeTrue();
-        capturedCommand.Should().Be("npm install");
+        _requests.Single().Command.Should().Be(expected);
     }
 
     [Fact]
-    public async Task ExecuteAsync_InstallCommand_ExecutesSuccessfully()
+    public async Task ExecuteAsync_CustomAndNpx_AreSupported()
     {
-        // Arrange
-        var step = CreateNpmStep("Install", "install");
+        await _executor.ExecuteAsync(CreateNpmStep("custom", s => s.With["customCommand"] = "audit --audit-level=high"), CreateTestContext());
+        await _executor.ExecuteAsync(CreateNpmStep("npx", s => s.With["arguments"] = "eslint ."), CreateTestContext());
 
-        string? capturedCommand = null;
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, string, IDictionary<string, string>, TimeSpan?, CancellationToken>(
-                (cmd, _, _, _, _) => capturedCommand = cmd)
-            .ReturnsAsync(CreateSuccessResult());
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-        capturedCommand.Should().Be("npm install");
+        _requests.Select(r => r.Command).Should().Equal("npm audit --audit-level=high", "npx eslint .");
     }
 
-    #endregion
-
-    #region ExecuteAsync - CI Command
-
-    [Fact]
-    public async Task ExecuteAsync_CiCommand_ExecutesSuccessfully()
+    [Theory]
+    [InlineData("run", "script")]
+    [InlineData("invalid", "Unsupported npm command")]
+    public async Task ExecuteAsync_InvalidInputs_ReturnFailedResult(string command, string expected)
     {
-        // Arrange
-        var step = CreateNpmStep("CI Install", "ci");
+        var result = await _executor.ExecuteAsync(CreateNpmStep(command), CreateTestContext());
 
-        string? capturedCommand = null;
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, string, IDictionary<string, string>, TimeSpan?, CancellationToken>(
-                (cmd, _, _, _, _) => capturedCommand = cmd)
-            .ReturnsAsync(CreateSuccessResult());
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-        capturedCommand.Should().Be("npm ci");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Build Command
-
-    [Fact]
-    public async Task ExecuteAsync_BuildCommand_UsesNpmRunBuild()
-    {
-        // Arrange
-        var step = CreateNpmStep("Build", "build");
-
-        string? capturedCommand = null;
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, string, IDictionary<string, string>, TimeSpan?, CancellationToken>(
-                (cmd, _, _, _, _) => capturedCommand = cmd)
-            .ReturnsAsync(CreateSuccessResult());
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-        capturedCommand.Should().Be("npm run build");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Test Command
-
-    [Fact]
-    public async Task ExecuteAsync_TestCommand_ExecutesSuccessfully()
-    {
-        // Arrange
-        var step = CreateNpmStep("Test", "test");
-
-        string? capturedCommand = null;
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, string, IDictionary<string, string>, TimeSpan?, CancellationToken>(
-                (cmd, _, _, _, _) => capturedCommand = cmd)
-            .ReturnsAsync(CreateSuccessResult());
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-        capturedCommand.Should().Be("npm test");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Run Command
-
-    [Fact]
-    public async Task ExecuteAsync_RunCommand_WithScript_ExecutesSuccessfully()
-    {
-        // Arrange
-        var step = CreateNpmStep("Run Script", "run");
-        step.With["script"] = "lint";
-
-        string? capturedCommand = null;
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, string, IDictionary<string, string>, TimeSpan?, CancellationToken>(
-                (cmd, _, _, _, _) => capturedCommand = cmd)
-            .ReturnsAsync(CreateSuccessResult());
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-        capturedCommand.Should().Be("npm run lint");
+        result.Success.Should().BeFalse();
+        result.ErrorOutput.Should().Contain(expected);
+        _requests.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task ExecuteAsync_RunCommand_WithoutScript_ThrowsArgumentException()
+    public async Task ExecuteAsync_WorkingDirInput_IsHonoured()
     {
-        // Arrange
-        var step = CreateNpmStep("Run No Script", "run");
-        // No script specified
-
         var context = CreateTestContext();
 
-        // Act & Assert
-        var act = () => _executor.ExecuteAsync(step, context);
-        await act.Should().ThrowAsync<ArgumentException>()
-            .WithMessage("*script*required*");
+        await _executor.ExecuteAsync(CreateNpmStep("install", s => s.With["workingDir"] = "web"), context);
+
+        _requests.Single().WorkingDirectory.Should().Be(Path.Combine(context.WorkspacePath, "web"));
+        Directory.Exists(Path.Combine(context.WorkspacePath, "web")).Should().BeTrue();
     }
-
-    #endregion
-
-    #region ExecuteAsync - Unsupported Command
-
-    [Fact]
-    public async Task ExecuteAsync_UnsupportedCommand_ThrowsArgumentException()
-    {
-        // Arrange
-        var step = CreateNpmStep("Invalid Command", "invalid");
-        var context = CreateTestContext();
-
-        // Act & Assert
-        var act = () => _executor.ExecuteAsync(step, context);
-        await act.Should().ThrowAsync<ArgumentException>()
-            .WithMessage("*Unsupported npm command*");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - With Arguments
-
-    [Fact]
-    public async Task ExecuteAsync_InstallWithArguments_IncludesArguments()
-    {
-        // Arrange
-        var step = CreateNpmStep("Install with Args", "install");
-        step.With["arguments"] = "--production";
-
-        string? capturedCommand = null;
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, string, IDictionary<string, string>, TimeSpan?, CancellationToken>(
-                (cmd, _, _, _, _) => capturedCommand = cmd)
-            .ReturnsAsync(CreateSuccessResult());
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-        capturedCommand.Should().Contain("--production");
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_RunWithArguments_IncludesDashDash()
-    {
-        // Arrange
-        var step = CreateNpmStep("Run with Args", "run");
-        step.With["script"] = "test";
-        step.With["arguments"] = "--coverage";
-
-        string? capturedCommand = null;
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, string, IDictionary<string, string>, TimeSpan?, CancellationToken>(
-                (cmd, _, _, _, _) => capturedCommand = cmd)
-            .ReturnsAsync(CreateSuccessResult());
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-        capturedCommand.Should().Contain("-- --coverage");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Environment Variables
 
     [Fact]
     public async Task ExecuteAsync_WithStepEnvironment_MergesWithContext()
     {
-        // Arrange
-        var step = CreateNpmStep("Install", "install");
-        step.Environment["NODE_ENV"] = "production";
+        var step = CreateNpmStep("install", s => s.Environment["NODE_ENV"] = "production");
 
-        IDictionary<string, string>? capturedEnv = null;
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, string, IDictionary<string, string>, TimeSpan?, CancellationToken>(
-                (_, _, env, _, _) => capturedEnv = env)
-            .ReturnsAsync(CreateSuccessResult());
+        await _executor.ExecuteAsync(step, CreateTestContext());
 
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        capturedEnv.Should().ContainKey("NODE_ENV");
-        capturedEnv!["NODE_ENV"].Should().Be("production");
+        _requests.Single().Environment!["NODE_ENV"].Should().Be("production");
+        _requests.Single().Environment.Should().ContainKey("WORKSPACE");
     }
-
-    #endregion
-
-    #region ExecuteAsync - Error Scenarios
 
     [Fact]
     public async Task ExecuteAsync_CommandFails_ReturnsFailedResult()
     {
-        // Arrange
-        var step = CreateNpmStep("Install Fail", "install");
+        _mockProcessExecutor.RecordProcesses(_requests, RunnerMockExtensions.Fail(1, "npm ERR! code ERESOLVE"));
 
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ExecutionResult
-            {
-                ExitCode = 1,
-                StandardOutput = "",
-                StandardError = "npm ERR! code ERESOLVE",
-                Duration = TimeSpan.FromSeconds(5)
-            });
+        var result = await _executor.ExecuteAsync(CreateNpmStep("install"), CreateTestContext());
 
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
         result.Success.Should().BeFalse();
         result.ExitCode.Should().Be(1);
         result.ErrorOutput.Should().Contain("ERESOLVE");
@@ -434,122 +211,11 @@ public class HostNpmExecutorTests
     [Fact]
     public async Task ExecuteAsync_ProcessExecutorThrows_ReturnsFailedResult()
     {
-        // Arrange
-        var step = CreateNpmStep("Install Exception", "install");
+        _mockProcessExecutor.SetupProcess().ThrowsAsync(new InvalidOperationException("Process failed to start"));
 
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new InvalidOperationException("Process failed to start"));
+        var result = await _executor.ExecuteAsync(CreateNpmStep("install"), CreateTestContext());
 
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
         result.Success.Should().BeFalse();
         result.ErrorOutput.Should().Contain("Process failed to start");
     }
-
-    #endregion
-
-    #region ExecuteAsync - All Supported Commands
-
-    [Theory]
-    [InlineData("install")]
-    [InlineData("ci")]
-    [InlineData("build")]
-    [InlineData("test")]
-    [InlineData("start")]
-    [InlineData("publish")]
-    public async Task ExecuteAsync_SupportedCommand_Succeeds(string command)
-    {
-        // Arrange
-        var step = CreateNpmStep($"npm {command}", command);
-
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult());
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-    }
-
-    #endregion
-
-    #region Helper Methods
-
-    private Step CreateNpmStep(string name, string? command = null)
-    {
-        var step = new Step
-        {
-            Id = Guid.NewGuid().ToString(),
-            Name = name,
-            Type = StepType.Npm,
-            Script = null,
-            Shell = null,
-            With = new Dictionary<string, string>(),
-            Environment = new Dictionary<string, string>(),
-            ContinueOnError = false
-        };
-
-        if (command != null)
-        {
-            step.With["command"] = command;
-        }
-
-        return step;
-    }
-
-    private HostExecutionContext CreateTestContext()
-    {
-        var tempPath = Path.Combine(Path.GetTempPath(), $"pdk-test-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(tempPath);
-
-        return new HostExecutionContext
-        {
-            ProcessExecutor = _mockProcessExecutor.Object,
-            WorkspacePath = tempPath,
-            Environment = new Dictionary<string, string>
-            {
-                ["WORKSPACE"] = tempPath
-            },
-            WorkingDirectory = tempPath,
-            Platform = OperatingSystemPlatform.Windows,
-            JobInfo = new JobMetadata
-            {
-                JobName = "TestJob",
-                JobId = "job-123",
-                Runner = "host"
-            }
-        };
-    }
-
-    private ExecutionResult CreateSuccessResult()
-    {
-        return new ExecutionResult
-        {
-            ExitCode = 0,
-            StandardOutput = "added 100 packages",
-            StandardError = "",
-            Duration = TimeSpan.FromSeconds(10)
-        };
-    }
-
-    #endregion
 }

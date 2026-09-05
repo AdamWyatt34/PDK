@@ -244,17 +244,47 @@ public class SystemInfoTests
     }
 
     [Fact]
-    public void GetBuildDate_ReturnsDate_WhenMetadataPresent()
+    public void GetDockerEndpoint_UsesDockerHost_WhenSet()
     {
-        // Act
-        var buildDate = _systemInfo.GetBuildDate();
-
-        // Assert - depends on build configuration
-        // Just verify it returns a valid date or null
-        if (buildDate.HasValue)
+        var original = Environment.GetEnvironmentVariable("DOCKER_HOST");
+        try
         {
-            buildDate.Value.Should().BeBefore(DateTime.UtcNow.AddMinutes(1));
-            buildDate.Value.Should().BeAfter(DateTime.UtcNow.AddYears(-10));
+            Environment.SetEnvironmentVariable("DOCKER_HOST", "tcp://docker.example:2375");
+
+            SystemInfo.GetDockerEndpoint().Should().Be("tcp://docker.example:2375");
         }
+        finally
+        {
+            Environment.SetEnvironmentVariable("DOCKER_HOST", original);
+        }
+    }
+
+    [Fact]
+    public void GetDockerEndpoint_FallsBackToPlatformDefault()
+    {
+        var original = Environment.GetEnvironmentVariable("DOCKER_HOST");
+        try
+        {
+            Environment.SetEnvironmentVariable("DOCKER_HOST", null);
+
+            var endpoint = SystemInfo.GetDockerEndpoint();
+
+            endpoint.Should().BeOneOf("unix:///var/run/docker.sock", "npipe://./pipe/docker_engine");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("DOCKER_HOST", original);
+        }
+    }
+
+    [Fact]
+    public async Task GetDockerInfoAsync_IncludesEndpoint()
+    {
+        _containerManager.Setup(c => c.GetDockerStatusAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DockerAvailabilityStatus.CreateSuccess("24.0.0", "linux/amd64"));
+
+        var info = await _systemInfo.GetDockerInfoAsync();
+
+        info.Endpoint.Should().NotBeNullOrEmpty();
     }
 }

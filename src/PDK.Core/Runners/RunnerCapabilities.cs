@@ -8,14 +8,26 @@ namespace PDK.Core.Runners;
 public static class RunnerCapabilities
 {
     /// <summary>
+    /// Feature reported when a job contains a Docker step (<see cref="StepType.Docker"/>).
+    /// </summary>
+    public const string DockerStepFeature = "docker-step";
+
+    /// <summary>
+    /// Feature reported when a job needs a specific container image
+    /// (an image reference in <c>runs-on</c>, or a <c>container:</c> section).
+    /// </summary>
+    public const string CustomImagesFeature = "custom-images";
+
+    /// <summary>
     /// Features that require Docker runner.
     /// </summary>
     public static IReadOnlySet<string> DockerOnlyFeatures { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         "service-containers",
         "container-isolation",
-        "custom-images",
-        "network-isolation"
+        CustomImagesFeature,
+        "network-isolation",
+        DockerStepFeature
     };
 
     /// <summary>
@@ -36,6 +48,8 @@ public static class RunnerCapabilities
 
     /// <summary>
     /// Checks if a runner type supports a specific feature.
+    /// The answer agrees with <see cref="ValidateJobRequirements"/>: every feature that
+    /// method can report is unsupported on the host runner.
     /// </summary>
     /// <param name="runnerType">The runner type to check.</param>
     /// <param name="feature">The feature name to check.</param>
@@ -78,66 +92,87 @@ public static class RunnerCapabilities
 
     /// <summary>
     /// Validates that a job can run on the specified runner type.
-    /// Returns list of unsupported features if any.
+    /// Returns the distinct list of unsupported features, if any.
     /// </summary>
     /// <param name="job">The job to validate.</param>
     /// <param name="runnerType">The runner type to validate against.</param>
-    /// <returns>List of unsupported feature names. Empty if all features are supported.</returns>
+    /// <returns>List of unsupported feature names (each reported once). Empty if all features are supported.</returns>
     public static IReadOnlyList<string> ValidateJobRequirements(Job job, RunnerType runnerType)
     {
+        ArgumentNullException.ThrowIfNull(job);
+
         var unsupportedFeatures = new List<string>();
 
-        if (runnerType == RunnerType.Host)
+        if (runnerType != RunnerType.Host)
         {
-            // Check for Docker-only features
-            // Service containers would be checked here if Job had a Services property
-            // For now, check based on step types that require Docker
-            foreach (var step in job.Steps)
-            {
-                if (step.Type == StepType.Docker)
-                {
-                    unsupportedFeatures.Add("docker-step");
-                }
-            }
+            return unsupportedFeatures;
+        }
 
-            // Check if custom image is specified (non-standard runner)
-            if (!IsStandardRunner(job.RunsOn))
-            {
-                unsupportedFeatures.Add("custom-images");
-            }
+        if (job.Steps.Any(step => step.Type == StepType.Docker))
+        {
+            unsupportedFeatures.Add(DockerStepFeature);
+        }
+
+        if (RequiresCustomImage(job))
+        {
+            unsupportedFeatures.Add(CustomImagesFeature);
         }
 
         return unsupportedFeatures;
     }
 
     /// <summary>
-    /// Checks if the runner specification is a standard runner that works on host.
+    /// Determines whether the job needs a specific container image, which the host runner cannot provide:
+    /// a <c>container:</c> section, or a <c>runs-on</c> value that is an image reference rather than a runner label.
     /// </summary>
-    private static bool IsStandardRunner(string runsOn)
+    /// <param name="job">The job to inspect.</param>
+    /// <returns>True when a container image is required.</returns>
+    public static bool RequiresCustomImage(Job job)
     {
-        // Handle unexpanded GitHub Actions expressions (e.g., ${{ matrix.os }})
-        // Assume they resolve to standard runners since matrix typically uses them
-        if (runsOn.Contains("${{") || runsOn.Contains("}}"))
+        ArgumentNullException.ThrowIfNull(job);
+
+        if (!string.IsNullOrWhiteSpace(job.Container))
         {
-            return true;
+            // A GitLab image: is a preference (shell executors ignore it); a GitHub/Azure container: is a requirement
+            return !job.ContainerOptional;
         }
 
-        // Standard runners that can work on host (local machine equivalents)
-        var standardRunners = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "ubuntu-latest",
-            "ubuntu-22.04",
-            "ubuntu-20.04",
-            "windows-latest",
-            "windows-2022",
-            "windows-2019",
-            "macos-latest",
-            "macos-14",
-            "macos-13",
-            "macos-12",
-            "self-hosted"
-        };
+        return IsImageReference(job.RunsOn);
+    }
 
-        return standardRunners.Contains(runsOn);
+    /// <summary>
+    /// Checks whether a <c>runs-on</c> / <c>vmImage</c> value is a runner label that can be honoured on the host.
+    /// Runner label families (<c>ubuntu-*</c>, <c>windows-*</c>, <c>macos-*</c>, <c>self-hosted</c>,
+    /// architecture and size suffixes such as <c>-arm</c> / <c>-xl</c>, Azure <c>vmImage</c> names and
+    /// custom self-hosted labels) are all standard. Only values that look like container image references
+    /// (containing <c>:</c> or <c>/</c>) are not.
+    /// </summary>
+    /// <param name="runsOn">The runner specification.</param>
+    /// <returns>True for runner labels; false for image references.</returns>
+    public static bool IsStandardRunner(string? runsOn) => !IsImageReference(runsOn);
+
+    /// <summary>
+    /// Checks whether a <c>runs-on</c> value looks like a container image reference
+    /// (e.g. <c>node:18-alpine</c>, <c>mcr.microsoft.com/dotnet/sdk:8.0</c>).
+    /// Unexpanded expressions such as <c>${{ matrix.os }}</c> are never treated as images.
+    /// </summary>
+    /// <param name="runsOn">The runner specification.</param>
+    /// <returns>True when the value is an image reference.</returns>
+    public static bool IsImageReference(string? runsOn)
+    {
+        if (string.IsNullOrWhiteSpace(runsOn))
+        {
+            return false;
+        }
+
+        var value = runsOn.Trim();
+
+        // Unexpanded GitHub Actions / Azure expressions resolve to runner labels at runtime.
+        if (value.Contains("${{", StringComparison.Ordinal) || value.Contains("$(", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return value.Contains(':') || value.Contains('/');
     }
 }

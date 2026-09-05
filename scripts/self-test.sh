@@ -1,8 +1,8 @@
 #!/bin/bash
-set -e
-
 # PDK Self-Test (Dogfooding) Script (REQ-09-020)
 # Runs PDK on its own GitHub Actions CI workflow
+
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -12,7 +12,7 @@ echo "================================================"
 echo ""
 
 # Color support
-if [ -t 1 ] && command -v tput &> /dev/null; then
+if [ -t 1 ] && command -v tput > /dev/null 2>&1; then
     GREEN=$(tput setaf 2)
     RED=$(tput setaf 1)
     YELLOW=$(tput setaf 3)
@@ -25,6 +25,15 @@ else
     CYAN=''
     RESET=''
 fi
+
+# Extracts the first MAJOR.MINOR.PATCH from the given text, or "unknown" (portable: no GNU grep -P)
+extract_version() {
+    if [[ "$1" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+        echo "${BASH_REMATCH[1]}"
+    else
+        echo "unknown"
+    fi
+}
 
 cd "$PROJECT_ROOT"
 
@@ -40,18 +49,15 @@ ln -sf "$TIMESTAMP" .pdk-dogfood/runs/latest
 echo "${CYAN}Output directory:${RESET} $OUTPUT_DIR"
 echo ""
 
-# Check Docker availability (required)
+# Check Docker availability (informational: the self-test runs in host mode)
 echo "Checking Docker..."
-if ! command -v docker &> /dev/null; then
-    echo "${RED}Error:${RESET} Docker is not installed. PDK requires Docker for execution."
-    exit 2
+if ! command -v docker > /dev/null 2>&1; then
+    echo "${YELLOW}Warning:${RESET} Docker is not installed; the self-test runs in host mode and does not need it."
+elif ! docker info > /dev/null 2>&1; then
+    echo "${YELLOW}Warning:${RESET} Docker daemon is not running; the self-test runs in host mode and does not need it."
+else
+    echo "${GREEN}Docker is available${RESET}"
 fi
-
-if ! docker info &> /dev/null; then
-    echo "${RED}Error:${RESET} Docker daemon is not running. Please start Docker."
-    exit 2
-fi
-echo "${GREEN}Docker is available${RESET}"
 echo ""
 
 # Build PDK if needed
@@ -67,18 +73,18 @@ echo ""
 
 # Capture environment info
 echo "Capturing environment info..."
-cat > "$OUTPUT_DIR/environment.json" << EOF
+cat > "$OUTPUT_DIR/environment.json" << ENVEOF
 {
-    "timestamp": "$(date -Iseconds)",
+    "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
     "os": "$(uname -s)",
     "osVersion": "$(uname -r)",
     "dotnetVersion": "$(dotnet --version)",
-    "dockerVersion": "$(docker --version | grep -oP '\d+\.\d+\.\d+' | head -1)",
+    "dockerVersion": "$(extract_version "$(docker --version 2>/dev/null || true)")",
     "gitBranch": "$(git branch --show-current 2>/dev/null || echo 'unknown')",
     "gitCommit": "$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')",
     "workingDirectory": "$PROJECT_ROOT"
 }
-EOF
+ENVEOF
 echo "${GREEN}Environment captured${RESET}"
 echo ""
 
@@ -89,22 +95,27 @@ echo ""
 echo "========== PDK Output Begin =========="
 
 START_TIME=$(date +%s)
-EXIT_CODE=0
 
 # Run PDK and capture output
 # Use --host mode to run on local machine (where .NET is already installed)
 # Skip steps that use GitHub Actions (setup-dotnet, cache, upload-artifact, codecov)
 # Skip Build step - PDK is already built and running, can't rebuild itself (file locks)
 # Run: checkout, restore, unit tests (validates PDK can execute a real workflow)
+#
+# The exit code must be PDK's, not tee's: errexit is suspended for the pipeline and the
+# status is taken from PIPESTATUS[0].
+set +e
 dotnet run --project src/PDK.CLI/PDK.CLI.csproj \
     --no-build --configuration Release -- \
     run --file .github/workflows/ci.yml \
-    --job build \
+    --job build-ubuntu-latest \
     --host \
     --step-filter "Checkout code" \
     --step-filter "Restore dependencies" \
     --step-filter "Run unit tests" \
-    --verbose 2>&1 | tee "$OUTPUT_DIR/output.log" || EXIT_CODE=$?
+    --verbose 2>&1 | tee "$OUTPUT_DIR/output.log"
+EXIT_CODE=${PIPESTATUS[0]}
+set -e
 
 END_TIME=$(date +%s)
 DURATION=$((END_TIME - START_TIME))
@@ -114,13 +125,13 @@ echo ""
 
 # Generate summary JSON
 SUCCESS="false"
-if [ $EXIT_CODE -eq 0 ]; then
+if [ "$EXIT_CODE" -eq 0 ]; then
     SUCCESS="true"
 fi
 
-cat > "$OUTPUT_DIR/summary.json" << EOF
+cat > "$OUTPUT_DIR/summary.json" << SUMMARYEOF
 {
-    "timestamp": "$(date -Iseconds)",
+    "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
     "workflow": ".github/workflows/ci.yml",
     "job": "build",
     "execution": {
@@ -131,7 +142,7 @@ cat > "$OUTPUT_DIR/summary.json" << EOF
     "outputFile": "output.log",
     "environmentFile": "environment.json"
 }
-EOF
+SUMMARYEOF
 
 # Display summary
 echo "================================================"
@@ -142,7 +153,7 @@ echo "Workflow:     .github/workflows/ci.yml"
 echo "Job:          build"
 echo "Duration:     ${DURATION}s"
 
-if [ $EXIT_CODE -eq 0 ]; then
+if [ "$EXIT_CODE" -eq 0 ]; then
     echo "Status:       ${GREEN}SUCCESS${RESET}"
     echo ""
     echo "${GREEN}PDK self-test passed!${RESET}"
@@ -154,4 +165,4 @@ else
     echo "Check output log: $OUTPUT_DIR/output.log"
 fi
 
-exit $EXIT_CODE
+exit "$EXIT_CODE"

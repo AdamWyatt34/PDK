@@ -6,11 +6,15 @@ root = true
 # Default settings for all files
 [*]
 charset = utf-8
-end_of_line = crlf
+end_of_line = lf
 indent_style = space
 indent_size = 4
 insert_final_newline = true
 trim_trailing_whitespace = true
+
+# Windows-only scripts keep CRLF (see .gitattributes)
+[*.{ps1,bat,cmd}]
+end_of_line = crlf
 
 # Markdown files
 [*.md]

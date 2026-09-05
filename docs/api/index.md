@@ -6,7 +6,8 @@ Welcome to the Pipeline Development Kit (PDK) API documentation.
 
 ### Core
 
-- **PDK.Core.Models** - Core pipeline models (Pipeline, Job, Step, etc.)
+- **PDK.Core.Models** - Core pipeline models (Pipeline, Job, Step, JobGraph, etc.)
+- **PDK.Core.Expressions** - Expression engine (GitHub `${{ }}` and Azure `$( )` / `$[ ]` dialects), contexts and the environment exported to steps
 - **PDK.Core.Validation** - Pipeline validation and execution planning
 - **PDK.Core.Configuration** - Configuration management
 - **PDK.Core.Secrets** - Secret management and masking
@@ -35,4 +36,4 @@ Welcome to the Pipeline Development Kit (PDK) API documentation.
 
 For user documentation, see the [Getting Started Guide](../getting-started.md).
 
-For contributing to PDK, see the [Contributing Guide](../CONTRIBUTING.md).
+For contributing to PDK, see the [Contributing Guide](../../CONTRIBUTING.md).

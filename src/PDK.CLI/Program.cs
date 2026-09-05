@@ -1,5 +1,8 @@
 // File: src/PDK.CLI/Program.cs
 using System.CommandLine;
+using System.CommandLine.Builder;
+using System.CommandLine.Invocation;
+using System.CommandLine.Parsing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using PDK.CLI;
@@ -12,6 +15,7 @@ using PDK.CLI.Logging;
 using PDK.Cli.Filtering;
 using PDK.Core.Diagnostics;
 using PDK.Core.Logging;
+using PDK.Core.Performance;
 using PDK.Core.Progress;
 using PDK.Core.Models;
 using PDK.Providers.AzureDevOps;
@@ -32,24 +36,20 @@ var services = new ServiceCollection();
 ConfigureServices(services);
 var serviceProvider = services.BuildServiceProvider();
 
+// Spectre.Console renders nothing when the detected terminal width is not positive
+// (e.g. TERM=linux with redirected output makes .NET report BufferWidth = -1).
+if (AnsiConsole.Profile.Width <= 0)
+{
+    AnsiConsole.Profile.Width = 80;
+}
+
 var rootCommand = new RootCommand("PDK - Pipeline Development Kit");
 
 // Run command
 var runCommand = new Command("run", "Run a pipeline locally");
-var fileOption = new Option<FileInfo>(
+var fileOption = new Option<FileInfo?>(
     aliases: ["--file", "-f"],
-    description: "Path to the pipeline file")
-{
-    IsRequired = true
-};
-fileOption.AddValidator(result =>
-{
-    var file = result.GetValueForOption(fileOption);
-    if (file?.Exists == false)
-    {
-        result.ErrorMessage = $"File not found: {file.FullName}";
-    }
-});
+    description: "Path to the pipeline file (auto-detects .github/workflows/*.yml or azure-pipelines.yml if not specified)");
 
 var jobOption = new Option<string?>(
     aliases: ["--job", "-j"],
@@ -74,7 +74,7 @@ var runnerOption = new Option<string?>(
     description: "Runner type: 'docker', 'host', or 'auto' (default)");
 runnerOption.AddValidator(result =>
 {
-    var value = result.GetValueForOption(runnerOption);
+    var value = result.GetValueForOption(runnerOption)?.ToLowerInvariant();
     if (value != null && value != "docker" && value != "host" && value != "auto")
     {
         result.ErrorMessage = "Runner must be 'docker', 'host', or 'auto'";
@@ -156,10 +156,14 @@ var secretOption = new Option<string[]>(
 };
 
 // Performance optimization options (Sprint 10 Phase 3)
+// Accepted for compatibility only: every job already gets a fresh container.
 var noReuseOption = new Option<bool>(
     aliases: ["--no-reuse"],
-    description: "Disable container reuse (create new container per step)",
-    getDefaultValue: () => false);
+    description: "No effect: every job runs in a fresh container",
+    getDefaultValue: () => false)
+{
+    IsHidden = true
+};
 
 var noCacheOption = new Option<bool>(
     aliases: ["--no-cache"],
@@ -168,12 +172,12 @@ var noCacheOption = new Option<bool>(
 
 var parallelOption = new Option<bool>(
     aliases: ["--parallel"],
-    description: "Enable parallel step execution for independent steps",
+    description: "Run independent jobs concurrently (dependencies still run first); output lines are prefixed with the job name",
     getDefaultValue: () => false);
 
 var maxParallelOption = new Option<int>(
     aliases: ["--max-parallel"],
-    description: "Maximum number of steps to run in parallel (default: 4)",
+    description: "Maximum number of jobs to run at the same time with --parallel (default: 4)",
     getDefaultValue: () => 4);
 maxParallelOption.AddValidator(result =>
 {
@@ -272,6 +276,33 @@ var filterPresetOption = new Option<string?>(
     aliases: ["--preset"],
     description: "Load filter preset from configuration file");
 
+var noDepsOption = new Option<bool>(
+    aliases: ["--no-deps"],
+    description: "With --job: run only the selected job, not the jobs it depends on",
+    getDefaultValue: () => false);
+
+var strictOption = new Option<bool>(
+    aliases: ["--strict"],
+    description: "Fail the job when it contains an action or task PDK cannot run (default: skip with a warning)",
+    getDefaultValue: () => false);
+
+var eventOption = new Option<string>(
+    aliases: ["--event"],
+    description: "Event name presented to the pipeline (github.event_name / Build.Reason), e.g. push, pull_request",
+    getDefaultValue: () => "push");
+
+var paramOption = new Option<string[]>(
+    aliases: ["--param", "--input"],
+    description: "Parameter or input value as NAME=VALUE (Azure 'parameters', GitHub 'inputs'); repeatable")
+{
+    AllowMultipleArgumentsPerToken = false
+};
+
+var keepContainersOption = new Option<bool>(
+    aliases: ["--keep-containers"],
+    description: "Keep job containers after the run for inspection (Docker mode)",
+    getDefaultValue: () => false);
+
 runCommand.AddOption(fileOption);
 runCommand.AddOption(jobOption);
 runCommand.AddOption(stepOption);
@@ -309,10 +340,16 @@ runCommand.AddOption(includeDepsOption);
 runCommand.AddOption(previewFilterOption);
 runCommand.AddOption(confirmFilterOption);
 runCommand.AddOption(filterPresetOption);
+runCommand.AddOption(noDepsOption);
+runCommand.AddOption(strictOption);
+runCommand.AddOption(eventOption);
+runCommand.AddOption(keepContainersOption);
+runCommand.AddOption(paramOption);
 
 runCommand.SetHandler(async context =>
 {
-    var file = context.ParseResult.GetValueForOption(fileOption)!;
+    var cancellationToken = context.GetCancellationToken();
+    var fileArg = context.ParseResult.GetValueForOption(fileOption);
     var job = context.ParseResult.GetValueForOption(jobOption);
     var step = context.ParseResult.GetValueForOption(stepOption);
     var host = context.ParseResult.GetValueForOption(hostOption);
@@ -349,6 +386,11 @@ runCommand.SetHandler(async context =>
     var previewFilter = context.ParseResult.GetValueForOption(previewFilterOption);
     var confirmFilter = context.ParseResult.GetValueForOption(confirmFilterOption);
     var filterPreset = context.ParseResult.GetValueForOption(filterPresetOption);
+    var noDeps = context.ParseResult.GetValueForOption(noDepsOption);
+    var strict = context.ParseResult.GetValueForOption(strictOption);
+    var eventName = context.ParseResult.GetValueForOption(eventOption) ?? "push";
+    var keepContainers = context.ParseResult.GetValueForOption(keepContainersOption);
+    var paramValues = context.ParseResult.GetValueForOption(paramOption) ?? [];
 
     // --dry-run-json implies --dry-run
     if (!string.IsNullOrEmpty(dryRunJson))
@@ -356,13 +398,27 @@ runCommand.SetHandler(async context =>
         dryRun = true;
     }
 
+    // --step is shorthand for a single --step-filter entry
+    if (!string.IsNullOrWhiteSpace(step))
+    {
+        filterSteps = [.. filterSteps, step];
+    }
+
+    var located = PipelineFileLocator.Resolve(fileArg, AnsiConsole.Console, "run");
+    if (located.File == null)
+    {
+        context.ExitCode = located.ExitCode;
+        return;
+    }
+    var file = located.File;
+
     try
     {
         // Validate conflicting runner options
         if (host && docker)
         {
             AnsiConsole.MarkupLine("[red]Error:[/] Cannot specify both --host and --docker flags. Choose one.");
-            Environment.Exit(1);
+            context.ExitCode = ExitCodes.InvalidArguments;
             return;
         }
 
@@ -371,7 +427,7 @@ runCommand.SetHandler(async context =>
         if (verbosityCount > 1)
         {
             AnsiConsole.MarkupLine("[red]Error:[/] Cannot specify multiple verbosity flags. Choose one of: --trace, --verbose, --quiet, --silent.");
-            Environment.Exit(1);
+            context.ExitCode = ExitCodes.InvalidArguments;
             return;
         }
 
@@ -382,8 +438,11 @@ runCommand.SetHandler(async context =>
             AnsiConsole.MarkupLine("[yellow]         [/] Sensitive data may appear in logs and console output.");
         }
 
-        // Build logging options from CLI flags
-        var loggingOptions = LoggingOptionsBuilder.FromCliFlags(
+        // Build logging options from the configuration's logging section and the CLI flags
+        // (flags win) and apply them to the logging pipeline
+        var loggingConfig = (await serviceProvider.GetRequiredService<IConfigurationLoader>().LoadAsync(configPath))?.Logging;
+        var loggingOptions = LoggingOptionsBuilder.FromCliFlagsAndConfiguration(
+            loggingConfig,
             verbose: verbose,
             trace: trace,
             quiet: quiet,
@@ -391,30 +450,52 @@ runCommand.SetHandler(async context =>
             logFile: logFile,
             logJson: logJson,
             noRedact: noRedact);
+        serviceProvider.GetRequiredService<PdkLoggingController>().Apply(loggingOptions);
 
         // Determine runner type from CLI options
         var runnerType = DetermineRunnerType(host, docker, runner);
-
-        // Interactive mode takes precedence (REQ-06-020)
-        if (interactive)
-        {
-            var cmd = serviceProvider.GetRequiredService<InteractiveCommand>();
-            cmd.File = file;
-            Environment.ExitCode = await cmd.ExecuteAsync();
-            return;
-        }
 
         // Validate mode conflicts
         if (dryRun && (watch || interactive))
         {
             AnsiConsole.MarkupLine("[red]Error:[/] --dry-run cannot be used with --watch or --interactive.");
-            Environment.Exit(1);
+            context.ExitCode = ExitCodes.InvalidArguments;
             return;
         }
 
-        // Parse NAME=VALUE arrays into dictionaries
+        if (watch && interactive)
+        {
+            AnsiConsole.MarkupLine("[red]Error:[/] Watch mode cannot be used with interactive mode.");
+            context.ExitCode = ExitCodes.InvalidArguments;
+            return;
+        }
+
+        // Interactive mode (REQ-06-020)
+        if (interactive)
+        {
+            var cmd = serviceProvider.GetRequiredService<InteractiveCommand>();
+            cmd.File = file;
+            context.ExitCode = await cmd.ExecuteAsync(cancellationToken);
+            return;
+        }
+
+        // Parse NAME=VALUE arrays into dictionaries (reject malformed entries)
+        var malformed = vars.Concat(secrets).Concat(paramValues).Where(p => p.IndexOf('=') <= 0).ToList();
+        if (malformed.Count > 0)
+        {
+            AnsiConsole.MarkupLine($"[red]Error:[/] Expected NAME=VALUE for --var/--secret/--param, got: {Markup.Escape(string.Join(", ", malformed))}");
+            context.ExitCode = ExitCodes.InvalidArguments;
+            return;
+        }
         var cliVariables = ParseKeyValuePairs(vars);
         var cliSecrets = ParseKeyValuePairs(secrets);
+        var cliParameters = new Dictionary<string, string>(ParseKeyValuePairs(paramValues), StringComparer.OrdinalIgnoreCase);
+
+        // Options kept for compatibility that no longer change behaviour
+        if (noReuse)
+        {
+            AnsiConsole.MarkupLine("[yellow]Warning:[/] --no-reuse has no effect: every job already gets a fresh container.");
+        }
 
         // Warn if secrets passed via CLI
         if (cliSecrets.Count > 0)
@@ -445,7 +526,13 @@ runCommand.SetHandler(async context =>
 
             // Parse pipeline
             var parser = parserFactory.GetParser(file.FullName);
-            var pipeline = await parser.ParseFile(file.FullName);
+            var pipeline = await parser.ParseFile(file.FullName, new PDK.Core.Models.PipelineParseOptions
+            {
+                Parameters = cliParameters,
+                Variables = cliVariables,
+                WorkspacePath = Directory.GetCurrentDirectory(),
+                EventName = eventName
+            });
 
             // Run dry-run validation
             var runnerTypeStr = runnerType switch
@@ -455,30 +542,59 @@ runCommand.SetHandler(async context =>
                 _ => "auto"
             };
 
+            // Apply the same step filters as a real run so the plan shows what would execute
+            PDK.Core.Filtering.IStepFilter? dryRunFilter = null;
+            var dryRunFilterOptions = serviceProvider.GetRequiredService<FilterOptionsBuilder>().Build(new ExecutionOptions
+            {
+                FilePath = file.FullName,
+                JobName = job,
+                StepName = step,
+                FilterStepNames = [.. filterSteps],
+                FilterStepIndices = [.. filterStepIndices],
+                FilterStepRanges = [.. filterStepRanges],
+                SkipStepNames = [.. skipSteps],
+                IncludeDependencies = includeDeps,
+                FilterPreset = filterPreset
+            }, config);
+
+            if (dryRunFilterOptions.HasFilters)
+            {
+                var filterBuilder = serviceProvider.GetRequiredService<PDK.Core.Filtering.IStepFilterBuilder>();
+                var filterValidation = filterBuilder.Validate(dryRunFilterOptions, pipeline);
+                if (!filterValidation.IsValid)
+                {
+                    foreach (var error in filterValidation.Errors)
+                    {
+                        AnsiConsole.MarkupLine($"[red]Error:[/] [[{Markup.Escape(error.Code)}]] {Markup.Escape(error.Message)}");
+                    }
+
+                    context.ExitCode = ExitCodes.InvalidArguments;
+                    return;
+                }
+
+                dryRunFilter = filterBuilder.Build(dryRunFilterOptions, pipeline);
+            }
+
             var result = await dryRunService.ExecuteAsync(
                 pipeline,
                 file.FullName,
                 runnerTypeStr,
-                dryRunJson);
+                dryRunJson,
+                new PDK.CLI.DryRun.DryRunRequest { JobName = job, Filter = dryRunFilter },
+                cancellationToken);
 
-            Environment.ExitCode = result.IsValid ? 0 : 1;
+            context.ExitCode = result.IsValid ? ExitCodes.Success : ExitCodes.Failure;
             return;
         }
 
         // Watch mode (Sprint 11 - REQ-11-001)
         if (watch)
         {
-            // Watch mode is incompatible with interactive and validate-only modes
-            if (interactive)
-            {
-                AnsiConsole.MarkupLine("[red]Error:[/] Watch mode cannot be used with interactive mode.");
-                Environment.Exit(1);
-                return;
-            }
+            // Watch mode is incompatible with validate-only mode
             if (validate)
             {
                 AnsiConsole.MarkupLine("[red]Error:[/] Watch mode cannot be used with validate-only mode.");
-                Environment.Exit(1);
+                context.ExitCode = ExitCodes.InvalidArguments;
                 return;
             }
 
@@ -493,6 +609,8 @@ runCommand.SetHandler(async context =>
                 ValidateOnly = validate,
                 Verbose = verbose,
                 Quiet = quiet,
+                Trace = trace,
+                Silent = silent,
                 ConfigPath = configPath,
                 CliVariables = cliVariables,
                 VarFilePath = varFile?.FullName,
@@ -513,32 +631,40 @@ runCommand.SetHandler(async context =>
                 IncludeDependencies = includeDeps,
                 PreviewFilter = previewFilter,
                 ConfirmFilter = confirmFilter,
-                FilterPreset = filterPreset
+                FilterPreset = filterPreset,
+                NoDependencies = noDeps,
+                StrictUnsupportedSteps = strict,
+                EventName = eventName,
+                KeepContainers = keepContainers,
+                Parameters = cliParameters
             };
 
-            var watchModeOptions = new WatchModeOptions
+            // Configuration supplies the defaults for watch mode; explicit CLI flags win
+            var watchModeOptions = new WatchModeOptions();
+            var watchConfig = await serviceProvider.GetRequiredService<IConfigurationLoader>().LoadAsync(configPath);
+            watchModeOptions.ApplyConfiguration(watchConfig?.Watch);
+            if (context.ParseResult.FindResultFor(watchDebounceOption) is { IsImplicit: false })
             {
-                DebounceMs = watchDebounce,
-                ClearOnRerun = watchClear
-            };
+                watchModeOptions.DebounceMs = watchDebounce;
+            }
 
-            // Set up Ctrl+C handler for graceful shutdown
-            using var cts = new CancellationTokenSource();
-            Console.CancelKeyPress += (_, e) =>
+            if (context.ParseResult.FindResultFor(watchClearOption) is { IsImplicit: false })
             {
-                e.Cancel = true; // Prevent immediate termination
-                cts.Cancel();
-            };
+                watchModeOptions.ClearOnRerun = watchClear;
+            }
 
+            // Ctrl+C / SIGTERM cancel the token (CancelOnProcessTermination) and the watch
+            // service shuts down gracefully.
             await using (watchService)
             {
-                await watchService.RunAsync(executionOptions, watchModeOptions, cts.Token);
+                await watchService.RunAsync(executionOptions, watchModeOptions, cancellationToken);
             }
+            context.ExitCode = ExitCodes.Success;
             return;
         }
 
         var executor = serviceProvider.GetRequiredService<PipelineExecutor>();
-        await executor.Execute(new ExecutionOptions
+        var runResult = await executor.Execute(new ExecutionOptions
         {
             FilePath = file.FullName,
             JobName = job,
@@ -547,6 +673,8 @@ runCommand.SetHandler(async context =>
             ValidateOnly = validate,
             Verbose = verbose,
             Quiet = quiet,
+            Trace = trace,
+            Silent = silent,
             ConfigPath = configPath,
             CliVariables = cliVariables,
             VarFilePath = varFile?.FullName,
@@ -564,14 +692,26 @@ runCommand.SetHandler(async context =>
             IncludeDependencies = includeDeps,
             PreviewFilter = previewFilter,
             ConfirmFilter = confirmFilter,
-            FilterPreset = filterPreset
-        });
+            FilterPreset = filterPreset,
+            NoDependencies = noDeps,
+            StrictUnsupportedSteps = strict,
+            EventName = eventName,
+            KeepContainers = keepContainers,
+            Parameters = cliParameters
+        }, cancellationToken);
+        context.ExitCode = runResult.ExitCode;
+    }
+    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+    {
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine("[yellow]Cancelled.[/]");
+        context.ExitCode = ExitCodes.Cancelled;
     }
     catch (Exception ex)
     {
         var errorFormatter = serviceProvider.GetRequiredService<ErrorFormatter>();
         errorFormatter.DisplayError(ex, verbose);
-        Environment.Exit(1);
+        context.ExitCode = ExitCodeFor(ex);
     }
 });
 
@@ -595,50 +735,80 @@ var formatOption = new Option<OutputFormat>(
 listCommand.AddOption(listFileOption);
 listCommand.AddOption(detailsOption);
 listCommand.AddOption(formatOption);
+listCommand.AddOption(paramOption);
 
-listCommand.SetHandler(async (file, details, format) =>
+listCommand.SetHandler(async (InvocationContext context) =>
 {
     try
     {
+        if (!TryParseParameters(context.ParseResult.GetValueForOption(paramOption), out var listParameters))
+        {
+            context.ExitCode = ExitCodes.InvalidArguments;
+            return;
+        }
+
         var cmd = serviceProvider.GetRequiredService<ListCommand>();
-        cmd.File = file;
-        cmd.Details = details;
-        cmd.Format = format;
-        Environment.ExitCode = await cmd.ExecuteAsync();
+        cmd.File = context.ParseResult.GetValueForOption(listFileOption);
+        cmd.Details = context.ParseResult.GetValueForOption(detailsOption);
+        cmd.Format = context.ParseResult.GetValueForOption(formatOption);
+        cmd.Parameters = listParameters;
+        context.ExitCode = await cmd.ExecuteAsync();
     }
     catch (Exception ex)
     {
         var errorFormatter = serviceProvider.GetRequiredService<ErrorFormatter>();
         errorFormatter.DisplayError(ex, verbose: false);
-        Environment.Exit(1);
+        context.ExitCode = ExitCodeFor(ex);
     }
-}, listFileOption, detailsOption, formatOption);
+});
 
 // Validate command
 var validateCommand = new Command("validate", "Validate a pipeline file");
 validateCommand.AddOption(fileOption);
+validateCommand.AddOption(paramOption);
 
-validateCommand.SetHandler(async file =>
+validateCommand.SetHandler(async (InvocationContext context) =>
 {
+    var located = PipelineFileLocator.Resolve(
+        context.ParseResult.GetValueForOption(fileOption), AnsiConsole.Console, "validate");
+    if (located.File == null)
+    {
+        context.ExitCode = located.ExitCode;
+        return;
+    }
+
+    if (!TryParseParameters(context.ParseResult.GetValueForOption(paramOption), out var validateParameters))
+    {
+        context.ExitCode = ExitCodes.InvalidArguments;
+        return;
+    }
+
     try
     {
         var parserFactory = serviceProvider.GetRequiredService<PipelineParserFactory>();
-        var parser = parserFactory.GetParser(file.FullName);
-        var pipeline = await parser.ParseFile(file.FullName);
+        var parser = parserFactory.GetParser(located.File.FullName);
+        var pipeline = await parser.ParseFile(located.File.FullName, new PDK.Core.Models.PipelineParseOptions
+        {
+            Parameters = validateParameters,
+            WorkspacePath = Directory.GetCurrentDirectory()
+        });
 
         AnsiConsole.MarkupLine($"[green]\u2713[/] Pipeline is valid");
         AnsiConsole.MarkupLine($"  Provider: {pipeline.Provider}");
         AnsiConsole.MarkupLine($"  Jobs: {pipeline.Jobs.Count}");
         AnsiConsole.MarkupLine($"  Total Steps: {pipeline.Jobs.Values.Sum(j => j.Steps.Count)}");
+        context.ExitCode = ExitCodes.Success;
     }
     catch (Exception ex)
     {
         AnsiConsole.MarkupLine($"[red]\u2717 Pipeline validation failed[/]");
         var errorFormatter = serviceProvider.GetRequiredService<ErrorFormatter>();
         errorFormatter.DisplayError(ex, verbose: false);
-        Environment.Exit(1);
+        context.ExitCode = ex is FileNotFoundException or DirectoryNotFoundException
+            ? ExitCodes.FileNotFound
+            : ExitCodes.Failure;
     }
-}, fileOption);
+});
 
 // Version command (REQ-06-040 through REQ-06-043)
 var versionCommand = new Command("version", "Show version information");
@@ -662,53 +832,47 @@ versionCommand.AddOption(versionFullOption);
 versionCommand.AddOption(versionFormatOption);
 versionCommand.AddOption(noUpdateCheckOption);
 
-versionCommand.SetHandler(async (full, format, noUpdate) =>
+versionCommand.SetHandler(async (InvocationContext context) =>
 {
     try
     {
         var cmd = serviceProvider.GetRequiredService<VersionCommand>();
-        cmd.Full = full;
-        cmd.Format = format;
-        cmd.NoUpdateCheck = noUpdate;
-        Environment.ExitCode = await cmd.ExecuteAsync();
+        cmd.Full = context.ParseResult.GetValueForOption(versionFullOption);
+        cmd.Format = context.ParseResult.GetValueForOption(versionFormatOption);
+        cmd.NoUpdateCheck = context.ParseResult.GetValueForOption(noUpdateCheckOption);
+        context.ExitCode = await cmd.ExecuteAsync(context.GetCancellationToken());
     }
     catch (Exception ex)
     {
         var errorFormatter = serviceProvider.GetRequiredService<ErrorFormatter>();
         errorFormatter.DisplayError(ex, verbose: false);
-        Environment.Exit(1);
+        context.ExitCode = ExitCodeFor(ex);
     }
-}, versionFullOption, versionFormatOption, noUpdateCheckOption);
+});
 
 // Doctor command (REQ-DK-007: Docker Availability Detection)
 var doctorCommand = new Command("doctor", "Check system requirements and Docker availability");
-doctorCommand.SetHandler(async () =>
+doctorCommand.SetHandler(async (InvocationContext context) =>
 {
     AnsiConsole.MarkupLine("[bold]PDK Doctor - System Diagnostics[/]");
     AnsiConsole.WriteLine();
 
-    await AnsiConsole.Status()
-        .Spinner(Spinner.Known.Dots)
-        .StartAsync("Checking Docker availability...", async ctx =>
-        {
-            try
-            {
-                var containerManager = new DockerContainerManager();
-                var status = await containerManager.GetDockerStatusAsync();
+    try
+    {
+        var statusProvider = serviceProvider.GetRequiredService<PDK.Core.Docker.IDockerStatusProvider>();
+        var status = await AnsiConsole.Status()
+            .Spinner(Spinner.Known.Dots)
+            .StartAsync("Checking Docker availability...",
+                _ => statusProvider.GetDockerStatusAsync(context.GetCancellationToken()));
 
-                ctx.Status("Done"); // Update status
-
-                DockerDiagnostics.DisplayDockerStatus(status);
-
-                Environment.ExitCode = status.IsAvailable ? 0 : 1;
-            }
-            catch (Exception ex)
-            {
-                ctx.Status("Error occurred");
-                AnsiConsole.MarkupLine($"[red]Error:[/] {ex.Message}");
-                Environment.ExitCode = 1;
-            }
-        });
+        DockerDiagnostics.DisplayDockerStatus(status);
+        context.ExitCode = status.IsAvailable ? ExitCodes.Success : ExitCodes.DockerUnavailable;
+    }
+    catch (Exception ex)
+    {
+        AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+        context.ExitCode = ExitCodes.Failure;
+    }
 });
 
 // Interactive command (REQ-06-020)
@@ -718,21 +882,21 @@ var interactiveFileOption = new Option<FileInfo?>(
     description: "Path to pipeline file (auto-detects if not specified)");
 
 interactiveCommand.AddOption(interactiveFileOption);
-interactiveCommand.SetHandler(async file =>
+interactiveCommand.SetHandler(async (InvocationContext context) =>
 {
     try
     {
         var cmd = serviceProvider.GetRequiredService<InteractiveCommand>();
-        cmd.File = file;
-        Environment.ExitCode = await cmd.ExecuteAsync();
+        cmd.File = context.ParseResult.GetValueForOption(interactiveFileOption);
+        context.ExitCode = await cmd.ExecuteAsync(context.GetCancellationToken());
     }
     catch (Exception ex)
     {
         var errorFormatter = serviceProvider.GetRequiredService<ErrorFormatter>();
         errorFormatter.DisplayError(ex, verbose: false);
-        Environment.Exit(1);
+        context.ExitCode = ExitCodeFor(ex);
     }
-}, interactiveFileOption);
+});
 
 // Secret command (Sprint 7)
 var secretCommand = new Command("secret", "Manage secrets");
@@ -746,8 +910,12 @@ secretSetCommand.AddArgument(secretNameArg);
 secretSetCommand.AddOption(secretValueOption);
 secretSetCommand.AddOption(secretStdinOption);
 
-secretSetCommand.SetHandler(async (name, valueOpt, useStdin) =>
+secretSetCommand.SetHandler(async (InvocationContext context) =>
 {
+    var name = context.ParseResult.GetValueForArgument(secretNameArg);
+    var valueOpt = context.ParseResult.GetValueForOption(secretValueOption);
+    var useStdin = context.ParseResult.GetValueForOption(secretStdinOption);
+
     try
     {
         var manager = serviceProvider.GetRequiredService<ISecretManager>();
@@ -759,7 +927,7 @@ secretSetCommand.SetHandler(async (name, valueOpt, useStdin) =>
             value = await Console.In.ReadToEndAsync();
             value = value.TrimEnd('\r', '\n');
         }
-        else if (!string.IsNullOrEmpty(valueOpt))
+        else if (valueOpt != null)
         {
             // Use --value option (with warning)
             AnsiConsole.MarkupLine("[yellow]Warning:[/] Value provided via CLI is visible in process list.");
@@ -767,24 +935,25 @@ secretSetCommand.SetHandler(async (name, valueOpt, useStdin) =>
         }
         else
         {
-            // Interactive mode (recommended)
-            AnsiConsole.MarkupLine($"Enter value for [blue]{name}[/]:");
+            // Interactive mode (recommended). Falls back to a plain line read when stdin is redirected.
+            AnsiConsole.MarkupLine($"Enter value for [blue]{Markup.Escape(name)}[/]:");
             value = ReadSecretFromConsole();
         }
 
         await manager.SetSecretAsync(name, value);
-        AnsiConsole.MarkupLine($"[green]\u2713[/] Secret '{name}' saved");
+        AnsiConsole.MarkupLine($"[green]\u2713[/] Secret '{Markup.Escape(name)}' saved");
+        context.ExitCode = ExitCodes.Success;
     }
     catch (Exception ex)
     {
-        AnsiConsole.MarkupLine($"[red]Error:[/] {ex.Message}");
-        Environment.ExitCode = 1;
+        AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+        context.ExitCode = ExitCodes.Failure;
     }
-}, secretNameArg, secretValueOption, secretStdinOption);
+});
 
 // pdk secret list
 var secretListCommand = new Command("list", "List secret names");
-secretListCommand.SetHandler(async () =>
+secretListCommand.SetHandler(async (InvocationContext context) =>
 {
     try
     {
@@ -793,17 +962,27 @@ secretListCommand.SetHandler(async () =>
         if (!names.Any())
         {
             AnsiConsole.MarkupLine("[dim]No secrets stored[/]");
+            context.ExitCode = ExitCodes.Success;
             return;
         }
+        var unreadable = new HashSet<string>(await manager.GetUnreadableSecretNamesAsync(), StringComparer.Ordinal);
         foreach (var name in names)
         {
-            AnsiConsole.WriteLine(name);
+            if (unreadable.Contains(name))
+            {
+                AnsiConsole.MarkupLine($"{Markup.Escape(name)} [yellow](unreadable: cannot be decrypted with the current key; set it again)[/]");
+            }
+            else
+            {
+                AnsiConsole.WriteLine(name);
+            }
         }
+        context.ExitCode = ExitCodes.Success;
     }
     catch (Exception ex)
     {
-        AnsiConsole.MarkupLine($"[red]Error:[/] {ex.Message}");
-        Environment.ExitCode = 1;
+        AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+        context.ExitCode = ExitCodes.Failure;
     }
 });
 
@@ -811,26 +990,28 @@ secretListCommand.SetHandler(async () =>
 var secretDeleteCommand = new Command("delete", "Delete a secret");
 var deleteNameArg = new Argument<string>("name", "Secret name to delete");
 secretDeleteCommand.AddArgument(deleteNameArg);
-secretDeleteCommand.SetHandler(async (name) =>
+secretDeleteCommand.SetHandler(async (InvocationContext context) =>
 {
+    var name = context.ParseResult.GetValueForArgument(deleteNameArg);
     try
     {
         var manager = serviceProvider.GetRequiredService<ISecretManager>();
         if (!await manager.SecretExistsAsync(name))
         {
-            AnsiConsole.MarkupLine($"[yellow]Secret '{name}' not found[/]");
-            Environment.ExitCode = 1;
+            AnsiConsole.MarkupLine($"[yellow]Secret '{Markup.Escape(name)}' not found[/]");
+            context.ExitCode = ExitCodes.Failure;
             return;
         }
         await manager.DeleteSecretAsync(name);
-        AnsiConsole.MarkupLine($"[green]\u2713[/] Secret '{name}' deleted");
+        AnsiConsole.MarkupLine($"[green]\u2713[/] Secret '{Markup.Escape(name)}' deleted");
+        context.ExitCode = ExitCodes.Success;
     }
     catch (Exception ex)
     {
-        AnsiConsole.MarkupLine($"[red]Error:[/] {ex.Message}");
-        Environment.ExitCode = 1;
+        AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+        context.ExitCode = ExitCodes.Failure;
     }
-}, deleteNameArg);
+});
 
 secretCommand.AddCommand(secretSetCommand);
 secretCommand.AddCommand(secretListCommand);
@@ -844,15 +1025,39 @@ rootCommand.AddCommand(doctorCommand);
 rootCommand.AddCommand(interactiveCommand);
 rootCommand.AddCommand(secretCommand);
 
-return await rootCommand.InvokeAsync(args);
+var parser = new CommandLineBuilder(rootCommand)
+    .UseVersionOption()
+    .UseHelp()
+    .UseEnvironmentVariableDirective()
+    .UseParseDirective()
+    .UseSuggestDirective()
+    .RegisterWithDotnetSuggest()
+    .UseTypoCorrections()
+    .UseParseErrorReporting(ExitCodes.InvalidArguments)
+    .UseExceptionHandler()
+    .CancelOnProcessTermination()
+    .Build();
+
+try
+{
+    return await parser.InvokeAsync(args);
+}
+finally
+{
+    // Disposes singletons such as the container manager (removes tracked containers)
+    // and flushes any buffered log events.
+    await serviceProvider.DisposeAsync();
+    Serilog.Log.CloseAndFlush();
+}
 
 static void ConfigureServices(ServiceCollection services)
 {
-    // Configure logging with Serilog (file + structured logging)
-    services.AddLogging(builder =>
-    {
-        builder.ConfigurePdkLogging();
-    });
+    // Logging: one Serilog pipeline whose level, sinks and redaction the run command adjusts
+    // after parsing its flags (--verbose/--trace/--quiet/--silent, --log-file, --log-json, --no-redact)
+    var secretMasker = new SecretMasker();
+    var loggingController = new PdkLoggingController(secretMasker);
+    services.AddSingleton(loggingController);
+    services.AddLogging(builder => loggingController.Configure(builder));
 
     // Register UI services
     services.AddSingleton<IAnsiConsole>(AnsiConsole.Console);
@@ -861,8 +1066,8 @@ static void ConfigureServices(ServiceCollection services)
     services.AddSingleton<IProgressReporter>(sp =>
         new ConsoleProgressReporter(sp.GetRequiredService<IAnsiConsole>()));
 
-    // Register secret masker
-    services.AddSingleton<ISecretMasker, SecretMasker>();
+    // Register secret masker (shared with the logging pipeline)
+    services.AddSingleton<ISecretMasker>(secretMasker);
 
     // Register configuration services (Sprint 7)
     services.AddSingleton<ConfigurationValidator>();
@@ -888,7 +1093,8 @@ static void ConfigureServices(ServiceCollection services)
     services.AddSingleton<ISecretManager>(sp => new SecretManager(
         sp.GetRequiredService<ISecretEncryption>(),
         sp.GetRequiredService<SecretStorage>(),
-        sp.GetRequiredService<ISecretMasker>()));
+        sp.GetRequiredService<ISecretMasker>(),
+        sp.GetService<ILogger<SecretManager>>()));
     services.AddSingleton<ISecretDetector, SecretDetector>();
 
     // Register error handling services
@@ -901,6 +1107,7 @@ static void ConfigureServices(ServiceCollection services)
     // Register parsers
     services.AddSingleton<IPipelineParser, GitHubActionsParser>();
     services.AddSingleton<IPipelineParser, AzureDevOpsParser>();
+    services.AddSingleton<IPipelineParser, PDK.Providers.GitLab.GitLabCiParser>();
 
     // Register services
     services.AddSingleton<PipelineParserFactory>();
@@ -938,10 +1145,15 @@ static void ConfigureServices(ServiceCollection services)
     services.AddSingleton<IHostStepExecutor, HostCheckoutExecutor>();
     services.AddSingleton<IHostStepExecutor, HostDotnetExecutor>();
     services.AddSingleton<IHostStepExecutor, HostNpmExecutor>();
+    services.AddSingleton<IHostStepExecutor, HostUploadArtifactExecutor>();
+    services.AddSingleton<IHostStepExecutor, HostDownloadArtifactExecutor>();
     services.AddSingleton<HostStepExecutorFactory>();
 
     // Register process executor for host mode
     services.AddSingleton<IProcessExecutor, ProcessExecutor>();
+
+    // Performance metrics (--metrics): one tracker per process, read by the pipeline executor
+    services.AddSingleton<IPerformanceTracker, PerformanceTracker>();
 
     // Register both job runners as concrete types (Sprint 10)
     services.AddSingleton<DockerJobRunner>();
@@ -972,10 +1184,28 @@ static void ConfigureServices(ServiceCollection services)
     services.AddSingleton<PDK.Core.Validation.IValidationPhase, PDK.Core.Validation.Phases.DependencyValidationPhase>();
     services.AddTransient<PDK.CLI.DryRun.DryRunUI>();
     services.AddTransient<PDK.CLI.DryRun.JsonOutputFormatter>();
+    services.AddSingleton<PDK.Core.Validation.IImageMappingProvider, PDK.CLI.DryRun.ImageMappingProvider>();
     services.AddTransient<PDK.CLI.DryRun.DryRunService>();
 
     // Register step filtering services (Sprint 11 - REQ-11-007, REQ-11-008)
     services.AddStepFiltering();
+}
+
+/// <summary>
+/// Parses <c>--param NAME=VALUE</c> values, reporting malformed entries.
+/// </summary>
+static bool TryParseParameters(string[]? values, out Dictionary<string, string> parameters)
+{
+    var malformed = (values ?? []).Where(p => p.IndexOf('=') <= 0).ToList();
+    if (malformed.Count > 0)
+    {
+        AnsiConsole.MarkupLine($"[red]Error:[/] Expected NAME=VALUE for --param, got: {Markup.Escape(string.Join(", ", malformed))}");
+        parameters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        return false;
+    }
+
+    parameters = new Dictionary<string, string>(ParseKeyValuePairs(values), StringComparer.OrdinalIgnoreCase);
+    return true;
 }
 
 /// <summary>
@@ -995,6 +1225,21 @@ static Dictionary<string, string> ParseKeyValuePairs(string[]? pairs)
         }
     }
     return result;
+}
+
+/// <summary>
+/// Maps an exception escaping a command handler to the documented exit code.
+/// </summary>
+static int ExitCodeFor(Exception ex)
+{
+    return ex switch
+    {
+        FileNotFoundException or DirectoryNotFoundException => ExitCodes.FileNotFound,
+        DockerUnavailableException => ExitCodes.DockerUnavailable,
+        OperationCanceledException => ExitCodes.Cancelled,
+        ArgumentException => ExitCodes.InvalidArguments,
+        _ => ExitCodes.Failure
+    };
 }
 
 /// <summary>
@@ -1027,6 +1272,12 @@ static RunnerType DetermineRunnerType(bool host, bool docker, string? runner)
 /// </summary>
 static string ReadSecretFromConsole()
 {
+    if (Console.IsInputRedirected)
+    {
+        // No interactive console (piped input, CI): read a single line.
+        return (Console.In.ReadLine() ?? string.Empty).TrimEnd('\r', '\n');
+    }
+
     var value = new StringBuilder();
     while (true)
     {

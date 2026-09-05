@@ -17,6 +17,7 @@ public class RunnerCapabilitiesTests
     [InlineData("container-isolation")]
     [InlineData("custom-images")]
     [InlineData("network-isolation")]
+    [InlineData("docker-step")]
     public void DockerOnlyFeatures_ContainsExpectedFeatures(string feature)
     {
         RunnerCapabilities.DockerOnlyFeatures.Should().Contain(feature);
@@ -25,7 +26,29 @@ public class RunnerCapabilitiesTests
     [Fact]
     public void DockerOnlyFeatures_HasCorrectCount()
     {
-        RunnerCapabilities.DockerOnlyFeatures.Should().HaveCount(4);
+        RunnerCapabilities.DockerOnlyFeatures.Should().HaveCount(5);
+    }
+
+    [Fact]
+    public void SupportsFeature_AgreesWithValidateJobRequirements()
+    {
+        // Every feature ValidateJobRequirements can report is unsupported on the host runner
+        var job = new Job
+        {
+            Id = "job",
+            Name = "Job",
+            RunsOn = "node:18-alpine",
+            Steps = [new Step { Name = "Docker", Type = StepType.Docker }]
+        };
+
+        var unsupported = RunnerCapabilities.ValidateJobRequirements(job, RunnerType.Host);
+
+        unsupported.Should().NotBeEmpty();
+        foreach (var feature in unsupported)
+        {
+            RunnerCapabilities.SupportsFeature(RunnerType.Host, feature).Should().BeFalse(feature);
+            RunnerCapabilities.SupportsFeature(RunnerType.Docker, feature).Should().BeTrue(feature);
+        }
     }
 
     #endregion
@@ -272,10 +295,19 @@ public class RunnerCapabilitiesTests
     [Theory]
     [InlineData("ubuntu-latest")]
     [InlineData("ubuntu-22.04")]
+    [InlineData("ubuntu-24.04")]
+    [InlineData("ubuntu-24.04-arm")]
+    [InlineData("ubuntu-latest-xl")]
     [InlineData("windows-latest")]
     [InlineData("windows-2022")]
+    [InlineData("windows-2025")]
+    [InlineData("windows-11-arm")]
     [InlineData("macos-latest")]
+    [InlineData("macos-15")]
+    [InlineData("macOS-13")]
     [InlineData("self-hosted")]
+    [InlineData("my-custom-runner")]
+    [InlineData("${{ matrix.os }}")]
     public void ValidateJobRequirements_StandardRunners_OnHost_AllowsRun(string runsOn)
     {
         // Arrange
@@ -337,8 +369,41 @@ public class RunnerCapabilitiesTests
         // Assert
         unsupported.Should().Contain("custom-images");
         unsupported.Should().Contain("docker-step");
-        // docker-step appears twice (once for each Docker step)
-        unsupported.Count(f => f == "docker-step").Should().Be(2);
+        // Features are de-duplicated: docker-step is reported once even with two Docker steps
+        unsupported.Count(f => f == "docker-step").Should().Be(1);
+        unsupported.Should().OnlyHaveUniqueItems();
+    }
+
+    [Theory]
+    [InlineData("node:18-alpine", true)]
+    [InlineData("mcr.microsoft.com/dotnet/sdk:8.0", true)]
+    [InlineData("myorg/builder", true)]
+    [InlineData("ubuntu-latest", false)]
+    [InlineData("ubuntu-22.04-arm", false)]
+    [InlineData("self-hosted", false)]
+    [InlineData("${{ matrix.os }}", false)]
+    [InlineData("", false)]
+    public void IsImageReference_DetectsOnlyImageLikeValues(string runsOn, bool expected)
+    {
+        RunnerCapabilities.IsImageReference(runsOn).Should().Be(expected);
+        RunnerCapabilities.IsStandardRunner(runsOn).Should().Be(!expected);
+    }
+
+    [Fact]
+    public void ValidateJobRequirements_JobWithContainer_OnHost_ReturnsCustomImages()
+    {
+        var job = new Job
+        {
+            Id = "job",
+            Name = "Job",
+            RunsOn = "ubuntu-latest",
+            Container = "node:20",
+            Steps = [new Step { Name = "Script", Type = StepType.Script, Script = "echo hi" }]
+        };
+
+        var unsupported = RunnerCapabilities.ValidateJobRequirements(job, RunnerType.Host);
+
+        unsupported.Should().ContainSingle().Which.Should().Be("custom-images");
     }
 
     #endregion

@@ -18,35 +18,46 @@ $Timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $OutputDir = ".pdk-dogfood/runs/$Timestamp"
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
-# Create latest symlink (Windows uses junction for directories)
-$LatestPath = ".pdk-dogfood/runs/latest"
-if (Test-Path $LatestPath) {
-    Remove-Item $LatestPath -Force -Recurse
+# Create "latest" junction (Windows uses a directory junction instead of a symlink).
+# The target must be absolute: a relative junction target is resolved against the caller's
+# current directory, so it dangles as soon as the link is used from anywhere else.
+$RunsDir = Join-Path $ProjectRoot ".pdk-dogfood/runs"
+$LatestPath = Join-Path $RunsDir "latest"
+$LatestTarget = [System.IO.Path]::GetFullPath((Join-Path $RunsDir $Timestamp))
+$existingLatest = Get-Item -LiteralPath $LatestPath -Force -ErrorAction SilentlyContinue
+if ($existingLatest) {
+    if ($existingLatest.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+        # Remove the link itself; Remove-Item -Recurse would follow the junction and delete the previous run
+        [System.IO.Directory]::Delete($LatestPath)
+    } else {
+        Remove-Item -LiteralPath $LatestPath -Force -Recurse
+    }
 }
-# On Windows, create a directory junction instead of symlink
 try {
-    cmd /c mklink /J $LatestPath $Timestamp 2>$null | Out-Null
+    cmd /c mklink /J "$LatestPath" "$LatestTarget" 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "mklink failed with exit code $LASTEXITCODE"
+    }
 } catch {
     # Fallback: just note the latest directory
-    Set-Content -Path ".pdk-dogfood/runs/latest.txt" -Value $Timestamp
+    Set-Content -Path (Join-Path $RunsDir "latest.txt") -Value $Timestamp
 }
 
 Write-Host "Output directory: $OutputDir" -ForegroundColor Cyan
 Write-Host ""
 
-# Check Docker availability (required)
+# Check Docker availability (informational: the self-test runs in host mode)
 Write-Host "Checking Docker..."
 try {
     $null = Get-Command docker -ErrorAction Stop
     $dockerInfo = docker info 2>&1
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "Error: Docker daemon is not running. Please start Docker." -ForegroundColor Red
-        exit 2
+        Write-Host "Warning: Docker daemon is not running; the self-test runs in host mode and does not need it." -ForegroundColor Yellow
+    } else {
+        Write-Host "Docker is available" -ForegroundColor Green
     }
-    Write-Host "Docker is available" -ForegroundColor Green
 } catch {
-    Write-Host "Error: Docker is not installed. PDK requires Docker for execution." -ForegroundColor Red
-    exit 2
+    Write-Host "Warning: Docker is not installed; the self-test runs in host mode and does not need it." -ForegroundColor Yellow
 }
 Write-Host ""
 
@@ -83,7 +94,7 @@ Write-Host ""
 
 # Run PDK on its own workflow
 Write-Host "Running PDK on .github/workflows/ci.yml..." -ForegroundColor Cyan
-Write-Host "Command: dotnet run --project src/PDK.CLI/PDK.CLI.csproj --no-build --configuration Release -- run --file .github/workflows/ci.yml --job build --verbose"
+Write-Host "Command: dotnet run --project src/PDK.CLI/PDK.CLI.csproj --no-build --configuration Release -- run --file .github/workflows/ci.yml --job build-ubuntu-latest --verbose"
 Write-Host ""
 Write-Host "========== PDK Output Begin =========="
 
@@ -99,7 +110,7 @@ try {
     & dotnet run --project src/PDK.CLI/PDK.CLI.csproj `
         --no-build --configuration Release -- `
         run --file .github/workflows/ci.yml `
-        --job build `
+        --job build-ubuntu-latest `
         --host `
         --step-filter "Checkout code" `
         --step-filter "Restore dependencies" `

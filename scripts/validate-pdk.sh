@@ -1,8 +1,8 @@
 #!/bin/bash
-set -e
-
 # PDK Validation Suite (REQ-09-023, REQ-09-024)
 # Comprehensive validation combining environment check, self-test, and CI comparison
+
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -12,7 +12,7 @@ echo "===================="
 echo ""
 
 # Color support
-if [ -t 1 ] && command -v tput &> /dev/null; then
+if [ -t 1 ] && command -v tput > /dev/null 2>&1; then
     GREEN=$(tput setaf 2)
     RED=$(tput setaf 1)
     YELLOW=$(tput setaf 3)
@@ -31,7 +31,7 @@ QUICK=false
 COMPARE_CI=false
 CI_RUN_ID=""
 
-while [[ $# -gt 0 ]]; do
+while [ $# -gt 0 ]; do
     case $1 in
         --quick)
             QUICK=true
@@ -42,6 +42,10 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --ci-run)
+            if [ $# -lt 2 ] || [ -z "$2" ]; then
+                echo "Error: --ci-run requires a run ID"
+                exit 1
+            fi
             CI_RUN_ID="$2"
             COMPARE_CI=true
             shift 2
@@ -71,13 +75,13 @@ OVERALL_SUCCESS=true
 
 run_step() {
     local step_name="$1"
-    local step_cmd="$2"
+    shift
 
     echo ""
     echo "${CYAN}Step: $step_name${RESET}"
     echo "----------------------------------------"
 
-    if eval "$step_cmd"; then
+    if "$@"; then
         STEP_RESULTS+=("$step_name: ${GREEN}PASSED${RESET}")
         return 0
     else
@@ -101,7 +105,7 @@ else
     # Step 3: CI Comparison (optional)
     if [ "$COMPARE_CI" = true ]; then
         if [ -n "$CI_RUN_ID" ]; then
-            run_step "CI Comparison" "$SCRIPT_DIR/compare-outputs.sh --ci-run $CI_RUN_ID" || true
+            run_step "CI Comparison" "$SCRIPT_DIR/compare-outputs.sh" --ci-run "$CI_RUN_ID" || true
         else
             run_step "CI Comparison" "$SCRIPT_DIR/compare-outputs.sh" || true
         fi
@@ -115,7 +119,8 @@ echo "Validation Summary"
 echo "===================="
 echo ""
 
-for result in "${STEP_RESULTS[@]}"; do
+# "${array[@]+"${array[@]}"}" keeps "set -u" happy on bash < 4.4 when the array is empty
+for result in ${STEP_RESULTS[@]+"${STEP_RESULTS[@]}"}; do
     echo "  $result"
 done
 

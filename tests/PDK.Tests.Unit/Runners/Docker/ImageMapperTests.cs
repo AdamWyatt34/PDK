@@ -1,168 +1,99 @@
 using FluentAssertions;
+using PDK.Runners;
 using PDK.Runners.Docker;
 
 namespace PDK.Tests.Unit.Runners.Docker;
 
 public class ImageMapperTests
 {
-    private readonly ImageMapper _mapper;
-
-    public ImageMapperTests()
-    {
-        _mapper = new ImageMapper();
-    }
+    private readonly ImageMapper _mapper = new();
 
     #region Standard Runner Mappings
 
-    [Fact]
-    public void MapRunnerToImage_UbuntuLatest_ReturnsUbuntu2204()
+    [Theory]
+    [InlineData("ubuntu-latest", "buildpack-deps:noble")]
+    [InlineData("ubuntu-24.04", "buildpack-deps:noble")]
+    [InlineData("ubuntu-24.04-arm", "buildpack-deps:noble")]
+    [InlineData("ubuntu-22.04", "buildpack-deps:jammy")]
+    [InlineData("ubuntu-22.04-arm", "buildpack-deps:jammy")]
+    [InlineData("ubuntu-20.04", "buildpack-deps:focal")]
+    [InlineData("UBUNTU-LATEST", "buildpack-deps:noble")]
+    [InlineData("  ubuntu-latest ", "buildpack-deps:noble")]
+    public void MapRunnerToImage_LinuxRunners(string runnerName, string expectedImage)
     {
-        // Arrange
-        var runnerName = "ubuntu-latest";
+        _mapper.MapRunnerToImage(runnerName).Should().Be(expectedImage);
+    }
 
-        // Act
-        var result = _mapper.MapRunnerToImage(runnerName);
+    [Theory]
+    [InlineData("windows-latest")]
+    [InlineData("windows-2022")]
+    [InlineData("windows-2019")]
+    [InlineData("Windows-Latest")]
+    public void MapRunnerToImage_WindowsRunnerOnLinuxDaemon_ThrowsCapabilityError(string runnerName)
+    {
+        Action act = () => _mapper.MapRunnerToImage(runnerName);
 
-        // Assert
-        result.Should().Be("buildpack-deps:jammy");
+        act.Should().Throw<ContainerException>()
+            .WithMessage("*not supported in Docker mode*--host*");
+    }
+
+    [Theory]
+    [InlineData("windows-latest", "mcr.microsoft.com/windows/servercore:ltsc2022")]
+    [InlineData("windows-2022", "mcr.microsoft.com/windows/servercore:ltsc2022")]
+    [InlineData("windows-2019", "mcr.microsoft.com/windows/servercore:ltsc2019")]
+    [InlineData("windows-2025", "mcr.microsoft.com/windows/servercore:ltsc2025")]
+    public void MapRunnerToImage_WindowsRunnerOnWindowsDaemon_ReturnsServerCore(string runnerName, string expectedImage)
+    {
+        _mapper.DaemonOSType = "windows";
+
+        _mapper.MapRunnerToImage(runnerName).Should().Be(expectedImage);
     }
 
     [Fact]
-    public void MapRunnerToImage_Ubuntu2004_ReturnsUbuntu2004()
+    public void MapRunnerToImage_ExplicitDaemonOsOverload()
     {
-        // Arrange
-        var runnerName = "ubuntu-20.04";
+        _mapper.MapRunnerToImage("windows-2019", "Windows").Should().Be("mcr.microsoft.com/windows/servercore:ltsc2019");
+    }
 
-        // Act
-        var result = _mapper.MapRunnerToImage(runnerName);
+    [Theory]
+    [InlineData("macos-latest")]
+    [InlineData("macos-14")]
+    [InlineData("windows-11-arm")]
+    public void MapRunnerToImage_UnsupportedPlatformRunner_ThrowsCapabilityError(string runnerName)
+    {
+        Action act = () => _mapper.MapRunnerToImage(runnerName);
 
-        // Assert
-        result.Should().Be("buildpack-deps:focal");
+        act.Should().Throw<ContainerException>()
+            .WithMessage("*not supported in Docker mode*use --host*");
     }
 
     [Fact]
-    public void MapRunnerToImage_Ubuntu2204_ReturnsUbuntu2204()
+    public void MapRunnerToImage_MatrixExpression_DefaultsToUbuntuLatest()
     {
-        // Arrange
-        var runnerName = "ubuntu-22.04";
-
-        // Act
-        var result = _mapper.MapRunnerToImage(runnerName);
-
-        // Assert
-        result.Should().Be("buildpack-deps:jammy");
-    }
-
-    [Fact]
-    public void MapRunnerToImage_WindowsLatest_ReturnsServerCore2022()
-    {
-        // Arrange
-        var runnerName = "windows-latest";
-
-        // Act
-        var result = _mapper.MapRunnerToImage(runnerName);
-
-        // Assert
-        result.Should().Be("mcr.microsoft.com/windows/servercore:ltsc2022");
-    }
-
-    [Fact]
-    public void MapRunnerToImage_Windows2022_ReturnsServerCore2022()
-    {
-        // Arrange
-        var runnerName = "windows-2022";
-
-        // Act
-        var result = _mapper.MapRunnerToImage(runnerName);
-
-        // Assert
-        result.Should().Be("mcr.microsoft.com/windows/servercore:ltsc2022");
-    }
-
-    [Fact]
-    public void MapRunnerToImage_Windows2019_ReturnsServerCore2019()
-    {
-        // Arrange
-        var runnerName = "windows-2019";
-
-        // Act
-        var result = _mapper.MapRunnerToImage(runnerName);
-
-        // Assert
-        result.Should().Be("mcr.microsoft.com/windows/servercore:ltsc2019");
+        _mapper.MapRunnerToImage("${{ matrix.os }}").Should().Be("buildpack-deps:noble");
     }
 
     #endregion
 
     #region Custom Images
 
-    [Fact]
-    public void MapRunnerToImage_CustomImageWithTag_ReturnsUnchanged()
+    [Theory]
+    [InlineData("node:18")]
+    [InlineData("mcr.microsoft.com/dotnet/sdk:8.0")]
+    [InlineData("myregistry/myimage")]
+    [InlineData("localhost:5000/app:1.0")]
+    [InlineData("ubuntu@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")]
+    public void MapRunnerToImage_CustomImage_ReturnsUnchanged(string customImage)
     {
-        // Arrange
-        var customImage = "node:18";
-
-        // Act
-        var result = _mapper.MapRunnerToImage(customImage);
-
-        // Assert
-        result.Should().Be("node:18");
+        _mapper.MapRunnerToImage(customImage).Should().Be(customImage);
     }
 
     [Fact]
-    public void MapRunnerToImage_CustomImageWithRegistry_ReturnsUnchanged()
+    public void MapRunnerToImage_InvalidCustomImage_ThrowsArgumentException()
     {
-        // Arrange
-        var customImage = "mcr.microsoft.com/dotnet/sdk:8.0";
+        Action act = () => _mapper.MapRunnerToImage("Node:18");
 
-        // Act
-        var result = _mapper.MapRunnerToImage(customImage);
-
-        // Assert
-        result.Should().Be("mcr.microsoft.com/dotnet/sdk:8.0");
-    }
-
-    [Fact]
-    public void MapRunnerToImage_CustomImageWithSlash_ReturnsUnchanged()
-    {
-        // Arrange
-        var customImage = "myregistry/myimage";
-
-        // Act
-        var result = _mapper.MapRunnerToImage(customImage);
-
-        // Assert
-        result.Should().Be("myregistry/myimage");
-    }
-
-    #endregion
-
-    #region Case Insensitivity
-
-    [Fact]
-    public void MapRunnerToImage_UppercaseRunner_ReturnsCorrectImage()
-    {
-        // Arrange
-        var runnerName = "UBUNTU-LATEST";
-
-        // Act
-        var result = _mapper.MapRunnerToImage(runnerName);
-
-        // Assert
-        result.Should().Be("buildpack-deps:jammy");
-    }
-
-    [Fact]
-    public void MapRunnerToImage_MixedCaseRunner_ReturnsCorrectImage()
-    {
-        // Arrange
-        var runnerName = "Windows-Latest";
-
-        // Act
-        var result = _mapper.MapRunnerToImage(runnerName);
-
-        // Assert
-        result.Should().Be("mcr.microsoft.com/windows/servercore:ltsc2022");
+        act.Should().Throw<ArgumentException>().WithMessage("*not valid*");
     }
 
     #endregion
@@ -172,43 +103,21 @@ public class ImageMapperTests
     [Fact]
     public void MapRunnerToImage_UnknownRunner_ThrowsArgumentException()
     {
-        // Arrange
-        var unknownRunner = "unknown-runner";
+        Action act = () => _mapper.MapRunnerToImage("unknown-runner");
 
-        // Act
-        Action act = () => _mapper.MapRunnerToImage(unknownRunner);
-
-        // Assert
         act.Should().Throw<ArgumentException>()
             .WithMessage("*not recognized*")
             .And.ParamName.Should().Be("runnerName");
     }
 
-    [Fact]
-    public void MapRunnerToImage_NullRunner_ThrowsArgumentException()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void MapRunnerToImage_NullOrEmptyRunner_ThrowsArgumentException(string? runnerName)
     {
-        // Arrange
-        string? nullRunner = null;
+        Action act = () => _mapper.MapRunnerToImage(runnerName!);
 
-        // Act
-        Action act = () => _mapper.MapRunnerToImage(nullRunner!);
-
-        // Assert
-        act.Should().Throw<ArgumentException>()
-            .WithMessage("*cannot be null or empty*")
-            .And.ParamName.Should().Be("runnerName");
-    }
-
-    [Fact]
-    public void MapRunnerToImage_EmptyRunner_ThrowsArgumentException()
-    {
-        // Arrange
-        var emptyRunner = "";
-
-        // Act
-        Action act = () => _mapper.MapRunnerToImage(emptyRunner);
-
-        // Assert
         act.Should().Throw<ArgumentException>()
             .WithMessage("*cannot be null or empty*")
             .And.ParamName.Should().Be("runnerName");
@@ -218,82 +127,30 @@ public class ImageMapperTests
 
     #region IsValidImage Tests
 
-    [Fact]
-    public void IsValidImage_SimpleImage_ReturnsTrue()
+    [Theory]
+    [InlineData("ubuntu")]
+    [InlineData("ubuntu:22.04")]
+    [InlineData("mcr.microsoft.com/dotnet/sdk:8.0")]
+    [InlineData("localhost:5000/app:1.0")]
+    [InlineData("registry.example.com:8443/team/app")]
+    [InlineData("ubuntu@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")]
+    [InlineData("ghcr.io/org/app:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")]
+    public void IsValidImage_ValidReferences_ReturnsTrue(string imageName)
     {
-        // Arrange
-        var imageName = "ubuntu";
-
-        // Act
-        var result = _mapper.IsValidImage(imageName);
-
-        // Assert
-        result.Should().BeTrue();
+        _mapper.IsValidImage(imageName).Should().BeTrue();
     }
 
-    [Fact]
-    public void IsValidImage_ImageWithTag_ReturnsTrue()
+    [Theory]
+    [InlineData("")]
+    [InlineData(null)]
+    [InlineData("   ")]
+    [InlineData("ubuntu::")]
+    [InlineData("ubuntu/Repo")]
+    [InlineData("Ubuntu:22.04")]
+    [InlineData("ubuntu@sha256:short")]
+    public void IsValidImage_InvalidReferences_ReturnsFalse(string? imageName)
     {
-        // Arrange
-        var imageName = "ubuntu:22.04";
-
-        // Act
-        var result = _mapper.IsValidImage(imageName);
-
-        // Assert
-        result.Should().BeTrue();
-    }
-
-    [Fact]
-    public void IsValidImage_ImageWithRegistry_ReturnsTrue()
-    {
-        // Arrange
-        var imageName = "mcr.microsoft.com/dotnet/sdk:8.0";
-
-        // Act
-        var result = _mapper.IsValidImage(imageName);
-
-        // Assert
-        result.Should().BeTrue();
-    }
-
-    [Fact]
-    public void IsValidImage_EmptyImage_ReturnsFalse()
-    {
-        // Arrange
-        var imageName = "";
-
-        // Act
-        var result = _mapper.IsValidImage(imageName);
-
-        // Assert
-        result.Should().BeFalse();
-    }
-
-    [Fact]
-    public void IsValidImage_NullImage_ReturnsFalse()
-    {
-        // Arrange
-        string? imageName = null;
-
-        // Act
-        var result = _mapper.IsValidImage(imageName!);
-
-        // Assert
-        result.Should().BeFalse();
-    }
-
-    [Fact]
-    public void IsValidImage_WhitespaceImage_ReturnsFalse()
-    {
-        // Arrange
-        var imageName = "   ";
-
-        // Act
-        var result = _mapper.IsValidImage(imageName);
-
-        // Assert
-        result.Should().BeFalse();
+        _mapper.IsValidImage(imageName!).Should().BeFalse();
     }
 
     #endregion

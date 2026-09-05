@@ -34,40 +34,25 @@ public class ImageCacheTests
     [Fact]
     public void Constructor_NullContainerManager_ThrowsArgumentNullException()
     {
-        // Act & Assert
-        var act = () => new ImageCache(
-            null!,
-            _mockPerformanceTracker.Object,
-            _mockLogger.Object);
+        var act = () => new ImageCache(null!, _mockPerformanceTracker.Object, _mockLogger.Object);
 
-        act.Should().Throw<ArgumentNullException>()
-            .WithParameterName("containerManager");
+        act.Should().Throw<ArgumentNullException>().WithParameterName("containerManager");
     }
 
     [Fact]
     public void Constructor_NullPerformanceTracker_ThrowsArgumentNullException()
     {
-        // Act & Assert
-        var act = () => new ImageCache(
-            _mockContainerManager.Object,
-            null!,
-            _mockLogger.Object);
+        var act = () => new ImageCache(_mockContainerManager.Object, null!, _mockLogger.Object);
 
-        act.Should().Throw<ArgumentNullException>()
-            .WithParameterName("performanceTracker");
+        act.Should().Throw<ArgumentNullException>().WithParameterName("performanceTracker");
     }
 
     [Fact]
     public void Constructor_NullLogger_ThrowsArgumentNullException()
     {
-        // Act & Assert
-        var act = () => new ImageCache(
-            _mockContainerManager.Object,
-            _mockPerformanceTracker.Object,
-            null!);
+        var act = () => new ImageCache(_mockContainerManager.Object, _mockPerformanceTracker.Object, null!);
 
-        act.Should().Throw<ArgumentNullException>()
-            .WithParameterName("logger");
+        act.Should().Throw<ArgumentNullException>().WithParameterName("logger");
     }
 
     #endregion
@@ -77,37 +62,21 @@ public class ImageCacheTests
     [Fact]
     public async Task PullImageIfNeededAsync_ImagePulled_TracksImagePull()
     {
-        // Arrange
-        // Use a custom IProgress<string> implementation to avoid synchronization context issues
         var progressMessages = new List<string>();
         var progress = new CustomProgress(progressMessages);
 
         _mockContainerManager
-            .Setup(x => x.PullImageIfNeededAsync(
-                It.IsAny<string>(),
-                It.IsAny<IProgress<string>>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, IProgress<string>?, CancellationToken>((_, p, _) =>
-            {
-                // Simulate pull progress
-                p?.Report("Pulling layer...");
-            })
+            .Setup(x => x.PullImageIfNeededAsync(It.IsAny<string>(), It.IsAny<IProgress<string>>(), It.IsAny<CancellationToken>()))
+            .Callback<string, IProgress<string>?, CancellationToken>((_, p, _) => p?.Report("Pulling layer..."))
             .Returns(Task.CompletedTask);
 
-        // Act
         await _imageCache.PullImageIfNeededAsync("ubuntu:latest", progress);
 
-        // Assert
         progressMessages.Should().NotBeEmpty();
-        _mockPerformanceTracker.Verify(
-            x => x.TrackImagePull("ubuntu:latest", It.IsAny<TimeSpan>()),
-            Times.Once);
+        _mockPerformanceTracker.Verify(x => x.TrackImagePull("ubuntu:latest", It.IsAny<TimeSpan>()), Times.Once);
     }
 
-    /// <summary>
-    /// Simple IProgress implementation that avoids SynchronizationContext issues.
-    /// </summary>
-    private class CustomProgress : IProgress<string>
+    private sealed class CustomProgress : IProgress<string>
     {
         private readonly List<string> _messages;
 
@@ -119,59 +88,51 @@ public class ImageCacheTests
     [Fact]
     public async Task PullImageIfNeededAsync_ImageCached_TracksImageCache()
     {
-        // Arrange
         _mockContainerManager
-            .Setup(x => x.PullImageIfNeededAsync(
-                It.IsAny<string>(),
-                It.IsAny<IProgress<string>>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask); // No progress reported = cached
+            .Setup(x => x.PullImageIfNeededAsync(It.IsAny<string>(), It.IsAny<IProgress<string>>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
 
-        // Act
         await _imageCache.PullImageIfNeededAsync("ubuntu:latest");
 
-        // Assert
-        _mockPerformanceTracker.Verify(
-            x => x.TrackImageCache("ubuntu:latest"),
-            Times.Once);
-        _mockPerformanceTracker.Verify(
-            x => x.TrackImagePull(It.IsAny<string>(), It.IsAny<TimeSpan>()),
-            Times.Never);
+        _mockPerformanceTracker.Verify(x => x.TrackImageCache("ubuntu:latest"), Times.Once);
+        _mockPerformanceTracker.Verify(x => x.TrackImagePull(It.IsAny<string>(), It.IsAny<TimeSpan>()), Times.Never);
     }
 
     [Fact]
     public async Task PullImageIfNeededAsync_PullFails_ThrowsException()
     {
-        // Arrange
         _mockContainerManager
-            .Setup(x => x.PullImageIfNeededAsync(
-                It.IsAny<string>(),
-                It.IsAny<IProgress<string>>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(x => x.PullImageIfNeededAsync(It.IsAny<string>(), It.IsAny<IProgress<string>>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new ContainerException("Pull failed"));
 
-        // Act & Assert
-        await Assert.ThrowsAsync<ContainerException>(
-            () => _imageCache.PullImageIfNeededAsync("invalid:image"));
+        await Assert.ThrowsAsync<ContainerException>(() => _imageCache.PullImageIfNeededAsync("invalid:image"));
     }
 
     [Fact]
     public async Task PullImageIfNeededAsync_WithCancellation_PropagatesCancellation()
     {
-        // Arrange
         var cts = new CancellationTokenSource();
         cts.Cancel();
 
         _mockContainerManager
-            .Setup(x => x.PullImageIfNeededAsync(
-                It.IsAny<string>(),
-                It.IsAny<IProgress<string>>(),
-                It.IsAny<CancellationToken>()))
+            .Setup(x => x.PullImageIfNeededAsync(It.IsAny<string>(), It.IsAny<IProgress<string>>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new OperationCanceledException());
 
-        // Act & Assert
-        await Assert.ThrowsAsync<OperationCanceledException>(
-            () => _imageCache.PullImageIfNeededAsync("ubuntu:latest", null, cts.Token));
+        await Assert.ThrowsAsync<OperationCanceledException>(() => _imageCache.PullImageIfNeededAsync("ubuntu:latest", null, cts.Token));
+    }
+
+    [Fact]
+    public async Task PullImageIfNeededAsync_AfterPull_IsImageCachedDoesNotAskDaemon()
+    {
+        _mockContainerManager
+            .Setup(x => x.PullImageIfNeededAsync(It.IsAny<string>(), It.IsAny<IProgress<string>>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        await _imageCache.PullImageIfNeededAsync("ubuntu:latest");
+        var cached = await _imageCache.IsImageCachedAsync("ubuntu:latest");
+
+        cached.Should().BeTrue();
+        _mockContainerManager.Verify(x => x.ImageExistsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     #endregion
@@ -179,47 +140,79 @@ public class ImageCacheTests
     #region IsImageCachedAsync Tests
 
     [Fact]
-    public async Task IsImageCachedAsync_DockerAvailable_ReturnsTrue()
+    public async Task IsImageCachedAsync_ImageExists_ReturnsTrue()
     {
-        // Arrange
         _mockContainerManager
-            .Setup(x => x.IsDockerAvailableAsync(It.IsAny<CancellationToken>()))
+            .Setup(x => x.ImageExistsAsync("ubuntu:latest", It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
-        // Act
         var result = await _imageCache.IsImageCachedAsync("ubuntu:latest");
 
-        // Assert
         result.Should().BeTrue();
     }
 
     [Fact]
-    public async Task IsImageCachedAsync_DockerUnavailable_ReturnsFalse()
+    public async Task IsImageCachedAsync_ImageMissing_ReturnsFalse()
     {
-        // Arrange
         _mockContainerManager
-            .Setup(x => x.IsDockerAvailableAsync(It.IsAny<CancellationToken>()))
+            .Setup(x => x.ImageExistsAsync("ubuntu:latest", It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
 
-        // Act
         var result = await _imageCache.IsImageCachedAsync("ubuntu:latest");
 
-        // Assert
         result.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task IsImageCachedAsync_PositiveAnswerIsRemembered()
+    {
+        _mockContainerManager
+            .Setup(x => x.ImageExistsAsync("ubuntu:latest", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        await _imageCache.IsImageCachedAsync("ubuntu:latest");
+        await _imageCache.IsImageCachedAsync("ubuntu:latest");
+
+        _mockContainerManager.Verify(x => x.ImageExistsAsync("ubuntu:latest", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task IsImageCachedAsync_NegativeAnswerIsNotRemembered()
+    {
+        _mockContainerManager
+            .SetupSequence(x => x.ImageExistsAsync("ubuntu:latest", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false)
+            .ReturnsAsync(true);
+
+        (await _imageCache.IsImageCachedAsync("ubuntu:latest")).Should().BeFalse();
+        (await _imageCache.IsImageCachedAsync("ubuntu:latest")).Should().BeTrue();
+
+        _mockContainerManager.Verify(x => x.ImageExistsAsync("ubuntu:latest", It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task IsImageCachedAsync_ExpiredEntry_IsCheckedAgain()
+    {
+        var cache = new ImageCache(_mockContainerManager.Object, _mockPerformanceTracker.Object, _mockLogger.Object, TimeSpan.Zero);
+        _mockContainerManager
+            .Setup(x => x.ImageExistsAsync("ubuntu:latest", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        await cache.IsImageCachedAsync("ubuntu:latest");
+        await cache.IsImageCachedAsync("ubuntu:latest");
+
+        _mockContainerManager.Verify(x => x.ImageExistsAsync("ubuntu:latest", It.IsAny<CancellationToken>()), Times.Exactly(2));
     }
 
     [Fact]
     public async Task IsImageCachedAsync_Exception_ReturnsFalse()
     {
-        // Arrange
         _mockContainerManager
-            .Setup(x => x.IsDockerAvailableAsync(It.IsAny<CancellationToken>()))
+            .Setup(x => x.ImageExistsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new Exception("Docker error"));
 
-        // Act
         var result = await _imageCache.IsImageCachedAsync("ubuntu:latest");
 
-        // Assert
         result.Should().BeFalse();
     }
 
@@ -230,23 +223,14 @@ public class ImageCacheTests
     [Fact]
     public async Task GetPullTime_AfterPull_ReturnsPullTime()
     {
-        // Arrange
         _mockContainerManager
-            .Setup(x => x.PullImageIfNeededAsync(
-                It.IsAny<string>(),
-                It.IsAny<IProgress<string>>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, IProgress<string>?, CancellationToken>((_, p, _) =>
-            {
-                p?.Report("Pulling...");
-            })
+            .Setup(x => x.PullImageIfNeededAsync(It.IsAny<string>(), It.IsAny<IProgress<string>>(), It.IsAny<CancellationToken>()))
+            .Callback<string, IProgress<string>?, CancellationToken>((_, p, _) => p?.Report("Pulling..."))
             .Returns(Task.CompletedTask);
 
-        // Act
         await _imageCache.PullImageIfNeededAsync("ubuntu:latest");
         var pullTime = _imageCache.GetPullTime("ubuntu:latest");
 
-        // Assert
         pullTime.Should().NotBeNull();
         pullTime!.Value.Should().BeCloseTo(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5));
     }
@@ -254,11 +238,7 @@ public class ImageCacheTests
     [Fact]
     public void GetPullTime_ImageNotPulled_ReturnsNull()
     {
-        // Act
-        var pullTime = _imageCache.GetPullTime("nonexistent:image");
-
-        // Assert
-        pullTime.Should().BeNull();
+        _imageCache.GetPullTime("nonexistent:image").Should().BeNull();
     }
 
     #endregion

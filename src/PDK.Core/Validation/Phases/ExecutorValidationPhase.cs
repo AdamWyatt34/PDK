@@ -44,8 +44,9 @@ public class ExecutorValidationPhase : IValidationPhase
                 var stepIndex = i + 1;
                 var stepName = step.Name ?? $"Step {stepIndex}";
 
-                // Skip Unknown type - already caught by SchemaValidationPhase
-                if (step.Type == StepType.Unknown)
+                // Unknown steps are reported by SchemaValidationPhase; setup steps (actions/setup-*, UseDotNet, ...)
+                // and disabled steps never reach an executor
+                if (step.Type is StepType.Unknown or StepType.Setup || !step.Enabled)
                 {
                     continue;
                 }

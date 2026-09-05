@@ -152,13 +152,20 @@ Watch mode settings can be configured in `.pdkrc` or `pdk.config.json`:
 
 ```json
 {
+  "version": "1.0",
   "watch": {
     "debounceMs": 500,
     "clearOnRerun": false,
-    "excludePatterns": ["node_modules/**", "dist/**", ".git/**"]
+    "excludePatterns": ["node_modules/**", "dist/**", ".git/**"],
+    "includePatterns": ["src/**", "*.yml"]
   }
 }
 ```
+
+- `excludePatterns` are added to the built-in exclusions (`.git`, `bin`, `obj`, `node_modules`,
+  `.pdk`, ...).
+- `includePatterns`, when set, restrict the watch to matching files.
+- Command-line flags (`--watch-debounce`, `--watch-clear`) override the configuration values.
 
 ## Best Practices
 

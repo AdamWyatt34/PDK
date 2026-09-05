@@ -37,93 +37,92 @@ public class DownloadArtifactExecutor : IStepExecutor
         ExecutionContext context,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(step);
+        ArgumentNullException.ThrowIfNull(context);
+
         var startTime = DateTimeOffset.Now;
         var stopwatch = Stopwatch.StartNew();
         string? tempPath = null;
 
         try
         {
-            // Validate artifact definition
             if (step.Artifact == null)
             {
-                throw new InvalidOperationException(
-                    "Artifact definition is required for download artifact step.");
+                return Failure(step, "Artifact definition is required for download artifact step.", startTime, stopwatch);
             }
 
             if (step.Artifact.Operation != ArtifactOperation.Download)
             {
-                throw new InvalidOperationException(
-                    $"Expected Download operation but got {step.Artifact.Operation}.");
+                return Failure(step, $"Expected Download operation but got {step.Artifact.Operation}.", startTime, stopwatch);
             }
 
             var artifact = step.Artifact;
-            var targetPath = artifact.TargetPath ?? $"{context.ContainerWorkspacePath}/artifacts";
+            var artifactName = artifact.Name?.Trim() ?? string.Empty;
+            var downloadAll = artifactName.Length == 0;
 
-            _logger.LogInformation(
-                "Downloading artifact '{ArtifactName}' to '{TargetPath}'",
-                artifact.Name,
-                targetPath);
-
-            // Step 1: Check if artifact exists
-            var exists = await _artifactManager.ExistsAsync(artifact.Name);
-            if (!exists)
+            if (!downloadAll)
             {
-                stopwatch.Stop();
-                _logger.LogError("Artifact '{ArtifactName}' not found", artifact.Name);
-
-                return new StepExecutionResult
+                var nameError = ArtifactNames.TryGetValidationError(artifactName);
+                if (nameError != null)
                 {
-                    StepName = step.Name,
-                    Success = false,
-                    ExitCode = 1,
-                    Output = string.Empty,
-                    ErrorOutput = $"Artifact '{artifact.Name}' not found. " +
-                                  "Ensure the artifact was uploaded in a previous step.",
-                    Duration = stopwatch.Elapsed,
-                    StartTime = startTime,
-                    EndTime = DateTimeOffset.Now
-                };
+                    return Failure(step, $"Invalid artifact name '{artifactName}': {nameError}", startTime, stopwatch);
+                }
             }
 
-            // Step 2: Create temp directory and download artifact
+            var artifactContext = context.ArtifactContext
+                                  ?? ArtifactContext.ForWorkspace(
+                                      string.IsNullOrWhiteSpace(context.WorkspacePath)
+                                          ? Directory.GetCurrentDirectory()
+                                          : context.WorkspacePath);
+
+            // The Docker archive API resolves relative paths against '/', so the target must be absolute.
+            var targetPath = PathResolver.ResolvePath(artifact.TargetPath ?? string.Empty, context.ContainerWorkspacePath);
+            if (!downloadAll && ArtifactStepSupport.UsesNamedSubdirectory(artifact, step.With))
+            {
+                targetPath = PathResolver.ResolvePath(ArtifactStepSupport.GetDownloadDirectoryName(artifactName), targetPath);
+            }
+
+            _logger.LogInformation(
+                "Downloading {What} to '{TargetPath}'",
+                downloadAll ? "all artifacts of the run" : $"artifact '{artifactName}'",
+                targetPath);
+
             tempPath = Path.Combine(Path.GetTempPath(), $"pdk-artifact-{Guid.NewGuid():N}");
             Directory.CreateDirectory(tempPath);
 
-            _logger.LogDebug("Downloading artifact to temp path: {TempPath}", tempPath);
-
             var downloadResult = await _artifactManager.DownloadAsync(
-                artifact.Name,
+                artifactContext,
+                downloadAll ? null : artifactName,
                 tempPath,
                 artifact.Options,
                 progress: null,
                 cancellationToken);
 
             _logger.LogDebug(
-                "Downloaded {FileCount} files from artifact '{ArtifactName}'",
+                "Downloaded {FileCount} files from {Count} artifact(s) to temp path {TempPath}",
                 downloadResult.FileCount,
-                artifact.Name);
+                downloadResult.Artifacts.Count,
+                tempPath);
 
-            // Step 3: Create target directory in container if needed
             await EnsureContainerDirectoryExistsAsync(context, targetPath, cancellationToken);
 
-            // Step 4: Create tar archive and copy to container
-            _logger.LogDebug("Creating tar archive from downloaded files");
+            if (downloadResult.FileCount > 0 || downloadResult.Artifacts.Count > 0)
+            {
+                using var tarStream = await TarArchiveHelper.CreateTarAsync(tempPath, cancellationToken);
 
-            using var tarStream = await TarArchiveHelper.CreateTarAsync(tempPath, cancellationToken);
+                _logger.LogDebug("Copying tar archive to container at {TargetPath}", targetPath);
 
-            _logger.LogDebug("Copying tar archive to container at {TargetPath}", targetPath);
-
-            await context.ContainerManager.PutArchiveToContainerAsync(
-                context.ContainerId,
-                targetPath,
-                tarStream,
-                cancellationToken);
+                await context.ContainerManager.PutArchiveToContainerAsync(
+                    context.ContainerId,
+                    targetPath,
+                    tarStream,
+                    cancellationToken);
+            }
 
             stopwatch.Stop();
 
             _logger.LogInformation(
-                "Successfully downloaded artifact '{ArtifactName}': {FileCount} files to {TargetPath}",
-                artifact.Name,
+                "Successfully downloaded {FileCount} files to {TargetPath}",
                 downloadResult.FileCount,
                 targetPath);
 
@@ -132,68 +131,34 @@ public class DownloadArtifactExecutor : IStepExecutor
                 StepName = step.Name,
                 Success = true,
                 ExitCode = 0,
-                Output = $"Downloaded {downloadResult.FileCount} files from artifact '{artifact.Name}' " +
-                         $"to {targetPath}",
+                Output = ArtifactStepSupport.DescribeDownload(downloadResult, targetPath),
                 ErrorOutput = string.Empty,
                 Duration = stopwatch.Elapsed,
                 StartTime = startTime,
                 EndTime = DateTimeOffset.Now
             };
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (ArtifactException ex)
         {
-            stopwatch.Stop();
             _logger.LogError(ex, "Artifact download failed: {Message}", ex.Message);
-
-            return new StepExecutionResult
-            {
-                StepName = step.Name,
-                Success = false,
-                ExitCode = 1,
-                Output = string.Empty,
-                ErrorOutput = $"Artifact download failed: {ex.Message}",
-                Duration = stopwatch.Elapsed,
-                StartTime = startTime,
-                EndTime = DateTimeOffset.Now
-            };
+            return Failure(step, $"Artifact download failed: {ex.Message}", startTime, stopwatch);
         }
         catch (ContainerException ex)
         {
-            stopwatch.Stop();
             _logger.LogError(ex, "Container operation failed: {Message}", ex.Message);
-
-            return new StepExecutionResult
-            {
-                StepName = step.Name,
-                Success = false,
-                ExitCode = 1,
-                Output = string.Empty,
-                ErrorOutput = $"Container operation failed: {ex.Message}",
-                Duration = stopwatch.Elapsed,
-                StartTime = startTime,
-                EndTime = DateTimeOffset.Now
-            };
+            return Failure(step, $"Container operation failed: {ex.Message}", startTime, stopwatch);
         }
         catch (Exception ex)
         {
-            stopwatch.Stop();
             _logger.LogError(ex, "Unexpected error during artifact download: {Message}", ex.Message);
-
-            return new StepExecutionResult
-            {
-                StepName = step.Name,
-                Success = false,
-                ExitCode = 1,
-                Output = string.Empty,
-                ErrorOutput = $"Unexpected error: {ex.Message}",
-                Duration = stopwatch.Elapsed,
-                StartTime = startTime,
-                EndTime = DateTimeOffset.Now
-            };
+            return Failure(step, $"Unexpected error: {ex.Message}", startTime, stopwatch);
         }
         finally
         {
-            // Always cleanup temp directory
             if (tempPath != null && Directory.Exists(tempPath))
             {
                 try
@@ -210,14 +175,14 @@ public class DownloadArtifactExecutor : IStepExecutor
     }
 
     /// <summary>
-    /// Ensures the target directory exists in the container.
+    /// Ensures the (absolute) target directory exists in the container.
     /// </summary>
     private async Task EnsureContainerDirectoryExistsAsync(
         ExecutionContext context,
         string targetPath,
         CancellationToken cancellationToken)
     {
-        var mkdirCommand = $"mkdir -p {targetPath}";
+        var mkdirCommand = $"mkdir -p {QuoteForShell(targetPath)}";
 
         _logger.LogDebug("Creating target directory in container: {Command}", mkdirCommand);
 
@@ -233,5 +198,26 @@ public class DownloadArtifactExecutor : IStepExecutor
             throw new ContainerException(
                 $"Failed to create target directory '{targetPath}' in container: {result.StandardError}");
         }
+    }
+
+    private static string QuoteForShell(string value)
+    {
+        return "'" + value.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
+    }
+
+    private static StepExecutionResult Failure(Step step, string message, DateTimeOffset startTime, Stopwatch stopwatch)
+    {
+        stopwatch.Stop();
+        return new StepExecutionResult
+        {
+            StepName = step.Name,
+            Success = false,
+            ExitCode = 1,
+            Output = string.Empty,
+            ErrorOutput = message,
+            Duration = stopwatch.Elapsed,
+            StartTime = startTime,
+            EndTime = DateTimeOffset.Now
+        };
     }
 }

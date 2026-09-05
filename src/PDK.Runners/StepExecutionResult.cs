@@ -45,4 +45,27 @@ public record StepExecutionResult
     /// Gets the time when the step finished executing.
     /// </summary>
     public DateTimeOffset EndTime { get; init; }
+
+    /// <summary>
+    /// Gets a value indicating whether the step was skipped (condition false, filtered out,
+    /// disabled, or unsupported step type). Skipped steps never fail a job.
+    /// </summary>
+    public bool Skipped { get; init; }
+
+    /// <summary>
+    /// Gets the reason the step was skipped, when <see cref="Skipped"/> is true.
+    /// </summary>
+    public string? SkipReason { get; init; }
+
+    /// <summary>
+    /// Gets a value indicating whether a failure of this step was allowed by
+    /// <c>continue-on-error: true</c>. Such failures do not fail the job.
+    /// </summary>
+    public bool AllowedFailure { get; init; }
+
+    /// <summary>
+    /// Gets a value indicating whether this step counts as successful for job status purposes:
+    /// it succeeded, was skipped, or failed with <c>continue-on-error</c>.
+    /// </summary>
+    public bool CountsAsSuccess => Success || Skipped || AllowedFailure;
 }

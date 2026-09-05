@@ -376,6 +376,81 @@ public class ParallelExecutorTests
         levels.Should().BeEmpty();
     }
 
+    [Fact]
+    public void BuildExecutionLevels_UnknownDependency_ThrowsInvalidOperation()
+    {
+        var steps = new List<Step>
+        {
+            new Step { Id = "step1", Name = "Step1", Type = StepType.Script },
+            new Step { Id = "step2", Name = "Step2", Type = StepType.Script, Needs = new List<string> { "missing" } }
+        };
+
+        var act = () => _parallelExecutor.BuildExecutionLevels(steps);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*'step2'*unknown step 'missing'*Known steps: step1, step2*");
+    }
+
+    [Fact]
+    public void BuildExecutionLevels_CircularDependency_ThrowsListingCycle()
+    {
+        var steps = new List<Step>
+        {
+            new Step { Id = "a", Name = "A", Type = StepType.Script, Needs = new List<string> { "c" } },
+            new Step { Id = "b", Name = "B", Type = StepType.Script, Needs = new List<string> { "a" } },
+            new Step { Id = "c", Name = "C", Type = StepType.Script, Needs = new List<string> { "b" } },
+            new Step { Id = "d", Name = "D", Type = StepType.Script }
+        };
+
+        var act = () => _parallelExecutor.BuildExecutionLevels(steps);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*Circular dependency*a -> c -> b -> a*");
+    }
+
+    [Fact]
+    public void BuildExecutionLevels_SelfDependency_ThrowsListingCycle()
+    {
+        var steps = new List<Step>
+        {
+            new Step { Id = "loop", Name = "Loop", Type = StepType.Script, Needs = new List<string> { "loop" } }
+        };
+
+        var act = () => _parallelExecutor.BuildExecutionLevels(steps);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*Circular dependency*loop -> loop*");
+    }
+
+    [Fact]
+    public void BuildExecutionLevels_DependencyByName_IsResolvedCaseInsensitively()
+    {
+        var steps = new List<Step>
+        {
+            new Step { Name = "Restore", Type = StepType.Script },
+            new Step { Name = "Build", Type = StepType.Script, Needs = new List<string> { "restore" } }
+        };
+
+        var levels = _parallelExecutor.BuildExecutionLevels(steps);
+
+        levels.Should().HaveCount(2);
+        levels[1].Single().Name.Should().Be("Build");
+    }
+
+    [Fact]
+    public async Task ExecuteStepsAsync_CircularDependency_Throws()
+    {
+        var steps = new List<Step>
+        {
+            new Step { Id = "a", Name = "A", Type = StepType.Script, Needs = new List<string> { "b" } },
+            new Step { Id = "b", Name = "B", Type = StepType.Script, Needs = new List<string> { "a" } }
+        };
+
+        Func<Task> act = () => _parallelExecutor.ExecuteStepsAsync(steps, (s, _) => Task.FromResult(CreateSuccessResult(s.Name!)));
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*Circular dependency*");
+    }
+
     #endregion
 
     #region HasDependencies Tests

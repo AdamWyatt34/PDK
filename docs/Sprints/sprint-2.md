@@ -224,7 +224,7 @@ variables:
 | `stages` → `jobs` | `jobs` | Flatten: stage name becomes job prefix |
 | `task: Name@version` | `step.type` | Extract task name |
 | `pool.vmImage` | `job.runner` | Direct mapping |
-| `$(variable)` | `${variable}` | Syntax conversion |
+| `$(variable)` | `${variable}` | Syntax conversion (superseded: `$(var)` macros are now kept as-is and resolved at run time by the expression engine, see docs/expressions.md) |
 | `condition:` | `step.condition` | Preserve as string |
 
 **Acceptance Criteria:**

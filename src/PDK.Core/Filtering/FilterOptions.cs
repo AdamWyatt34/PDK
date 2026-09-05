@@ -7,17 +7,17 @@ namespace PDK.Core.Filtering;
 public record FilterOptions
 {
     /// <summary>
-    /// Gets the step names to include (matched case-insensitively with fuzzy matching support).
+    /// Gets the step names to include (matched case-insensitively, exact or substring).
     /// </summary>
     public IReadOnlyList<string> StepNames { get; init; } = [];
 
     /// <summary>
-    /// Gets the step indices to include (1-based).
+    /// Gets the step indices to include (1-based, within each job).
     /// </summary>
     public IReadOnlyList<int> StepIndices { get; init; } = [];
 
     /// <summary>
-    /// Gets the step ranges to include (numeric or named).
+    /// Gets the step ranges to include (numeric or named, resolved per job).
     /// </summary>
     public IReadOnlyList<StepRange> StepRanges { get; init; } = [];
 
@@ -32,7 +32,7 @@ public record FilterOptions
     public IReadOnlyList<string> Jobs { get; init; } = [];
 
     /// <summary>
-    /// Gets whether to automatically include dependencies of selected steps.
+    /// Gets whether to automatically include dependencies of selected steps (expanded per job).
     /// </summary>
     public bool IncludeDependencies { get; init; }
 
@@ -52,14 +52,32 @@ public record FilterOptions
     public string? PresetName { get; init; }
 
     /// <summary>
-    /// Gets whether any filters are active.
+    /// Gets the errors collected while these options were built: unparseable
+    /// <c>--step-index</c> / <c>--step-range</c> values or an unknown <c>--preset</c>.
+    /// <see cref="IStepFilterBuilder.Validate"/> surfaces them as validation errors.
+    /// </summary>
+    public IReadOnlyList<FilterValidationError> Errors { get; init; } = [];
+
+    /// <summary>
+    /// Gets whether building the options produced errors.
+    /// </summary>
+    public bool HasErrors => Errors.Count > 0;
+
+    /// <summary>
+    /// Gets whether any step-level filter is active (names, indices, ranges or skips).
+    /// A job selection alone (<c>--job</c>) is not a step filter: the executor restricts the
+    /// jobs itself, so the filtering machinery stays off. Use <see cref="HasJobFilter"/> for that.
     /// </summary>
     public bool HasFilters =>
         StepNames.Count > 0 ||
         StepIndices.Count > 0 ||
         StepRanges.Count > 0 ||
-        SkipSteps.Count > 0 ||
-        Jobs.Count > 0;
+        SkipSteps.Count > 0;
+
+    /// <summary>
+    /// Gets whether a job selection is present.
+    /// </summary>
+    public bool HasJobFilter => Jobs.Count > 0;
 
     /// <summary>
     /// Gets whether any inclusion filters are active (not just skip filters).
@@ -103,4 +121,10 @@ public record FilterOptions
     /// </summary>
     public FilterOptions WithJobs(params string[] names)
         => this with { Jobs = [.. Jobs, .. names] };
+
+    /// <summary>
+    /// Creates a copy of this options with additional build errors.
+    /// </summary>
+    public FilterOptions WithErrors(params FilterValidationError[] errors)
+        => this with { Errors = [.. Errors, .. errors] };
 }

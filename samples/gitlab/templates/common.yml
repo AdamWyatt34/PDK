@@ -1,0 +1,18 @@
+# Shared hidden job templates, merged into full-pipeline.yml through `include: local`.
+# Hidden jobs (names starting with '.') are never run; they are used through `extends` and `!reference`.
+
+.log:
+  script:
+    - echo "--- $CI_JOB_NAME ($CI_JOB_STAGE) ---"
+
+.with-summary:
+  after_script:
+    - echo "$CI_JOB_NAME finished with status $CI_JOB_STATUS"
+
+.deploy:
+  image: alpine:3.20
+  script:
+    - echo "deploying $APP_NAME to $TARGET_ENV"
+    - if [ -f "$APP_NAME.tgz" ]; then echo "package present"; else echo "package missing"; fi
+  environment:
+    name: $TARGET_ENV

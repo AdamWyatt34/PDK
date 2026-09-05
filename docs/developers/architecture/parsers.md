@@ -4,7 +4,10 @@ This document describes how PDK parses CI/CD pipeline files from different provi
 
 ## Overview
 
-The parser layer transforms provider-specific YAML formats (GitHub Actions, Azure DevOps) into PDK's common pipeline model.
+The parser layer transforms provider-specific YAML formats (GitHub Actions, Azure DevOps) into PDK's
+common pipeline model. Parsers keep pipeline text (scripts, inputs, conditions) **raw**: expressions
+such as `${{ }}`, `$( )` and `$[ ]` are evaluated later, per step, by the expression engine in
+`PDK.Core.Expressions` (see [Expressions](../../expressions.md)).
 
 ```mermaid
 flowchart LR
@@ -60,6 +63,19 @@ public interface IPipelineParser
 }
 ```
 
+### IPipelineParserWarnings
+
+Both parsers also implement `IPipelineParserWarnings`, which exposes the non-fatal findings of the
+last parse (unsupported tasks, ignored sections). `PipelineExecutor` prints them before a run and the
+dry-run validator reports them as warnings.
+
+```csharp
+public interface IPipelineParserWarnings
+{
+    IReadOnlyList<string> Warnings { get; }
+}
+```
+
 ### IPipelineParserFactory
 
 ```csharp
@@ -74,32 +90,19 @@ public interface IPipelineParserFactory
 
 ## Parser Factory
 
-The factory selects the correct parser based on file characteristics:
-
-```csharp
-public class PipelineParserFactory : IPipelineParserFactory
-{
-    private readonly IEnumerable<IPipelineParser> _parsers;
-
-    public IPipelineParser GetParser(string filePath)
-    {
-        // Find first parser that can handle this file
-        var parser = _parsers.FirstOrDefault(p => p.CanParse(filePath));
-
-        if (parser == null)
-            throw new NotSupportedException($"No parser for: {filePath}");
-
-        return parser;
-    }
-}
-```
+The factory (`src/PDK.CLI/PipelineParserFactory.cs`) selects the first parser whose `CanParse`
+accepts the file. When none does it explains why: a missing file is a `FileNotFoundException` (exit
+code 3), an unreadable file is `PDK-E-FILE-002`, invalid YAML is `PDK-E-PARSER-001` with the line and
+column, and a valid YAML file that matches neither provider is `PDK-E-PARSER-006`
+("... is not a GitHub Actions workflow or an Azure DevOps pipeline") with hints about the expected
+shape.
 
 ### Detection Logic
 
 | Parser | Detection Criteria |
 |--------|-------------------|
-| GitHub Actions | Path contains `.github/workflows`, has `jobs:` section, jobs have `runs-on` |
-| Azure DevOps | File has `pool:`, `stages:`, or `task:` sections |
+| GitHub Actions | Top-level `jobs:` mapping that deserializes as a workflow, plus an `on:` trigger or a job with `runs-on` (or a reusable-workflow `uses`) |
+| Azure DevOps | `.yml` / `.yaml` file with a top-level Azure key (`steps`, `jobs`, `stages`, `pool`, `trigger`, `pr`, `extends`, `resources`, `variables`, `parameters`, `schedules`) that is not shaped like a GitHub workflow |
 
 ## GitHub Actions Parser
 
@@ -112,78 +115,90 @@ flowchart TD
     A[Read YAML File] --> B[Deserialize to GitHubWorkflow]
     B --> C{Validate Structure}
     C -->|Invalid| D[Throw PipelineParseException]
-    C -->|Valid| E[Map to Common Model]
-    E --> F[Resolve Dependencies]
-    F --> G[Return Pipeline]
+    C -->|Valid| E[Expand matrix jobs]
+    E --> F[Map jobs and steps to the common model]
+    F --> G[Rewrite needs to expanded job ids]
+    G --> H[Return Pipeline]
 ```
 
-### Provider-Specific Models
+### What Is Mapped
 
-```csharp
-public class GitHubWorkflow
-{
-    public string? Name { get; set; }
-    public Dictionary<string, GitHubJob>? Jobs { get; set; }
-    public Dictionary<string, string>? Env { get; set; }
-}
-
-public class GitHubJob
-{
-    [YamlMember(Alias = "runs-on")]
-    public string? RunsOn { get; set; }
-
-    public List<string>? Needs { get; set; }
-    public List<GitHubStep>? Steps { get; set; }
-    public Dictionary<string, string>? Env { get; set; }
-}
-
-public class GitHubStep
-{
-    public string? Name { get; set; }
-    public string? Uses { get; set; }  // Action reference
-    public string? Run { get; set; }   // Script content
-    public string? Shell { get; set; }
-    public Dictionary<string, string>? With { get; set; }
-    public Dictionary<string, string>? Env { get; set; }
-}
-```
+| Workflow feature | Common model |
+|------------------|--------------|
+| `env` at workflow / job / step level | `Pipeline.Variables`, `Job.Environment`, `Step.Environment` (merged later, later levels win) |
+| `runs-on` (string, label list, `{ group, labels }`) | `Job.RunsOn` via `RunsOnResolver`: first hosted label (`ubuntu-*`, `windows-*`, `macos-*`), else `self-hosted`, else the first label |
+| `container:` (string or `{ image }`) | `Job.Container` |
+| `strategy.matrix` (axes, `include`, `exclude`) | one `Job` per combination (`MatrixExpander`): id `<job>-<value>-<value>` (lower-cased, non-alphanumerics collapsed to `-`), display name `<name> (<v1>, <v2>)`, `Job.Matrix`, `${{ matrix.* }}` substituted at parse time |
+| `needs` | `Job.DependsOn`; a dependency on a matrix job targets every expanded instance |
+| `if` (job and step) | `Condition` with the raw expression |
+| `timeout-minutes` (literal) | `Job.Timeout` / `Step.TimeoutMinutes` |
+| `continue-on-error`, `working-directory`, `shell`, `defaults.run` | step properties (`shell` templates such as `bash -e {0}` are reduced to the shell name) |
+| `services:` | ignored with a warning |
+| job-level `uses:` (reusable workflow) | a single `Unknown` step; skipped with a warning at run time |
 
 ### Action Mapping
 
-The `ActionMapper` converts GitHub Actions to PDK step types:
+`ActionMapper.MapStep` turns `uses:` references into step types:
 
 ```csharp
-public StepType MapAction(string uses)
+return key switch
 {
-    // actions/checkout@v4 → StepType.Checkout
-    // actions/setup-dotnet@v4 → StepType.Dotnet (setup)
-    // actions/upload-artifact@v4 → StepType.UploadArtifact
-
-    return uses switch
-    {
-        var u when u.StartsWith("actions/checkout") => StepType.Checkout,
-        var u when u.StartsWith("actions/upload-artifact") => StepType.UploadArtifact,
-        var u when u.StartsWith("actions/download-artifact") => StepType.DownloadArtifact,
-        _ => StepType.Unknown
-    };
-}
+    "actions/checkout"          => StepType.Checkout,
+    "actions/upload-artifact"   => StepType.UploadArtifact,   // name, path, retention-days, if-no-files-found
+    "actions/download-artifact" => StepType.DownloadArtifact, // name, path
+    "docker/build-push-action"  => StepType.Docker,           // file, context, build-args → docker build
+    _ when SetupActions.Contains(key) || key.StartsWith("actions/setup-") => StepType.Setup,
+    _ => StepType.Unknown
+};
 ```
+
+`SetupActions` contains `actions/setup-*`, `actions/cache` (and `/restore`, `/save`),
+`codecov/codecov-action`, `docker/setup-buildx-action`, `docker/setup-qemu-action`,
+`docker/login-action`, `gradle/actions/setup-gradle` and `gradle/gradle-build-action`. `Setup` steps are
+no-ops at run time; `Unknown` steps (marketplace actions, `./local` actions, `docker://` references)
+are skipped with a warning or fail with `--strict`. `run:` steps become `Script` (or `PowerShell` for
+`pwsh` / `powershell`); the original reference is kept in `Step.ActionReference` and `With["_action"]`.
 
 ### Validation
 
 The parser validates:
-- At least one job exists
-- Each job has `runs-on` specified
-- Each step has either `uses` or `run` (not both)
-- No circular dependencies between jobs
+- At least one job exists and each job is a mapping
+- Each job has `runs-on` (or is a reusable-workflow job) and at least one step
+- Each step has exactly one of `uses` / `run`
+- `needs` refers to existing jobs and forms no cycle
 
 ## Azure DevOps Parser
 
 Location: `src/PDK.Providers/AzureDevOps/AzureDevOpsParser.cs`
 
+### Parsing Flow
+
+```mermaid
+flowchart TD
+    A[Read YAML File] --> B[Load the YamlDotNet node graph]
+    B --> C[AzureTemplateProcessor: parameters, template expressions, directives, template files, extends]
+    C --> D[Deserialize the expanded graph to AzurePipeline through YamlNodeParser]
+    D --> E{Validate Structure}
+    E -->|Invalid| F[Throw PipelineParseException]
+    E -->|Valid| G[Expand strategy.matrix / strategy.parallel legs]
+    G --> H[Map stages, jobs and steps to the common model]
+    H --> I[Rewrite dependsOn to expanded job ids]
+    I --> J[Return Pipeline]
+```
+
+Templates are resolved before the typed model is read (`src/PDK.Providers/AzureDevOps/Templates/`).
+`AzureTemplateProcessor` walks the YamlDotNet node graph, evaluates `${{ }}` expressions with the shared
+expression engine against the `parameters` and `variables` contexts, applies the `${{ if }}` /
+`${{ elseif }}` / `${{ else }}` / `${{ each }}` / `${{ insert }}` directives, splices template files and
+resolves `extends`. Every node of the expanded graph is mapped back to its source file and position
+(`YamlNodeOrigin`), and `YamlNodeParser` (`src/PDK.Providers/Common/`) replays the graph as parsing events,
+so deserialization errors still name the original file and line, template files included. `$( )` macros
+and `$[ ]` runtime expressions are left untouched for the run time. `AzureMatrixExpander` turns
+`strategy.matrix` / `strategy.parallel` into one job per leg after validation.
+
 ### Pipeline Hierarchy
 
-Azure DevOps supports multiple hierarchy patterns:
+Azure DevOps supports multiple hierarchy patterns; exactly one of them must be used at the top level:
 
 ```mermaid
 graph TD
@@ -203,83 +218,70 @@ graph TD
     end
 ```
 
-### Provider-Specific Models
+A steps-only pipeline becomes a single job with id `default`.
 
-```csharp
-public class AzurePipeline
-{
-    public string? Name { get; set; }
-    public AzurePool? Pool { get; set; }
-    public List<AzureStage>? Stages { get; set; }
-    public List<AzureJob>? Jobs { get; set; }
-    public List<AzureStep>? Steps { get; set; }
-    public Dictionary<string, string>? Variables { get; set; }
-}
+### What Is Mapped
 
-public class AzurePool
-{
-    public string? VmImage { get; set; }  // Microsoft-hosted
-    public string? Name { get; set; }      // Self-hosted
-}
-
-public class AzureStep
-{
-    public string? Task { get; set; }      // Task@version format
-    public string? Script { get; set; }
-    public string? Bash { get; set; }
-    public string? Pwsh { get; set; }
-    public string? Checkout { get; set; }
-    public Dictionary<string, string>? Inputs { get; set; }
-}
-```
+| Pipeline feature | Common model |
+|------------------|--------------|
+| `parameters:` (list form or `name: default` mapping form) | resolved from `--param NAME=VALUE` (converted to the declared type; structured types parsed as JSON / flow YAML), then the declared defaults; `values:` is enforced; a parameter without value and default is an error |
+| `${{ }}` template expressions, `${{ if }}` / `${{ elseif }}` / `${{ else }}` / `${{ each }}` / `${{ insert }}` | evaluated by `AzureTemplateProcessor` before deserialization against `parameters`, `variables` (pipeline literals defined earlier, `--var` values, predefined `Build.*` / `System.*`) and `${{ each }}` loop variables; whole-value expressions insert objects and lists structurally |
+| `template:` in `steps`, `jobs`, `stages` and `variables` lists; `extends:` | the file (relative to the including file, or the workspace for `/paths`; `@self` accepted) is expanded in place with its own `parameters:`; include cycles and nesting deeper than 20 levels are errors; `file.yml@otherRepo` is rejected with a suggestion to vendor the file |
+| `variables:` (mapping or `- name/value` list) at pipeline, stage and job level | `Pipeline.Variables` / `Job.Variables` (`AzureVariableParser`); `- template:` entries are expanded, `- group:` entries are ignored with a warning |
+| `pool.vmImage` / `pool.name` | `Job.RunsOn` (a pool `name` means `self-hosted`; no pool falls back to `ubuntu-latest`) |
+| `container:` | `Job.Container` |
+| `stages` | flattened to jobs with ids `<Stage>_<Job>`; stage `dependsOn` (explicit, or the previous stage by default) becomes a dependency on every job of that stage; a stage `condition:` is combined with the job condition with `and()` |
+| `dependsOn` (job) | `Job.DependsOn` (prefixed with the stage name in multi-stage pipelines) |
+| `condition:` (job and step) | `Condition` with the raw expression |
+| `deployment:` jobs | the `strategy.runOnce` / `rolling` / `canary` `deploy` steps; lifecycle hooks (`preDeploy`, `routeTraffic`, `postRouteTraffic`) are ignored with a warning |
+| `strategy.matrix` (mapping form) / `strategy.parallel: N` | one job per leg (`AzureMatrixExpander`): ids `<Job>_<leg>` / `<Job>_<n>`, names `<name> <leg>` / `<name> <n>/<N>`, the leg variables in `Job.Matrix` and `Job.Variables` plus `System.JobPositionInPhase` / `System.TotalJobsInPhase`, `$(name)` in `pool.vmImage` resolved from the leg; `dependsOn` references target every leg; a `$[ ]` matrix or count runs once with a warning; `maxParallel` is ignored with a warning; `matrix` and `parallel` together is an error |
+| `timeoutInMinutes`, `continueOnError`, `enabled`, `workingDirectory`, `env`, `name`, `displayName` | step / job properties |
+| `resources:`, `services:` | ignored with a warning |
 
 ### Task Mapping
 
-The `AzureStepMapper` converts Azure tasks to PDK step types:
+`AzureStepMapper.MapStep` maps steps to step types:
 
 ```csharp
-public StepType MapTask(string task)
+return key switch
 {
-    // DotNetCoreCLI@2 → StepType.Dotnet
-    // PowerShell@2 → StepType.PowerShell
-    // Bash@3 → StepType.Script
-
-    var taskName = task.Split('@')[0];
-    return taskName switch
-    {
-        "DotNetCoreCLI" => StepType.Dotnet,
-        "PowerShell" => StepType.PowerShell,
-        "Bash" => StepType.Script,
-        "Docker" => StepType.Docker,
-        _ => StepType.Unknown
-    };
-}
+    "dotnetcorecli"            => StepType.Dotnet,           // command, projects, arguments, ...
+    "powershell"               => StepType.PowerShell,
+    "bash"                     => StepType.Script,
+    "cmdline"                  => StepType.Script,
+    "docker"                   => StepType.Docker,
+    "npm"                      => StepType.Npm,
+    "maven"                    => StepType.Maven,
+    "gradle"                   => StepType.Gradle,
+    "copyfiles"                => StepType.FileOperation,
+    "publishbuildartifacts"    => StepType.UploadArtifact,
+    "publishpipelineartifact"  => StepType.UploadArtifact,
+    "downloadbuildartifacts"   => StepType.DownloadArtifact,
+    "downloadpipelineartifact" => StepType.DownloadArtifact,
+    _ when SetupTasks.Contains(key) => StepType.Setup,      // UseDotNet, NodeTool, UseNode, UsePythonVersion,
+    _ => StepType.Unknown                                    // JavaToolInstaller, GoTool, NuGetToolInstaller, Cache
+};
 ```
+
+Script shortcuts map to `Script` (`script:`, `bash:`) or `PowerShell` (`pwsh:`, `powershell:`);
+`checkout:` maps to `Checkout` (`checkout: none` keeps a disabled step), `publish:` to
+`UploadArtifact` and `download:` to `DownloadArtifact` (`download: none` is disabled). Unknown tasks
+produce a parser warning and an `Unknown` step. Task inputs are stored raw in `Step.With` together
+with `_task` and `_version`; `$( )` macros inside them are resolved at run time for known variables
+only.
 
 ### Hierarchy Flattening
 
 Multi-stage pipelines are flattened to jobs:
 
 ```csharp
-// Stage "build" with job "compile" becomes job "build_compile"
-var jobId = $"{stage.Name}_{job.Name}";
-```
-
-### Variable Syntax Conversion
-
-Azure DevOps uses `$(variable)` syntax, converted to `${variable}`:
-
-```csharp
-private string ConvertVariableSyntax(string value)
-{
-    // $(VAR_NAME) → ${VAR_NAME}
-    return Regex.Replace(value, @"\$\(([^)]+)\)", "${$1}");
-}
+// Stage "Build" with job "CompileCode" becomes job "Build_CompileCode"
+var jobId = $"{stageName}_{azureJob.Identifier}";
 ```
 
 ## Common Pipeline Model
 
-Both parsers produce the same output:
+Both parsers produce the same output (`src/PDK.Core/Models`):
 
 ```csharp
 public class Pipeline
@@ -295,9 +297,15 @@ public class Job
     public string Id { get; set; }
     public string Name { get; set; }
     public string RunsOn { get; set; }
+    public string? Container { get; set; }
     public List<Step> Steps { get; set; }
     public List<string> DependsOn { get; set; }
+    public Condition? Condition { get; set; }
+    public TimeSpan? Timeout { get; set; }
     public Dictionary<string, string> Environment { get; set; }
+    public Dictionary<string, string> Variables { get; set; }
+    public Dictionary<string, string>? Matrix { get; set; }
+    public string? Stage { get; set; }
 }
 
 public class Step
@@ -305,40 +313,55 @@ public class Step
     public string? Id { get; set; }
     public string Name { get; set; }
     public StepType Type { get; set; }
+    public string? ActionReference { get; set; }
     public string? Script { get; set; }
     public string Shell { get; set; }
     public Dictionary<string, string> With { get; set; }
     public Dictionary<string, string> Environment { get; set; }
     public bool ContinueOnError { get; set; }
+    public Condition? Condition { get; set; }
+    public string? WorkingDirectory { get; set; }
+    public bool Enabled { get; set; }
+    public int? TimeoutMinutes { get; set; }
+    public ArtifactDefinition? Artifact { get; set; }
 }
 ```
 
+`StepType` values produced by the parsers: `Checkout`, `Script`, `PowerShell`, `Dotnet`, `Npm`,
+`Docker`, `Maven`, `Gradle`, `FileOperation`, `UploadArtifact`, `DownloadArtifact`, `Setup`,
+`Unknown`. (`Bash` and `Python` still exist in the enum but are no longer produced; bash scripts are
+`Script` steps with `Shell = "bash"`.)
+
+`JobGraph` (`src/PDK.Core/Models/JobGraph.cs`) orders the jobs of a `Pipeline` by their dependencies
+and resolves job references by id or name.
+
 ## Error Handling
 
-Parsers provide detailed error messages:
+Parsers translate YAML problems and structural errors into `PipelineParseException` with an error
+code, the file, the job/step and suggestions:
 
 ```csharp
-try
-{
-    var workflow = deserializer.Deserialize<GitHubWorkflow>(yaml);
-}
-catch (YamlException ex)
-{
-    throw new PipelineParseException(
-        $"Invalid YAML at line {ex.Start.Line}: {ex.Message}",
-        filePath,
-        ex.Start.Line);
-}
+throw new PipelineParseException(
+    ErrorCodes.MissingRequiredField,
+    $"Job '{jobId}' is missing required field 'runs-on'",
+    filePath,
+    jobId,
+    suggestions: new[] { "Add runs-on: ubuntu-latest" });
 ```
 
 ### Common Errors
 
-| Error | Cause | Solution |
-|-------|-------|----------|
-| "No jobs defined" | Empty jobs section | Add at least one job |
-| "Job missing runs-on" | GitHub job without runner | Specify `runs-on: ubuntu-latest` |
-| "Step has both uses and run" | Invalid step definition | Use either `uses` or `run` |
-| "Circular dependency" | Job A needs B, B needs A | Remove circular reference |
+| Error | Code | Solution |
+|-------|------|----------|
+| Invalid YAML | `PDK-E-PARSER-001` | Fix the reported line |
+| "No jobs defined" / job without steps | `PDK-E-PARSER-003` / `PDK-E-PARSER-005` | Add at least one job and step |
+| "Job missing runs-on" | `PDK-E-PARSER-003` | Specify `runs-on: ubuntu-latest` |
+| "Step has both uses and run" | `PDK-E-PARSER-005` | Use either `uses` or `run` |
+| Unknown / self dependency | `PDK-E-PARSER-007` / `PDK-E-PARSER-008` | Fix `needs` / `dependsOn` |
+| Circular dependency | `PDK-E-PARSER-004` | Remove the circular reference |
+| Azure template problem (template file not found, template from another repository, parameter without a value, value outside `values:`, undeclared parameter, invalid `${{ }}` expression, include cycle) | `PDK-E-PARSER-005` | The message names the template file and line; fix the reference, the expression or pass `--param` |
+
+See [Error codes](../../errors.md) for the full list.
 
 ## Adding a New Parser
 
@@ -354,10 +377,12 @@ public class GitLabPipeline
 }
 ```
 
-2. **Implement IPipelineParser**:
+2. **Implement IPipelineParser** (and `IPipelineParserWarnings`):
 ```csharp
-public class GitLabCIParser : IPipelineParser
+public class GitLabCIParser : IPipelineParser, IPipelineParserWarnings
 {
+    public IReadOnlyList<string> Warnings { get; private set; } = [];
+
     public bool CanParse(string filePath)
     {
         return filePath.EndsWith(".gitlab-ci.yml");
@@ -412,5 +437,6 @@ public class GitHubActionsParserTests
 ## Next Steps
 
 - [Runner Architecture](runners.md) - How parsed pipelines are executed
+- [Expressions](../../expressions.md) - What the expression engine evaluates at run time
 - [Custom Provider Guide](../extending/custom-provider.md) - Adding new parsers
 - [Data Flow](data-flow.md) - Complete execution flow

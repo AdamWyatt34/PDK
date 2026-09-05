@@ -1,26 +1,18 @@
 namespace PDK.Core.Artifacts;
 
 using PDK.Core.ErrorHandling;
+using PDK.Core.Models;
 
 /// <summary>
 /// Exception for artifact-related errors with structured error codes and suggestions.
+/// Derives from <see cref="PdkException"/> so the CLI error formatter shows the code and suggestions.
 /// </summary>
-public class ArtifactException : Exception
+public class ArtifactException : PdkException
 {
-    /// <summary>
-    /// Gets the error code for this exception.
-    /// </summary>
-    public string ErrorCode { get; }
-
     /// <summary>
     /// Gets the name of the artifact that caused the error, if applicable.
     /// </summary>
     public string? ArtifactName { get; }
-
-    /// <summary>
-    /// Gets suggestions for resolving the error.
-    /// </summary>
-    public IReadOnlyList<string> Suggestions { get; }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ArtifactException"/> class.
@@ -36,29 +28,34 @@ public class ArtifactException : Exception
         string? artifactName = null,
         IReadOnlyList<string>? suggestions = null,
         Exception? innerException = null)
-        : base(message, innerException)
+        : base(errorCode, message, null, suggestions, innerException)
     {
-        ErrorCode = errorCode;
         ArtifactName = artifactName;
-        Suggestions = suggestions ?? Array.Empty<string>();
     }
 
     /// <summary>
     /// Creates an exception for an invalid artifact name.
     /// </summary>
     /// <param name="name">The invalid artifact name.</param>
+    /// <param name="reason">Optional description of the violated rule.</param>
     /// <returns>A new ArtifactException.</returns>
-    public static ArtifactException InvalidName(string name)
+    public static ArtifactException InvalidName(string name, string? reason = null)
     {
+        var message = $"Invalid artifact name: '{name}'";
+        if (!string.IsNullOrEmpty(reason))
+        {
+            message += $" ({reason})";
+        }
+
         return new ArtifactException(
-            $"Invalid artifact name: '{name}'",
+            message,
             ErrorCodes.ArtifactInvalidName,
             name,
             new[]
             {
-                "Artifact names must contain only letters, numbers, hyphens, and underscores",
-                "Artifact names must be 1-100 characters long",
-                "Example valid names: build-output, test_results, MyArtifact123"
+                "Artifact names cannot be empty and cannot contain any of: \" : < > | * ? \\ / or line breaks",
+                $"Artifact names must be at most {ArtifactNames.MaxLength} characters long",
+                "Example valid names: build-output, test results, MyArtifact.v1"
             });
     }
 
@@ -182,7 +179,7 @@ public class ArtifactException : Exception
             {
                 "The artifact may have been corrupted during upload",
                 "Try re-uploading the artifact",
-                $"Manually remove the artifact directory and retry"
+                "Manually remove the artifact directory and retry"
             },
             innerException: inner);
     }
@@ -212,15 +209,22 @@ public class ArtifactException : Exception
     /// </summary>
     /// <param name="path">The path to the archive that failed to decompress.</param>
     /// <param name="inner">The inner exception, if any.</param>
+    /// <param name="reason">Optional reason (e.g. an unsafe entry path).</param>
     /// <returns>A new ArtifactException.</returns>
-    public static ArtifactException DecompressionFailed(string path, Exception? inner = null)
+    public static ArtifactException DecompressionFailed(string path, Exception? inner = null, string? reason = null)
     {
+        var message = $"Failed to decompress artifact archive: '{path}'";
+        if (!string.IsNullOrEmpty(reason))
+        {
+            message += $": {reason}";
+        }
+
         return new ArtifactException(
-            $"Failed to decompress artifact archive: '{path}'",
+            message,
             ErrorCodes.ArtifactDecompressionFailed,
             suggestions: new[]
             {
-                "The archive may be corrupted",
+                "The archive may be corrupted or malicious",
                 "Try re-uploading the artifact",
                 "Check that the archive format is supported (gzip, zip)"
             },

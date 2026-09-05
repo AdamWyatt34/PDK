@@ -47,24 +47,28 @@ stages:
               version: '$(dotnetVersion)'
               packageType: 'sdk'
 
+          # Build the solution explicitly: a '**/*.csproj' glob would also pick up the sample
+          # applications under examples/ and the fixtures under tests/TestProjects/.
           - task: DotNetCoreCLI@2
             displayName: 'Restore dependencies'
             inputs:
               command: 'restore'
-              projects: '**/*.csproj'
+              projects: 'PDK.sln'
 
           - task: DotNetCoreCLI@2
             displayName: 'Build solution'
             inputs:
               command: 'build'
-              projects: '**/*.csproj'
+              projects: 'PDK.sln'
               arguments: '--configuration $(buildConfiguration) --no-restore'
 
           - task: DotNetCoreCLI@2
             displayName: 'Run tests with coverage'
             inputs:
               command: 'test'
-              projects: 'tests/**/*.csproj'
+              projects: |
+                tests/PDK.Tests.Unit/PDK.Tests.Unit.csproj
+                tests/PDK.Tests.Integration/PDK.Tests.Integration.csproj
               arguments: '--configuration $(buildConfiguration) --no-build --collect:"XPlat Code Coverage" --settings coverlet.runsettings --logger "trx;LogFileName=test-results.trx"'
               publishTestResults: true
 
@@ -90,7 +94,7 @@ stages:
           - script: |
               echo "Verifying package creation..."
               ls -la $(Build.ArtifactStagingDirectory)/package/
-              if [ ! -f $(Build.ArtifactStagingDirectory)/package/*.nupkg ]; then
+              if ! ls "$(Build.ArtifactStagingDirectory)"/package/*.nupkg > /dev/null 2>&1; then
                 echo "Error: Package not found"
                 exit 1
               fi

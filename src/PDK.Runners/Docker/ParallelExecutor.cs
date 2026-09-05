@@ -29,42 +29,50 @@ public class ParallelExecutor
     /// <param name="executor">The function that executes a single step.</param>
     /// <param name="maxParallelism">Maximum number of steps to run concurrently.</param>
     /// <param name="cancellationToken">Token to cancel the operation.</param>
-    /// <returns>The list of step execution results in completion order.</returns>
+    /// <returns>The list of step execution results in original step order.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when a step depends on an unknown step or the dependencies form a cycle.</exception>
     public async Task<List<StepExecutionResult>> ExecuteStepsAsync(
         List<Step> steps,
         Func<Step, CancellationToken, Task<StepExecutionResult>> executor,
         int maxParallelism = 4,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(steps);
+        ArgumentNullException.ThrowIfNull(executor);
+
         if (steps.Count == 0)
         {
             return new List<StepExecutionResult>();
         }
 
-        // Build execution levels (groups of steps that can run in parallel)
+        if (maxParallelism < 1)
+        {
+            maxParallelism = 1;
+        }
+
+        // Build execution levels (groups of steps that can run in parallel); validates dependencies.
         var levels = BuildExecutionLevels(steps);
         var results = new ConcurrentBag<StepExecutionResult>();
-        var failureDetected = false;
+        var failureDetected = 0;
 
         _logger.LogDebug("Parallel execution: {StepCount} steps in {LevelCount} levels, max parallelism {MaxParallelism}",
             steps.Count, levels.Count, maxParallelism);
 
         foreach (var level in levels)
         {
-            if (failureDetected || cancellationToken.IsCancellationRequested)
+            if (Volatile.Read(ref failureDetected) != 0 || cancellationToken.IsCancellationRequested)
             {
                 break;
             }
 
             _logger.LogDebug("Executing level with {StepCount} steps", level.Count);
 
-            // Use SemaphoreSlim to limit parallelism
             using var semaphore = new SemaphoreSlim(maxParallelism);
             var tasks = new List<Task>();
 
             foreach (var step in level)
             {
-                if (failureDetected)
+                if (Volatile.Read(ref failureDetected) != 0)
                 {
                     break;
                 }
@@ -80,7 +88,7 @@ public class ParallelExecutor
 
                         if (!result.Success && !step.ContinueOnError)
                         {
-                            failureDetected = true;
+                            Interlocked.Exchange(ref failureDetected, 1);
                             _logger.LogWarning("Step {StepName} failed, stopping parallel execution", step.Name);
                         }
                     }
@@ -93,7 +101,6 @@ public class ParallelExecutor
                 tasks.Add(task);
             }
 
-            // Wait for all tasks in this level to complete
             await Task.WhenAll(tasks).ConfigureAwait(false);
         }
 
@@ -109,8 +116,13 @@ public class ParallelExecutor
     /// </summary>
     /// <param name="steps">The steps to organize into levels.</param>
     /// <returns>A list of execution levels, each containing steps that can run in parallel.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when a step's <c>needs</c> references a step that does not exist, or when the dependencies form a cycle.
+    /// </exception>
     public List<List<Step>> BuildExecutionLevels(List<Step> steps)
     {
+        ArgumentNullException.ThrowIfNull(steps);
+
         var levels = new List<List<Step>>();
 
         if (steps.Count == 0)
@@ -126,13 +138,27 @@ public class ParallelExecutor
             {
                 stepMap[step.Id] = step;
             }
+
             if (!string.IsNullOrEmpty(step.Name))
             {
                 stepMap[step.Name] = step;
             }
         }
 
-        // Track which steps have been assigned to a level
+        // Validate that every dependency refers to a known step
+        foreach (var step in steps)
+        {
+            foreach (var dependency in step.Needs ?? new List<string>())
+            {
+                if (!stepMap.ContainsKey(dependency))
+                {
+                    throw new InvalidOperationException(
+                        $"Step '{Describe(step)}' depends on unknown step '{dependency}'. " +
+                        $"Known steps: {string.Join(", ", steps.Select(Describe))}.");
+                }
+            }
+        }
+
         var assigned = new HashSet<Step>();
         var remaining = new HashSet<Step>(steps);
 
@@ -140,19 +166,10 @@ public class ParallelExecutor
         {
             var level = new List<Step>();
 
-            foreach (var step in remaining.ToList())
+            foreach (var step in steps.Where(remaining.Contains))
             {
                 var dependencies = step.Needs ?? new List<string>();
-                var allDependenciesSatisfied = true;
-
-                foreach (var dep in dependencies)
-                {
-                    if (stepMap.TryGetValue(dep, out var depStep) && !assigned.Contains(depStep))
-                    {
-                        allDependenciesSatisfied = false;
-                        break;
-                    }
-                }
+                var allDependenciesSatisfied = dependencies.All(dep => assigned.Contains(stepMap[dep]));
 
                 if (allDependenciesSatisfied)
                 {
@@ -160,34 +177,25 @@ public class ParallelExecutor
                 }
             }
 
-            // If no steps can be added, we have a circular dependency or invalid references
-            if (level.Count == 0 && remaining.Count > 0)
+            if (level.Count == 0)
             {
-                _logger.LogWarning("Circular dependency detected, falling back to sequential execution for remaining {Count} steps", remaining.Count);
-                level.AddRange(remaining);
-                remaining.Clear();
-            }
-            else
-            {
-                foreach (var step in level)
-                {
-                    assigned.Add(step);
-                    remaining.Remove(step);
-                }
+                var cycle = FindCycle(remaining, stepMap);
+                throw new InvalidOperationException(
+                    $"Circular dependency detected among steps: {string.Join(" -> ", cycle.Select(Describe))}.");
             }
 
-            if (level.Count > 0)
+            foreach (var step in level)
             {
-                levels.Add(level);
+                assigned.Add(step);
+                remaining.Remove(step);
             }
+
+            levels.Add(level);
         }
 
-        // Log the execution plan
-        for (int i = 0; i < levels.Count; i++)
+        for (var i = 0; i < levels.Count; i++)
         {
-            _logger.LogDebug("Level {Level}: {Steps}",
-                i + 1,
-                string.Join(", ", levels[i].Select(s => s.Name ?? s.Id ?? "unnamed")));
+            _logger.LogDebug("Level {Level}: {Steps}", i + 1, string.Join(", ", levels[i].Select(Describe)));
         }
 
         return levels;
@@ -200,6 +208,69 @@ public class ParallelExecutor
     /// <returns>True if any step has dependencies, false if all steps are independent.</returns>
     public static bool HasDependencies(List<Step> steps)
     {
+        ArgumentNullException.ThrowIfNull(steps);
         return steps.Any(s => s.Needs?.Count > 0);
+    }
+
+    private static string Describe(Step step)
+    {
+        return !string.IsNullOrEmpty(step.Id) ? step.Id : (!string.IsNullOrEmpty(step.Name) ? step.Name : "unnamed");
+    }
+
+    /// <summary>
+    /// Finds a dependency cycle among the remaining steps (depth-first search over the <c>needs</c> edges).
+    /// </summary>
+    private static List<Step> FindCycle(HashSet<Step> remaining, Dictionary<string, Step> stepMap)
+    {
+        var visited = new HashSet<Step>();
+        var path = new List<Step>();
+        var onPath = new HashSet<Step>();
+
+        foreach (var start in remaining)
+        {
+            var cycle = Visit(start);
+            if (cycle != null)
+            {
+                return cycle;
+            }
+        }
+
+        // Should not happen (no progress implies a cycle), but never return an empty description.
+        return remaining.ToList();
+
+        List<Step>? Visit(Step step)
+        {
+            if (onPath.Contains(step))
+            {
+                var index = path.IndexOf(step);
+                var cycle = path.Skip(index).ToList();
+                cycle.Add(step);
+                return cycle;
+            }
+
+            if (!visited.Add(step))
+            {
+                return null;
+            }
+
+            path.Add(step);
+            onPath.Add(step);
+
+            foreach (var dependency in step.Needs ?? new List<string>())
+            {
+                if (stepMap.TryGetValue(dependency, out var next) && remaining.Contains(next))
+                {
+                    var cycle = Visit(next);
+                    if (cycle != null)
+                    {
+                        return cycle;
+                    }
+                }
+            }
+
+            path.RemoveAt(path.Count - 1);
+            onPath.Remove(step);
+            return null;
+        }
     }
 }

@@ -1,66 +1,88 @@
-using System.Text.RegularExpressions;
 using PDK.Core.Artifacts;
 using PDK.Core.Models;
 using PDK.Providers.AzureDevOps.Models;
+using PDK.Providers.Common;
 
 namespace PDK.Providers.AzureDevOps;
 
 /// <summary>
-/// Maps Azure Pipeline steps to PDK common Step model.
-/// Handles task parsing, script shortcuts, input conversion, and variable syntax transformation.
+/// Maps Azure Pipeline steps to the PDK common Step model.
+/// Handles task parsing, script shortcuts, publish/download shortcuts and input conversion.
+/// All text (scripts, inputs, environment, conditions, display names) is kept raw: <c>$( )</c> macros are
+/// resolved at run time for known variables only.
 /// </summary>
 public static class AzureStepMapper
 {
+    private const string DefaultPublishBuildArtifactsPath = "$(Build.ArtifactStagingDirectory)";
+    private const string DefaultPublishPipelineArtifactPath = "$(Pipeline.Workspace)";
+    private const string DefaultArtifactName = "drop";
+    private const string DefaultDownloadPath = "./";
+
+    private static readonly HashSet<string> SetupTasks = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "usedotnet",
+        "nodetool",
+        "usenode",
+        "usepythonversion",
+        "javatoolinstaller",
+        "gotool",
+        "nugettoolinstaller",
+        "cache"
+    };
+
     /// <summary>
     /// Maps an Azure Pipeline step to a PDK Step model.
-    /// Handles both task-based steps (task: TaskName@version) and script shortcuts (bash:, pwsh:, script:).
     /// </summary>
     /// <param name="azureStep">The Azure step to map.</param>
     /// <param name="stepIndex">The zero-based index of the step within the job.</param>
     /// <returns>A PDK Step model representing the Azure step.</returns>
-    public static Step MapStep(AzureStep azureStep, int stepIndex)
+    public static Step MapStep(AzureStep azureStep, int stepIndex) => MapStep(azureStep, stepIndex, null);
+
+    /// <summary>
+    /// Maps an Azure Pipeline step to a PDK Step model, recording non-fatal findings in <paramref name="warnings"/>.
+    /// </summary>
+    /// <param name="azureStep">The Azure step to map.</param>
+    /// <param name="stepIndex">The zero-based index of the step within the job.</param>
+    /// <param name="warnings">Optional sink for warnings.</param>
+    /// <returns>A PDK Step model representing the Azure step.</returns>
+    public static Step MapStep(AzureStep azureStep, int stepIndex, ICollection<string>? warnings)
     {
+        ArgumentNullException.ThrowIfNull(azureStep);
+
         var step = new Step
         {
+            Id = string.IsNullOrWhiteSpace(azureStep.Name) ? null : azureStep.Name.Trim(),
             Name = GenerateStepName(azureStep, stepIndex),
             ContinueOnError = azureStep.ContinueOnError ?? false,
-            WorkingDirectory = ConvertVariableSyntax(azureStep.WorkingDirectory)
+            Enabled = azureStep.Enabled ?? true,
+            TimeoutMinutes = azureStep.TimeoutInMinutes,
+            WorkingDirectory = string.IsNullOrWhiteSpace(azureStep.WorkingDirectory) ? null : azureStep.WorkingDirectory
         };
 
-        // Map environment variables
-        if (azureStep.Env != null && azureStep.Env.Count > 0)
+        // Map environment variables (raw)
+        if (azureStep.Env is { Count: > 0 })
         {
-            step.Environment = azureStep.Env.ToDictionary(
-                kvp => kvp.Key,
-                kvp => ConvertVariableSyntax(kvp.Value)
-            );
+            step.Environment = azureStep.Env.ToDictionary(kvp => kvp.Key, kvp => kvp.Value ?? string.Empty);
         }
 
-        // Map condition
+        // Map condition (raw expression, evaluated at run time)
         if (!string.IsNullOrWhiteSpace(azureStep.Condition))
         {
             step.Condition = new Condition
             {
-                Expression = ConvertVariableSyntax(azureStep.Condition),
+                Expression = azureStep.Condition,
                 Type = ConditionType.Expression
             };
         }
 
-        // Determine step type and map accordingly
-        var stepType = azureStep.GetStepType();
-
-        switch (stepType)
+        switch (azureStep.GetStepType())
         {
             case "checkout":
-                step.Type = StepType.Checkout;
-                if (!string.IsNullOrEmpty(azureStep.Checkout))
-                {
-                    step.With["repository"] = azureStep.Checkout;
-                }
+                MapCheckoutStep(azureStep, step);
                 break;
 
             case "task":
-                MapTaskStep(azureStep, step);
+                MapTaskStep(azureStep, step, warnings);
                 break;
 
             case "bash":
@@ -68,6 +90,14 @@ public static class AzureStepMapper
             case "powershell":
             case "script":
                 MapScriptStep(azureStep, step);
+                break;
+
+            case "publish":
+                MapPublishShortcut(azureStep, step);
+                break;
+
+            case "download":
+                MapDownloadShortcut(azureStep, step);
                 break;
 
             default:
@@ -79,30 +109,54 @@ public static class AzureStepMapper
     }
 
     /// <summary>
-    /// Maps a task-based Azure step to a PDK Step.
-    /// Extracts task name and version, maps to appropriate StepType, and converts inputs.
+    /// Maps <c>checkout:</c> steps. <c>checkout: none</c> keeps a disabled checkout step so the job shape is preserved.
     /// </summary>
-    /// <param name="azureStep">The Azure step with a task definition.</param>
-    /// <param name="step">The PDK step to populate.</param>
-    private static void MapTaskStep(AzureStep azureStep, Step step)
+    private static void MapCheckoutStep(AzureStep azureStep, Step step)
     {
-        if (string.IsNullOrEmpty(azureStep.Task))
+        step.Type = StepType.Checkout;
+
+        var target = azureStep.Checkout!.Trim();
+        if (target.Equals("none", StringComparison.OrdinalIgnoreCase))
+        {
+            step.Enabled = false;
+        }
+        else if (target.Length > 0)
+        {
+            step.With["repository"] = target;
+        }
+
+        AddWithIfPresent(step, "fetchDepth", azureStep.FetchDepth);
+        AddWithIfPresent(step, "clean", azureStep.Clean);
+        AddWithIfPresent(step, "submodules", azureStep.Submodules);
+        AddWithIfPresent(step, "lfs", azureStep.Lfs);
+        AddWithIfPresent(step, "persistCredentials", azureStep.PersistCredentials);
+        AddWithIfPresent(step, "path", azureStep.Path);
+    }
+
+    /// <summary>
+    /// Maps a task-based Azure step to a PDK Step.
+    /// Extracts task name and version, maps to the appropriate StepType, and converts inputs.
+    /// </summary>
+    private static void MapTaskStep(AzureStep azureStep, Step step, ICollection<string>? warnings)
+    {
+        var taskReference = azureStep.Task!.Trim();
+        if (taskReference.Length == 0)
         {
             step.Type = StepType.Unknown;
             return;
         }
 
         // Extract task name from "TaskName@version" format
-        var atIndex = azureStep.Task.IndexOf('@');
-        var taskName = atIndex > 0 ? azureStep.Task[..atIndex] : azureStep.Task;
-        var taskVersion = atIndex > 0 && atIndex < azureStep.Task.Length - 1
-            ? azureStep.Task[(atIndex + 1)..]
+        var atIndex = taskReference.IndexOf('@');
+        var taskName = atIndex > 0 ? taskReference[..atIndex] : taskReference;
+        var taskVersion = atIndex > 0 && atIndex < taskReference.Length - 1
+            ? taskReference[(atIndex + 1)..]
             : null;
 
-        // Map to StepType
+        step.ActionReference = taskReference;
         step.Type = MapTaskToStepType(taskName);
 
-        // Convert and store inputs
+        // Convert and store inputs (raw)
         step.With = ConvertInputs(azureStep.Inputs);
 
         // Store task metadata for debugging and reference
@@ -135,63 +189,110 @@ public static class AzureStepMapper
                 HandleCmdLineTask(azureStep, step);
                 break;
 
+            case "npm":
+                HandleNpmTask(azureStep, step);
+                break;
+
             case "publishbuildartifacts":
+                HandlePublishBuildArtifactsTask(azureStep, step);
+                break;
+
             case "publishpipelineartifact":
-                HandlePublishArtifactTask(azureStep, step);
+                HandlePublishPipelineArtifactTask(azureStep, step);
                 break;
 
             case "downloadbuildartifacts":
+                HandleDownloadBuildArtifactsTask(azureStep, step);
+                break;
+
             case "downloadpipelineartifact":
-                HandleDownloadArtifactTask(azureStep, step);
+                HandleDownloadPipelineArtifactTask(azureStep, step);
+                break;
+
+            default:
+                if (step.Type == StepType.Unknown)
+                {
+                    warnings?.Add($"Task '{taskReference}' (step '{step.Name}') is not supported locally and will be skipped.");
+                }
+
                 break;
         }
     }
 
     /// <summary>
-    /// Maps a script-based Azure step (bash:, pwsh:, script:) to a PDK Step.
-    /// Determines the shell type and extracts the script content.
+    /// Maps a script shortcut (bash:, pwsh:, powershell:, script:) to a PDK Step.
     /// </summary>
-    /// <param name="azureStep">The Azure step with a script definition.</param>
-    /// <param name="step">The PDK step to populate.</param>
     private static void MapScriptStep(AzureStep azureStep, Step step)
     {
-        var scriptContent = azureStep.GetScriptContent();
-
-        if (string.IsNullOrEmpty(scriptContent))
-        {
-            step.Type = StepType.Unknown;
-            return;
-        }
-
         // Determine step type and shell based on script format
-        if (!string.IsNullOrEmpty(azureStep.Bash))
+        if (azureStep.Bash is not null)
         {
-            step.Type = StepType.Bash;
+            step.Type = StepType.Script;
             step.Shell = "bash";
         }
-        else if (!string.IsNullOrEmpty(azureStep.Pwsh))
+        else if (azureStep.Pwsh is not null)
         {
             step.Type = StepType.PowerShell;
             step.Shell = "pwsh";
         }
-        else if (!string.IsNullOrEmpty(azureStep.PowerShell))
+        else if (azureStep.PowerShell is not null)
         {
             step.Type = StepType.PowerShell;
             step.Shell = "powershell";
         }
-        else if (!string.IsNullOrEmpty(azureStep.Script))
-        {
-            step.Type = StepType.Script;
-            step.Shell = "bash"; // Azure uses platform default, we'll use bash as common default
-        }
         else
         {
+            // 'script:' uses the platform default shell; bash is the common default for Linux runners
             step.Type = StepType.Script;
             step.Shell = "bash";
         }
 
-        // Convert variable syntax in script content
-        step.Script = ConvertVariableSyntax(scriptContent);
+        step.Script = azureStep.GetScriptContent();
+    }
+
+    /// <summary>
+    /// Maps the <c>- publish: &lt;path&gt;</c> shortcut (equivalent to PublishPipelineArtifact@1).
+    /// </summary>
+    private static void MapPublishShortcut(AzureStep azureStep, Step step)
+    {
+        step.Type = StepType.UploadArtifact;
+
+        var name = string.IsNullOrWhiteSpace(azureStep.Artifact) ? DefaultArtifactName : azureStep.Artifact;
+        var path = string.IsNullOrWhiteSpace(azureStep.Publish) ? DefaultPublishPipelineArtifactPath : azureStep.Publish;
+
+        step.With["artifact"] = name;
+        step.With["targetPath"] = path;
+        step.Artifact = CreateUploadDefinition(name, path);
+    }
+
+    /// <summary>
+    /// Maps the <c>- download: current|none|&lt;alias&gt;</c> shortcut (equivalent to DownloadPipelineArtifact@2).
+    /// </summary>
+    private static void MapDownloadShortcut(AzureStep azureStep, Step step)
+    {
+        step.Type = StepType.DownloadArtifact;
+
+        var source = azureStep.Download!.Trim();
+        if (source.Equals("none", StringComparison.OrdinalIgnoreCase))
+        {
+            step.Enabled = false;
+            return;
+        }
+
+        var name = azureStep.Artifact ?? string.Empty;
+        var path = string.IsNullOrWhiteSpace(azureStep.Path) ? DefaultDownloadPath : azureStep.Path;
+
+        step.With["source"] = source;
+        step.With["artifact"] = name;
+        step.With["path"] = path;
+
+        var patterns = YamlValues.ToStringList(azureStep.Patterns);
+        if (patterns.Count > 0)
+        {
+            step.With["patterns"] = string.Join("\n", patterns);
+        }
+
+        step.Artifact = CreateDownloadDefinition(name, path);
     }
 
     /// <summary>
@@ -201,12 +302,13 @@ public static class AzureStepMapper
     /// <returns>The corresponding StepType enum value.</returns>
     private static StepType MapTaskToStepType(string taskName)
     {
-        return taskName.ToLowerInvariant() switch
+        var key = taskName.ToLowerInvariant();
+
+        return key switch
         {
             "dotnetcorecli" => StepType.Dotnet,
-            "usedotnet" => StepType.Dotnet,
             "powershell" => StepType.PowerShell,
-            "bash" => StepType.Bash,
+            "bash" => StepType.Script,
             "docker" => StepType.Docker,
             "cmdline" => StepType.Script,
             "publishbuildartifacts" => StepType.UploadArtifact,
@@ -217,85 +319,87 @@ public static class AzureStepMapper
             "npm" => StepType.Npm,
             "maven" => StepType.Maven,
             "gradle" => StepType.Gradle,
+            _ when SetupTasks.Contains(key) => StepType.Setup,
             _ => StepType.Unknown
         };
     }
 
     /// <summary>
-    /// Generates a step name based on the Azure step's displayName or task identifier.
-    /// Falls back to a numbered step name if neither is available.
+    /// Generates a step name based on the Azure step's displayName or its kind.
+    /// Falls back to a numbered step name if nothing better is available.
     /// </summary>
     /// <param name="azureStep">The Azure step.</param>
     /// <param name="stepIndex">The zero-based index of the step.</param>
     /// <returns>A name for the step.</returns>
     private static string GenerateStepName(AzureStep azureStep, int stepIndex)
     {
-        // Use displayName if provided
+        // Use displayName if provided (raw; $( ) macros are resolved at run time)
         if (!string.IsNullOrWhiteSpace(azureStep.DisplayName))
         {
-            return ConvertVariableSyntax(azureStep.DisplayName);
+            return azureStep.DisplayName;
         }
 
         // Use task name if available
-        if (!string.IsNullOrEmpty(azureStep.Task))
+        if (!string.IsNullOrWhiteSpace(azureStep.Task))
         {
-            var atIndex = azureStep.Task.IndexOf('@');
-            var taskName = atIndex > 0 ? azureStep.Task[..atIndex] : azureStep.Task;
-            return taskName;
+            var task = azureStep.Task.Trim();
+            var atIndex = task.IndexOf('@');
+            return atIndex > 0 ? task[..atIndex] : task;
         }
 
-        // Use script type as name
-        var stepType = azureStep.GetStepType();
-        if (stepType != "task" && stepType != "unknown")
+        switch (azureStep.GetStepType())
         {
-            return $"{char.ToUpper(stepType[0])}{stepType[1..]} script";
+            case "checkout":
+                return azureStep.Checkout!.Trim().Equals("none", StringComparison.OrdinalIgnoreCase)
+                    ? "Checkout (none)"
+                    : "Checkout";
+
+            case "publish":
+                return $"Publish {(string.IsNullOrWhiteSpace(azureStep.Artifact) ? DefaultArtifactName : azureStep.Artifact)}";
+
+            case "download":
+                return azureStep.Download!.Trim().Equals("none", StringComparison.OrdinalIgnoreCase)
+                    ? "Download (none)"
+                    : $"Download {(string.IsNullOrWhiteSpace(azureStep.Artifact) ? "artifacts" : azureStep.Artifact)}";
+
+            case "bash":
+            case "pwsh":
+            case "powershell":
+            case "script":
+                var kind = azureStep.GetStepType();
+                return $"{char.ToUpperInvariant(kind[0])}{kind[1..]} script";
+
+            default:
+                return $"Step {stepIndex + 1}";
         }
-
-        // Fallback to numbered step
-        return $"Step {stepIndex + 1}";
-    }
-
-    /// <summary>
-    /// Converts Azure Pipeline variable syntax $(variableName) to PDK common syntax ${variableName}.
-    /// Applies regex-based transformation to all variable references in the input string.
-    /// </summary>
-    /// <param name="input">The input string that may contain Azure variable references.</param>
-    /// <returns>The string with converted variable syntax, or empty string if input is null.</returns>
-    private static string ConvertVariableSyntax(string? input)
-    {
-        if (string.IsNullOrEmpty(input))
-            return input ?? string.Empty;
-
-        // Replace $(variable) with ${variable}
-        // This regex matches $( followed by one or more non-) characters, followed by )
-        return Regex.Replace(input, @"\$\(([^)]+)\)", @"${$1}");
     }
 
     /// <summary>
     /// Converts Azure task inputs (Dictionary&lt;string, object&gt;) to PDK step inputs (Dictionary&lt;string, string&gt;).
-    /// Applies variable syntax conversion to all input values.
+    /// Values are kept raw.
     /// </summary>
     /// <param name="inputs">The Azure task inputs.</param>
     /// <returns>A dictionary of string key-value pairs suitable for PDK Step.With property.</returns>
     private static Dictionary<string, string> ConvertInputs(Dictionary<string, object>? inputs)
     {
         if (inputs == null || inputs.Count == 0)
+        {
             return new Dictionary<string, string>();
+        }
 
         return inputs.ToDictionary(
             kvp => kvp.Key,
-            kvp => ConvertVariableSyntax(kvp.Value?.ToString() ?? string.Empty)
-        );
+            kvp => YamlValues.AsString(kvp.Value) ?? string.Empty);
     }
 
     /// <summary>
     /// Merges environment variables from multiple levels (pipeline, job, step).
-    /// Later levels override earlier levels (pipeline &lt; job &lt; step).
+    /// Later levels override earlier levels (pipeline &lt; job &lt; step). Values are kept raw.
     /// </summary>
     /// <param name="pipelineEnv">Pipeline-level environment variables.</param>
     /// <param name="jobEnv">Job-level environment variables.</param>
     /// <param name="stepEnv">Step-level environment variables.</param>
-    /// <returns>A merged dictionary of environment variables with variable syntax converted.</returns>
+    /// <returns>A merged dictionary of environment variables.</returns>
     public static Dictionary<string, string> MergeEnvironmentVariables(
         Dictionary<string, string>? pipelineEnv,
         Dictionary<string, string>? jobEnv,
@@ -304,27 +408,16 @@ public static class AzureStepMapper
         var result = new Dictionary<string, string>();
 
         // Apply in order: pipeline -> job -> step (later overrides earlier)
-        if (pipelineEnv != null)
+        foreach (var level in new[] { pipelineEnv, jobEnv, stepEnv })
         {
-            foreach (var kvp in pipelineEnv)
+            if (level is null)
             {
-                result[kvp.Key] = ConvertVariableSyntax(kvp.Value);
+                continue;
             }
-        }
 
-        if (jobEnv != null)
-        {
-            foreach (var kvp in jobEnv)
+            foreach (var kvp in level)
             {
-                result[kvp.Key] = ConvertVariableSyntax(kvp.Value);
-            }
-        }
-
-        if (stepEnv != null)
-        {
-            foreach (var kvp in stepEnv)
-            {
-                result[kvp.Key] = ConvertVariableSyntax(kvp.Value);
+                result[kvp.Key] = kvp.Value ?? string.Empty;
             }
         }
 
@@ -332,226 +425,331 @@ public static class AzureStepMapper
     }
 
     /// <summary>
-    /// Parses job dependencies which can be a string (single dependency) or list (multiple dependencies).
+    /// Parses job/stage dependencies which can be a string (single dependency) or a list (multiple dependencies).
     /// </summary>
     /// <param name="dependsOn">The dependsOn property from an Azure job or stage.</param>
     /// <returns>A list of dependency identifiers.</returns>
-    public static List<string> ParseJobDependencies(object? dependsOn)
-    {
-        if (dependsOn == null)
-            return new List<string>();
-
-        if (dependsOn is string singleDep)
-            return new List<string> { singleDep };
-
-        if (dependsOn is List<object> listDeps)
-            return listDeps.Select(d => d.ToString() ?? string.Empty)
-                          .Where(d => !string.IsNullOrEmpty(d))
-                          .ToList();
-
-        // Try to handle IEnumerable<object>
-        if (dependsOn is System.Collections.IEnumerable enumerable)
-        {
-            return enumerable.Cast<object>()
-                           .Select(d => d.ToString() ?? string.Empty)
-                           .Where(d => !string.IsNullOrEmpty(d))
-                           .ToList();
-        }
-
-        return new List<string>();
-    }
+    public static List<string> ParseJobDependencies(object? dependsOn) => YamlValues.ToStringList(dependsOn);
 
     // Task-specific handlers for extracting special properties
 
     /// <summary>
-    /// Handles DotNetCoreCLI@2 task-specific processing.
-    /// Extracts command, projects, and arguments inputs.
+    /// Handles DotNetCoreCLI@2: maps <c>workingDirectory</c>, generates a name from <c>command</c>, and turns
+    /// <c>command: custom</c> into a script step running <c>dotnet &lt;custom&gt; &lt;arguments&gt;</c>.
     /// </summary>
     private static void HandleDotNetCoreTask(AzureStep azureStep, Step step)
     {
-        if (azureStep.Inputs == null)
+        var command = GetInput(azureStep, "command");
+        ApplyWorkingDirectory(azureStep, step, "workingDirectory");
+
+        if (command is not null && command.Equals("custom", StringComparison.OrdinalIgnoreCase))
+        {
+            var custom = GetInput(azureStep, "custom") ?? string.Empty;
+            var arguments = GetInput(azureStep, "arguments");
+            var commandLine = $"dotnet {custom}".TrimEnd();
+
+            step.Type = StepType.Script;
+            step.Shell = "bash";
+            step.Script = string.IsNullOrWhiteSpace(arguments) ? commandLine : $"{commandLine} {arguments}";
+
+            if (string.IsNullOrWhiteSpace(azureStep.DisplayName))
+            {
+                step.Name = commandLine;
+            }
+
             return;
+        }
 
-        // Common inputs: command, projects, arguments
-        // These are already in step.With from ConvertInputs, but we can add additional processing if needed
-
-        // If command input exists, we might want to include it in the step name for clarity
-        if (azureStep.Inputs.TryGetValue("command", out var command) &&
-            string.IsNullOrWhiteSpace(azureStep.DisplayName))
+        if (command is not null && string.IsNullOrWhiteSpace(azureStep.DisplayName))
         {
             step.Name = $"dotnet {command}";
         }
     }
 
     /// <summary>
-    /// Handles PowerShell@2 task-specific processing.
-    /// Extracts script content based on targetType (inline or filePath).
+    /// Handles PowerShell@2: inline scripts run as-is, file scripts become <c>pwsh -File &lt;filePath&gt; &lt;arguments&gt;</c>.
     /// </summary>
     private static void HandlePowerShellTask(AzureStep azureStep, Step step)
     {
-        if (azureStep.Inputs == null)
-            return;
-
         step.Shell = "pwsh";
-
-        // Check targetType to determine if script is inline or file-based
-        if (azureStep.Inputs.TryGetValue("targetType", out var targetType))
-        {
-            var targetTypeStr = targetType?.ToString()?.ToLowerInvariant();
-
-            if (targetTypeStr == "inline" && azureStep.Inputs.TryGetValue("script", out var scriptContent))
-            {
-                step.Script = ConvertVariableSyntax(scriptContent?.ToString());
-            }
-            else if (targetTypeStr == "filepath" && azureStep.Inputs.TryGetValue("filePath", out var filePath))
-            {
-                // For file-based scripts, we store the path and create a script that executes it
-                var filePathStr = ConvertVariableSyntax(filePath?.ToString());
-                step.Script = $"pwsh -File \"{filePathStr}\"";
-                step.With["scriptFile"] = filePathStr;
-            }
-        }
+        ApplyWorkingDirectory(azureStep, step, "workingDirectory");
+        MapScriptTaskContent(azureStep, step, filePath => $"pwsh -File \"{filePath}\"");
     }
 
     /// <summary>
-    /// Handles Bash@3 task-specific processing.
-    /// Extracts script content based on targetType (inline or filePath).
+    /// Handles Bash@3: inline scripts run as-is, file scripts become <c>bash &lt;filePath&gt; &lt;arguments&gt;</c>.
     /// </summary>
     private static void HandleBashTask(AzureStep azureStep, Step step)
     {
-        if (azureStep.Inputs == null)
-            return;
-
         step.Shell = "bash";
+        ApplyWorkingDirectory(azureStep, step, "workingDirectory");
+        MapScriptTaskContent(azureStep, step, filePath => $"bash \"{filePath}\"");
+    }
 
-        // Check targetType to determine if script is inline or file-based
-        if (azureStep.Inputs.TryGetValue("targetType", out var targetType))
+    /// <summary>
+    /// Resolves the script content of Bash@3 / PowerShell@2 from <c>targetType</c> (default: filePath).
+    /// </summary>
+    private static void MapScriptTaskContent(AzureStep azureStep, Step step, Func<string, string> fileCommand)
+    {
+        var script = GetInput(azureStep, "script");
+        var filePath = GetInput(azureStep, "filePath");
+        var arguments = GetInput(azureStep, "arguments");
+
+        var targetType = GetInput(azureStep, "targetType")?.ToLowerInvariant();
+        targetType ??= !string.IsNullOrEmpty(script) && string.IsNullOrEmpty(filePath) ? "inline" : "filepath";
+
+        if (targetType == "inline")
         {
-            var targetTypeStr = targetType?.ToString()?.ToLowerInvariant();
+            step.Script = script;
+            return;
+        }
 
-            if (targetTypeStr == "inline" && azureStep.Inputs.TryGetValue("script", out var scriptContent))
-            {
-                step.Script = ConvertVariableSyntax(scriptContent?.ToString());
-            }
-            else if (targetTypeStr == "filepath" && azureStep.Inputs.TryGetValue("filePath", out var filePath))
-            {
-                // For file-based scripts, we store the path and create a script that executes it
-                var filePathStr = ConvertVariableSyntax(filePath?.ToString());
-                step.Script = $"bash \"{filePathStr}\"";
-                step.With["scriptFile"] = filePathStr;
-            }
+        if (!string.IsNullOrWhiteSpace(filePath))
+        {
+            var commandLine = fileCommand(filePath);
+            step.Script = string.IsNullOrWhiteSpace(arguments) ? commandLine : $"{commandLine} {arguments}";
+            step.With["scriptFile"] = filePath;
         }
     }
 
     /// <summary>
-    /// Handles Docker@2 task-specific processing.
-    /// Extracts command, Dockerfile, and tags inputs.
+    /// Handles Docker@2: default command is <c>buildAndPush</c>; maps <c>buildContext</c> to <c>context</c> and keeps
+    /// <c>repository</c>, <c>containerRegistry</c>, <c>tags</c> (newline list) and <c>Dockerfile</c> raw.
     /// </summary>
     private static void HandleDockerTask(AzureStep azureStep, Step step)
     {
-        if (azureStep.Inputs == null)
-            return;
+        var command = GetInput(azureStep, "command") ?? "buildAndPush";
+        step.With["command"] = command;
 
-        // Docker task inputs are already in step.With from ConvertInputs
-        // We might want to construct a docker command for the script property
-
-        if (azureStep.Inputs.TryGetValue("command", out var command))
+        var context = GetInput(azureStep, "buildContext");
+        if (context is not null)
         {
-            var commandStr = command?.ToString();
+            step.With["context"] = context;
+        }
 
-            // Optionally construct a docker command string for Script property
-            // This is useful for execution engines that prefer script-based execution
-            if (!string.IsNullOrEmpty(commandStr))
+        var dockerfile = GetInput(azureStep, "Dockerfile");
+        var repository = GetInput(azureStep, "repository");
+        var tags = GetInput(azureStep, "tags");
+
+        // Construct an informational docker command line for engines that prefer script-based execution
+        var lowerCommand = command.ToLowerInvariant();
+        if (lowerCommand is "build" or "buildandpush")
+        {
+            var parts = new List<string> { "docker", "build" };
+
+            if (!string.IsNullOrWhiteSpace(dockerfile))
             {
-                var dockerCmd = $"docker {commandStr}";
-
-                if (commandStr.ToLowerInvariant() == "build" &&
-                    azureStep.Inputs.TryGetValue("Dockerfile", out var dockerfile))
-                {
-                    dockerCmd += $" -f {ConvertVariableSyntax(dockerfile?.ToString())}";
-                }
-
-                if (azureStep.Inputs.TryGetValue("tags", out var tags))
-                {
-                    var tagsStr = ConvertVariableSyntax(tags?.ToString());
-                    if (!string.IsNullOrEmpty(tagsStr))
-                    {
-                        dockerCmd += $" -t {tagsStr}";
-                    }
-                }
-
-                step.Script = dockerCmd;
+                parts.Add($"-f {dockerfile}");
             }
+
+            foreach (var tag in SplitLines(tags))
+            {
+                parts.Add($"-t {FormatImageReference(repository, tag)}");
+            }
+
+            parts.Add(string.IsNullOrWhiteSpace(context) ? "." : context);
+            step.Script = string.Join(" ", parts);
+        }
+        else
+        {
+            step.Script = $"docker {command}";
         }
     }
 
     /// <summary>
-    /// Handles CmdLine@2 task-specific processing.
-    /// Extracts script input and sets it as the step script.
+    /// Handles CmdLine@2: the <c>script</c> input is the step script.
     /// </summary>
     private static void HandleCmdLineTask(AzureStep azureStep, Step step)
     {
-        if (azureStep.Inputs == null)
-            return;
+        step.Shell = "bash";
+        ApplyWorkingDirectory(azureStep, step, "workingDirectory");
+        step.Script = GetInput(azureStep, "script");
+    }
 
-        // CmdLine task has a 'script' input that contains the command to execute
-        if (azureStep.Inputs.TryGetValue("script", out var scriptContent))
+    /// <summary>
+    /// Handles Npm@1: maps <c>workingDir</c> and translates <c>customCommand</c> into the executor's command/script
+    /// inputs (or a plain script step for commands the npm executor does not model).
+    /// </summary>
+    private static void HandleNpmTask(AzureStep azureStep, Step step)
+    {
+        ApplyWorkingDirectory(azureStep, step, "workingDir");
+
+        var command = GetInput(azureStep, "command") ?? "install";
+        if (!command.Equals("custom", StringComparison.OrdinalIgnoreCase))
         {
-            step.Script = ConvertVariableSyntax(scriptContent?.ToString());
+            step.With["command"] = command;
+            return;
+        }
+
+        var custom = (GetInput(azureStep, "customCommand") ?? string.Empty).Trim();
+        var tokens = custom.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+
+        if (tokens.Length == 0)
+        {
+            step.With["command"] = "install";
+            return;
+        }
+
+        var verb = tokens[0].ToLowerInvariant();
+        switch (verb)
+        {
+            case "install":
+            case "ci":
+            case "test":
+            case "build":
+                step.With["command"] = verb;
+                SetArguments(step, tokens.Skip(1));
+                return;
+
+            case "run" when tokens.Length > 1:
+                step.With["command"] = "run";
+                step.With["script"] = tokens[1];
+                SetArguments(step, tokens.Skip(2));
+                return;
+
+            default:
+                step.Type = StepType.Script;
+                step.Shell = "bash";
+                step.Script = $"npm {custom}";
+                step.With["command"] = "custom";
+                return;
         }
     }
 
     /// <summary>
-    /// Handles PublishBuildArtifacts@1 and PublishPipelineArtifact@1 task-specific processing.
-    /// Extracts artifact name and path, creates an ArtifactDefinition for upload.
+    /// Handles PublishBuildArtifacts@1 (<c>PathtoPublish</c>, <c>ArtifactName</c>).
     /// </summary>
-    private static void HandlePublishArtifactTask(AzureStep azureStep, Step step)
+    private static void HandlePublishBuildArtifactsTask(AzureStep azureStep, Step step)
     {
-        if (azureStep.Inputs == null)
-            return;
+        var path = GetInput(azureStep, "PathtoPublish") ?? DefaultPublishBuildArtifactsPath;
+        var name = GetInput(azureStep, "ArtifactName") ?? DefaultArtifactName;
 
-        // Support both old (PathtoPublish) and new (targetPath) parameter names
-        var path = azureStep.Inputs.GetValueOrDefault("PathtoPublish")?.ToString()
-                ?? azureStep.Inputs.GetValueOrDefault("targetPath")?.ToString()
-                ?? ".";
-
-        var name = azureStep.Inputs.GetValueOrDefault("ArtifactName")?.ToString()
-                ?? azureStep.Inputs.GetValueOrDefault("artifactName")?.ToString()
-                ?? "drop";
-
-        step.Artifact = new ArtifactDefinition
-        {
-            Name = name,
-            Operation = ArtifactOperation.Upload,
-            Patterns = new[] { ConvertVariableSyntax(path) },
-            Options = new ArtifactOptions
-            {
-                Compression = CompressionType.Zip  // Azure default
-            }
-        };
+        step.Artifact = CreateUploadDefinition(name, path);
     }
 
     /// <summary>
-    /// Handles DownloadBuildArtifacts@0 and DownloadPipelineArtifact@2 task-specific processing.
-    /// Extracts artifact name and target path, creates an ArtifactDefinition for download.
+    /// Handles PublishPipelineArtifact@1 (<c>artifact</c> then <c>artifactName</c>; <c>targetPath</c>).
     /// </summary>
-    private static void HandleDownloadArtifactTask(AzureStep azureStep, Step step)
+    private static void HandlePublishPipelineArtifactTask(AzureStep azureStep, Step step)
     {
-        if (azureStep.Inputs == null)
-            return;
+        var name = GetInput(azureStep, "artifact") ?? GetInput(azureStep, "artifactName") ?? DefaultArtifactName;
+        var path = GetInput(azureStep, "targetPath") ?? GetInput(azureStep, "path") ?? DefaultPublishPipelineArtifactPath;
 
-        var name = azureStep.Inputs.GetValueOrDefault("artifactName")?.ToString() ?? "";
-        var path = azureStep.Inputs.GetValueOrDefault("targetPath")?.ToString()
-                ?? azureStep.Inputs.GetValueOrDefault("downloadPath")?.ToString()
-                ?? "./";
-
-        step.Artifact = new ArtifactDefinition
-        {
-            Name = name,
-            Operation = ArtifactOperation.Download,
-            Patterns = Array.Empty<string>(),
-            TargetPath = ConvertVariableSyntax(path),
-            Options = ArtifactOptions.Default
-        };
+        step.Artifact = CreateUploadDefinition(name, path);
     }
+
+    /// <summary>
+    /// Handles DownloadBuildArtifacts@0 (<c>artifactName</c>, <c>downloadPath</c>).
+    /// </summary>
+    private static void HandleDownloadBuildArtifactsTask(AzureStep azureStep, Step step)
+    {
+        var name = GetInput(azureStep, "artifactName") ?? string.Empty;
+        var path = GetInput(azureStep, "downloadPath") ?? GetInput(azureStep, "targetPath") ?? DefaultDownloadPath;
+
+        // DownloadBuildArtifacts@0 always creates <downloadPath>/<artifactName>/ (unlike DownloadPipelineArtifact@2)
+        step.Artifact = CreateDownloadDefinition(name, path) with { DownloadIntoNamedSubdirectory = true };
+    }
+
+    /// <summary>
+    /// Handles DownloadPipelineArtifact@2 (<c>artifact</c>/<c>artifactName</c>; <c>path</c>/<c>downloadPath</c>/<c>targetPath</c>).
+    /// </summary>
+    private static void HandleDownloadPipelineArtifactTask(AzureStep azureStep, Step step)
+    {
+        var name = GetInput(azureStep, "artifact") ?? GetInput(azureStep, "artifactName") ?? string.Empty;
+        var path = GetInput(azureStep, "path")
+                   ?? GetInput(azureStep, "downloadPath")
+                   ?? GetInput(azureStep, "targetPath")
+                   ?? DefaultDownloadPath;
+
+        step.Artifact = CreateDownloadDefinition(name, path);
+    }
+
+    private static ArtifactDefinition CreateUploadDefinition(string name, string path) => new()
+    {
+        Name = name,
+        Operation = ArtifactOperation.Upload,
+        Patterns = new[] { path },
+        Options = new ArtifactOptions
+        {
+            Compression = CompressionType.Zip // Azure default
+        }
+    };
+
+    private static ArtifactDefinition CreateDownloadDefinition(string name, string path) => new()
+    {
+        Name = name,
+        Operation = ArtifactOperation.Download,
+        Patterns = Array.Empty<string>(),
+        TargetPath = path,
+        Options = ArtifactOptions.Default
+    };
+
+    /// <summary>
+    /// Reads a task input by name (exact, then case-insensitive). Empty values are treated as absent.
+    /// </summary>
+    private static string? GetInput(AzureStep azureStep, string name)
+    {
+        var inputs = azureStep.Inputs;
+        if (inputs is null || inputs.Count == 0)
+        {
+            return null;
+        }
+
+        if (!inputs.TryGetValue(name, out var value))
+        {
+            var match = inputs.FirstOrDefault(kvp => kvp.Key.Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (match.Key is null)
+            {
+                return null;
+            }
+
+            value = match.Value;
+        }
+
+        var text = YamlValues.AsString(value);
+        return string.IsNullOrWhiteSpace(text) ? null : text;
+    }
+
+    private static void ApplyWorkingDirectory(AzureStep azureStep, Step step, string inputName)
+    {
+        var workingDirectory = GetInput(azureStep, inputName);
+        if (workingDirectory is not null)
+        {
+            step.WorkingDirectory = workingDirectory;
+        }
+    }
+
+    private static void SetArguments(Step step, IEnumerable<string> tokens)
+    {
+        var arguments = string.Join(' ', tokens);
+        if (arguments.Length > 0)
+        {
+            step.With["arguments"] = arguments;
+        }
+    }
+
+    private static void AddWithIfPresent(Step step, string key, object? value)
+    {
+        var text = YamlValues.AsString(value);
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            step.With[key] = text;
+        }
+    }
+
+    private static IEnumerable<string> SplitLines(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return Array.Empty<string>();
+        }
+
+        return value
+            .Split('\n')
+            .Select(line => line.Trim())
+            .Where(line => line.Length > 0);
+    }
+
+    private static string FormatImageReference(string? repository, string tag) =>
+        string.IsNullOrWhiteSpace(repository) ? tag : $"{repository}:{tag}";
 }

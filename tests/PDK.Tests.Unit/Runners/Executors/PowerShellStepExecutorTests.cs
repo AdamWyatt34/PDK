@@ -4,6 +4,7 @@ using FluentAssertions;
 using Moq;
 using PDK.Core.Models;
 using PDK.Runners;
+using PDK.Runners.Models;
 using PDK.Runners.StepExecutors;
 
 /// <summary>
@@ -11,290 +12,116 @@ using PDK.Runners.StepExecutors;
 /// </summary>
 public class PowerShellStepExecutorTests : RunnerTestBase
 {
-    #region Property Tests
+    private readonly PowerShellStepExecutor _executor = new();
+    private readonly List<ContainerExecRequest> _requests = new();
+
+    private void SetupExec(Func<ContainerExecRequest, bool>? match, ExecutionResult result)
+    {
+        MockContainerManager.SetupExec(match)
+            .Callback<ContainerExecRequest, CancellationToken>((r, _) => _requests.Add(r))
+            .ReturnsAsync(result);
+    }
+
+    private Step CreatePowerShellStep(string script, string shell = "pwsh")
+    {
+        var step = CreateTestStep(StepType.PowerShell, "Run PowerShell");
+        step.Script = script;
+        step.Shell = shell;
+        return step;
+    }
+
+    private ContainerExecRequest Run => _requests.Single(r => r.IsScriptRun());
 
     [Fact]
     public void StepType_ReturnsPwsh()
     {
-        // Arrange
-        var executor = new PowerShellStepExecutor();
-
-        // Act
-        var result = executor.StepType;
-
-        // Assert
-        result.Should().Be("pwsh");
+        _executor.StepType.Should().Be("pwsh");
     }
-
-    #endregion
-
-    #region ExecuteAsync - Success Scenarios
 
     [Fact]
     public async Task ExecuteAsync_PwshScript_ExecutesSuccessfully()
     {
-        // Arrange
-        var step = CreateTestStep(StepType.PowerShell, "Run PowerShell script");
-        step.Script = "Write-Host 'Hello World'";
-        step.Shell = "pwsh";
+        SetupExec(null, RunnerMockExtensions.Ok());
+        SetupExec(r => r.IsProbe(), RunnerMockExtensions.Ok("/usr/bin/pwsh\n"));
 
-        MockContainerManager
-            .Setup(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult());
+        var result = await _executor.ExecuteAsync(CreatePowerShellStep("Write-Host 'Hello World'"), CreateTestContext());
 
-        var executor = new PowerShellStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Should().NotBeNull();
         result.Success.Should().BeTrue();
-        result.ExitCode.Should().Be(0);
-
-        MockContainerManager.Verify(
-            x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("pwsh")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()),
-            Times.AtLeastOnce);
+        _requests.Single(r => r.IsProbe()).Command.Should().Be("command -v pwsh");
+        Run.Arguments![0].Should().Be("/usr/bin/pwsh");
+        Run.Arguments.Should().Contain("-Command");
+        Run.Arguments.Should().NotContain("-ExecutionPolicy");
+        _requests.Single(r => r.IsScriptWrite()).Command.Should().Contain("$ErrorActionPreference = 'stop'");
     }
 
     [Fact]
-    public async Task ExecuteAsync_PowerShellScript_ExecutesSuccessfully()
+    public async Task ExecuteAsync_WindowsPowerShellServedByPwsh_UsesPwshRules()
     {
-        // Arrange
-        var step = CreateTestStep(StepType.PowerShell, "Run Windows PowerShell");
-        step.Script = "Write-Host 'Test'";
-        step.Shell = "powershell";
+        SetupExec(null, RunnerMockExtensions.Ok());
+        SetupExec(r => r.IsProbe(), RunnerMockExtensions.Ok("/usr/bin/pwsh\n"));
 
-        MockContainerManager
-            .Setup(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult());
+        var result = await _executor.ExecuteAsync(CreatePowerShellStep("Write-Host 'Test'", "powershell"), CreateTestContext());
 
-        var executor = new PowerShellStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
         result.Success.Should().BeTrue();
-
-        MockContainerManager.Verify(
-            x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("powershell") || cmd.Contains("which")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()),
-            Times.AtLeastOnce);
+        _requests.Single(r => r.IsProbe()).Command.Should().Be("command -v powershell || command -v pwsh");
+        Run.Arguments.Should().NotContain("-ExecutionPolicy");
     }
 
     [Fact]
-    public async Task ExecuteAsync_MultiLineScript_ExecutesCorrectly()
+    public async Task ExecuteAsync_WindowsPowerShellAvailable_UsesExecutionPolicy()
     {
-        // Arrange
-        var step = CreateTestStep(StepType.PowerShell, "Multi-line PowerShell");
-        step.Script = @"Write-Host 'Line 1'
-$config = 'Release'
-Write-Host ""Building in $config mode""";
-        step.Shell = "pwsh";
+        SetupExec(null, RunnerMockExtensions.Ok());
+        SetupExec(r => r.IsProbe(), RunnerMockExtensions.Ok("/usr/bin/powershell\n"));
 
-        MockContainerManager
-            .Setup(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult());
+        await _executor.ExecuteAsync(CreatePowerShellStep("Write-Host 'Test'", "powershell"), CreateTestContext());
 
-        var executor = new PowerShellStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Availability Check
-
-    [Fact]
-    public async Task ExecuteAsync_PowerShellNotAvailable_ThrowsContainerException()
-    {
-        // Arrange
-        var step = CreateTestStep(StepType.PowerShell, "PowerShell not available");
-        step.Script = "Write-Host 'Test'";
-        step.Shell = "pwsh";
-
-        MockContainerManager
-            .Setup(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("which pwsh")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateFailureResult()); // which pwsh fails
-
-        var executor = new PowerShellStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        Func<Task> act = async () => await executor.ExecuteAsync(step, context);
-
-        // Assert
-        await act.Should().ThrowAsync<ContainerException>()
-            .WithMessage("*PowerShell*not available*");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Environment and Working Directory
-
-    [Fact]
-    public async Task ExecuteAsync_WithEnvironmentVariables_AccessibleInScript()
-    {
-        // Arrange
-        var step = CreateTestStep(StepType.PowerShell, "PowerShell with env vars");
-        step.Script = "Write-Host $env:TEST_VAR";
-        step.Shell = "pwsh";
-        step.Environment["STEP_VAR"] = "step-value";
-
-        MockContainerManager
-            .Setup(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult());
-
-        var executor = new PowerShellStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
+        Run.Arguments.Should().Contain("-ExecutionPolicy");
     }
 
     [Fact]
-    public async Task ExecuteAsync_WithWorkingDirectory_UsesCorrectPath()
+    public async Task ExecuteAsync_PowerShellNotAvailable_ReturnsFailedResult()
     {
-        // Arrange
-        var step = CreateTestStep(StepType.PowerShell, "PowerShell with working dir");
-        step.Script = "Get-Location";
-        step.Shell = "pwsh";
-        step.WorkingDirectory = "./src";
+        SetupExec(null, RunnerMockExtensions.Ok());
+        SetupExec(r => r.IsProbe(), RunnerMockExtensions.Fail());
 
-        MockContainerManager
-            .Setup(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult());
+        var result = await _executor.ExecuteAsync(CreatePowerShellStep("Write-Host 'Test'"), CreateTestContext());
 
-        var executor = new PowerShellStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Error Scenarios
-
-    [Fact]
-    public async Task ExecuteAsync_EmptyScript_ThrowsArgumentException()
-    {
-        // Arrange
-        var step = CreateTestStep(StepType.PowerShell, "Empty PowerShell script");
-        step.Script = "";
-        step.Shell = "pwsh";
-
-        var executor = new PowerShellStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        Func<Task> act = async () => await executor.ExecuteAsync(step, context);
-
-        // Assert
-        await act.Should().ThrowAsync<ArgumentException>();
+        result.Success.Should().BeFalse();
+        result.ErrorOutput.Should().Contain("pwsh").And.Contain("not available");
+        _requests.Should().NotContain(r => r.IsScriptRun());
     }
 
     [Fact]
-    public async Task ExecuteAsync_BashShell_ThrowsArgumentException()
+    public async Task ExecuteAsync_EmptyScript_ReturnsFailedResult()
     {
-        // Arrange
-        var step = CreateTestStep(StepType.PowerShell, "PowerShell with bash shell");
-        step.Script = "Write-Host 'Test'";
-        step.Shell = "bash";
+        var result = await _executor.ExecuteAsync(CreatePowerShellStep(""), CreateTestContext());
 
-        var executor = new PowerShellStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        Func<Task> act = async () => await executor.ExecuteAsync(step, context);
-
-        // Assert
-        await act.Should().ThrowAsync<ArgumentException>();
+        result.Success.Should().BeFalse();
+        result.ErrorOutput.Should().Contain("empty");
     }
 
     [Fact]
     public async Task ExecuteAsync_ScriptFailure_ReturnsFailureResult()
     {
-        // Arrange
-        var step = CreateTestStep(StepType.PowerShell, "Failing PowerShell script");
-        step.Script = "exit 1";
-        step.Shell = "pwsh";
+        SetupExec(null, RunnerMockExtensions.Ok());
+        SetupExec(r => r.IsProbe(), RunnerMockExtensions.Ok("/usr/bin/pwsh\n"));
+        SetupExec(r => r.IsScriptRun(), RunnerMockExtensions.Fail(1));
 
-        MockContainerManager
-            .SetupSequence(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult()) // which pwsh succeeds
-            .ReturnsAsync(CreateSuccessResult()) // write file succeeds
-            .ReturnsAsync(CreateFailureResult()); // script execution fails
+        var result = await _executor.ExecuteAsync(CreatePowerShellStep("exit 1"), CreateTestContext());
 
-        var executor = new PowerShellStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Should().NotBeNull();
         result.Success.Should().BeFalse();
         result.ExitCode.Should().Be(1);
     }
 
-    #endregion
+    [Fact]
+    public async Task ExecuteAsync_ShellOtherThanPowerShell_StillRunsPwsh()
+    {
+        SetupExec(null, RunnerMockExtensions.Ok());
+        SetupExec(r => r.IsProbe(), RunnerMockExtensions.Ok("/usr/bin/pwsh\n"));
+
+        var result = await _executor.ExecuteAsync(CreatePowerShellStep("Write-Host 'Test'", "bash"), CreateTestContext());
+
+        result.Success.Should().BeTrue();
+        _requests.Single(r => r.IsProbe()).Command.Should().Be("command -v pwsh");
+    }
 }

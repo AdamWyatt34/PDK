@@ -57,7 +57,7 @@ public class AzureArtifactParsingTests
         result.Artifact!.Name.Should().Be("drop");
         result.Artifact.Operation.Should().Be(ArtifactOperation.Upload);
         result.Artifact.Patterns.Should().HaveCount(1);
-        result.Artifact.Patterns[0].Should().Be("${Build.ArtifactStagingDirectory}"); // Variable syntax converted
+        result.Artifact.Patterns[0].Should().Be("$(Build.ArtifactStagingDirectory)"); // Variable syntax kept raw
     }
 
     [Fact]
@@ -98,7 +98,7 @@ public class AzureArtifactParsingTests
         // Assert
         result.Artifact.Should().NotBeNull();
         result.Artifact!.Name.Should().Be("drop"); // Default name
-        result.Artifact.Patterns[0].Should().Be("."); // Default path
+        result.Artifact.Patterns[0].Should().Be("$(Build.ArtifactStagingDirectory)"); // Default PathtoPublish (kept raw)
     }
 
     #endregion
@@ -150,7 +150,7 @@ public class AzureArtifactParsingTests
         result.Artifact.Should().NotBeNull();
         result.Artifact!.Name.Should().Be("test-results");
         result.Artifact.Operation.Should().Be(ArtifactOperation.Upload);
-        result.Artifact.Patterns[0].Should().Be("${System.ArtifactsDirectory}");
+        result.Artifact.Patterns[0].Should().Be("$(System.ArtifactsDirectory)");
     }
 
     [Fact]
@@ -223,7 +223,7 @@ public class AzureArtifactParsingTests
         result.Artifact.Should().NotBeNull();
         result.Artifact!.Name.Should().Be("drop");
         result.Artifact.Operation.Should().Be(ArtifactOperation.Download);
-        result.Artifact.TargetPath.Should().Be("${Pipeline.Workspace}/artifacts");
+        result.Artifact.TargetPath.Should().Be("$(Pipeline.Workspace)/artifacts");
     }
 
     #endregion
@@ -274,7 +274,7 @@ public class AzureArtifactParsingTests
         result.Artifact.Should().NotBeNull();
         result.Artifact!.Name.Should().Be("test-results");
         result.Artifact.Operation.Should().Be(ArtifactOperation.Download);
-        result.Artifact.TargetPath.Should().Be("${Build.SourcesDirectory}/test-output");
+        result.Artifact.TargetPath.Should().Be("$(Build.SourcesDirectory)/test-output");
         result.Artifact.Patterns.Should().BeEmpty();
     }
 
@@ -322,10 +322,10 @@ public class AzureArtifactParsingTests
 
     #endregion
 
-    #region Variable Syntax Conversion Tests
+    #region Variable Syntax Kept Raw Tests
 
     [Fact]
-    public void MapStep_WithPublishArtifact_ConvertsVariableSyntaxInPath()
+    public void MapStep_WithPublishArtifact_KeepsVariableSyntaxRawInPath()
     {
         // Arrange
         var azureStep = new AzureStep
@@ -342,11 +342,11 @@ public class AzureArtifactParsingTests
         var result = AzureStepMapper.MapStep(azureStep, 0);
 
         // Assert
-        result.Artifact!.Patterns[0].Should().Be("${Build.ArtifactStagingDirectory}/output");
+        result.Artifact!.Patterns[0].Should().Be("$(Build.ArtifactStagingDirectory)/output");
     }
 
     [Fact]
-    public void MapStep_WithDownloadArtifact_ConvertsVariableSyntaxInTargetPath()
+    public void MapStep_WithDownloadArtifact_KeepsVariableSyntaxRawInTargetPath()
     {
         // Arrange
         var azureStep = new AzureStep
@@ -363,11 +363,11 @@ public class AzureArtifactParsingTests
         var result = AzureStepMapper.MapStep(azureStep, 0);
 
         // Assert
-        result.Artifact!.TargetPath.Should().Be("${System.DefaultWorkingDirectory}/artifacts");
+        result.Artifact!.TargetPath.Should().Be("$(System.DefaultWorkingDirectory)/artifacts");
     }
 
     [Fact]
-    public void MapStep_WithMultipleVariables_ConvertsAllVariables()
+    public void MapStep_WithMultipleVariables_KeepsAllVariablesRaw()
     {
         // Arrange
         var azureStep = new AzureStep
@@ -384,7 +384,7 @@ public class AzureArtifactParsingTests
         var result = AzureStepMapper.MapStep(azureStep, 0);
 
         // Assert
-        result.Artifact!.Patterns[0].Should().Be("${Build.SourcesDirectory}/${BuildConfiguration}/bin");
+        result.Artifact!.Patterns[0].Should().Be("$(Build.SourcesDirectory)/$(BuildConfiguration)/bin");
     }
 
     #endregion
@@ -502,7 +502,7 @@ public class AzureArtifactParsingTests
         var result = AzureStepMapper.MapStep(azureStep, 0);
 
         // Assert
-        result.Artifact!.TargetPath.Should().Be("${Pipeline.Workspace}/artifacts");
+        result.Artifact!.TargetPath.Should().Be("$(Pipeline.Workspace)/artifacts");
     }
 
     [Fact]
@@ -523,7 +523,7 @@ public class AzureArtifactParsingTests
         var result = AzureStepMapper.MapStep(azureStep, 0);
 
         // Assert
-        result.Artifact!.TargetPath.Should().Be("${Pipeline.Workspace}/artifacts");
+        result.Artifact!.TargetPath.Should().Be("$(Pipeline.Workspace)/artifacts");
     }
 
     [Fact]

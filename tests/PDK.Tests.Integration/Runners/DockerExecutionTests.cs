@@ -77,7 +77,7 @@ public class DockerExecutionTests : IAsyncDisposable
 
     #region Build Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task DockerBuild_WithDockerfile_BuildsSuccessfully()
@@ -130,7 +130,7 @@ public class DockerExecutionTests : IAsyncDisposable
             output.Contains($"naming to docker.io/library/{imageName}:latest"));
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task DockerBuild_WithMultipleTags_TagsCorrectly()
@@ -190,7 +190,7 @@ public class DockerExecutionTests : IAsyncDisposable
             output.Contains($"naming to docker.io/library/{imageName}:prod"));
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task DockerBuild_WithBuildArgs_PassesArguments()
@@ -264,7 +264,7 @@ CMD [""node"", ""app.js""]
         }
     }
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task DockerBuild_InvalidDockerfile_Fails()
@@ -333,7 +333,7 @@ INVALID_INSTRUCTION
 
     #region Tag Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task DockerTag_ExistingImage_TagsSuccessfully()
@@ -405,7 +405,7 @@ INVALID_INSTRUCTION
 
     #region Run Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task DockerRun_BuiltImage_RunsSuccessfully()
@@ -474,10 +474,10 @@ INVALID_INSTRUCTION
 
     #region Tool Validation Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
-    public async Task DockerNotInstalled_ThrowsToolNotFoundException()
+    public async Task DockerNotInstalled_ReturnsFailedStep()
     {
         // Arrange - Use Alpine image without Docker CLI
         await _containerManager.PullImageIfNeededAsync("alpine:latest");
@@ -517,17 +517,19 @@ INVALID_INSTRUCTION
             }
         };
 
-        // Act & Assert
-        await executor.Invoking(e => e.ExecuteAsync(step, context))
-            .Should().ThrowAsync<ToolNotFoundException>()
-            .WithMessage("*docker*not found*");
+        // Act
+        var result = await executor.ExecuteAsync(step, context);
+
+        // Assert: executors report a missing tool as a failed step (so continue-on-error applies) instead of throwing
+        result.Success.Should().BeFalse();
+        result.ErrorOutput.Should().ContainEquivalentOf("docker").And.ContainEquivalentOf("not found");
     }
 
     #endregion
 
     #region End-to-End Workflow Tests
 
-    [Fact]
+    [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
     public async Task DockerWorkflow_BuildTagRun_SucceedsEndToEnd()

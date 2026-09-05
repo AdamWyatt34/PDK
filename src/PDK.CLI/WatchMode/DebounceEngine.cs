@@ -7,6 +7,14 @@ namespace PDK.CLI.WatchMode;
 /// </summary>
 public sealed class DebounceEngine : IDebounceEngine
 {
+    /// <summary>
+    /// Path comparison used to de-duplicate changes: case-sensitive on Linux, where
+    /// <c>A.cs</c> and <c>a.cs</c> are different files; case-insensitive on Windows and macOS.
+    /// </summary>
+    private static readonly StringComparison PathComparison = OperatingSystem.IsLinux()
+        ? StringComparison.Ordinal
+        : StringComparison.OrdinalIgnoreCase;
+
     private readonly ILogger<DebounceEngine> _logger;
     private readonly object _lock = new();
     private readonly List<FileChangeEvent> _pendingChanges = [];
@@ -65,7 +73,7 @@ public sealed class DebounceEngine : IDebounceEngine
         {
             // Check for duplicate changes to the same file
             var existingIndex = _pendingChanges.FindIndex(
-                c => c.FullPath.Equals(change.FullPath, StringComparison.OrdinalIgnoreCase));
+                c => c.FullPath.Equals(change.FullPath, PathComparison));
 
             if (existingIndex >= 0)
             {

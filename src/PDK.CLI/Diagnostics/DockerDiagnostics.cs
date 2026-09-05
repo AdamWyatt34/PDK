@@ -41,7 +41,12 @@ public static class DockerDiagnostics
 
         if (!string.IsNullOrEmpty(status.Platform))
         {
-            AnsiConsole.MarkupLine($"[green]✓ Platform:[/] {status.Platform}");
+            AnsiConsole.MarkupLine($"[green]✓ Platform:[/] {Markup.Escape(status.Platform)}");
+        }
+
+        if (!string.IsNullOrEmpty(status.Endpoint))
+        {
+            AnsiConsole.MarkupLine($"[green]✓ Endpoint:[/] {Markup.Escape(status.Endpoint)}");
         }
 
         AnsiConsole.WriteLine();
@@ -57,9 +62,14 @@ public static class DockerDiagnostics
         AnsiConsole.MarkupLine("[red]✗ Docker is not available[/]");
         AnsiConsole.WriteLine();
 
+        if (!string.IsNullOrEmpty(status.Endpoint))
+        {
+            AnsiConsole.MarkupLine($"[yellow]Endpoint:[/] {Markup.Escape(status.Endpoint)}");
+        }
+
         if (!string.IsNullOrEmpty(status.ErrorMessage))
         {
-            AnsiConsole.MarkupLine($"[yellow]Problem:[/] {status.ErrorMessage}");
+            AnsiConsole.MarkupLine($"[yellow]Problem:[/] {Markup.Escape(status.ErrorMessage)}");
             AnsiConsole.WriteLine();
         }
 

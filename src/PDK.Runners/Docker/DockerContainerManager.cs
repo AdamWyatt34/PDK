@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Runtime.InteropServices;
-using System.Text;
+using System.Net;
 using Docker.DotNet;
 using Docker.DotNet.Models;
 using Microsoft.Extensions.Logging;
@@ -16,28 +15,62 @@ namespace PDK.Runners.Docker;
 /// </summary>
 public class DockerContainerManager : IContainerManager
 {
+    /// <summary>Label that marks every container created by PDK (<c>pdk=true</c>).</summary>
+    public const string PdkLabel = "pdk";
+
+    /// <summary>Label carrying the job name (<c>pdk.job=&lt;name&gt;</c>).</summary>
+    public const string JobLabel = "pdk.job";
+
+    /// <summary>Label carrying the creation time (<c>pdk.created=&lt;ISO-8601 UTC&gt;</c>).</summary>
+    public const string CreatedLabel = "pdk.created";
+
+    /// <summary>Mount point of the host user's home directory when running as the host user.</summary>
+    public const string ContainerHomeDirectory = "/home/pdk";
+
+    /// <summary>Path of the Docker socket inside the container when <see cref="ContainerOptions.MountDockerSocket"/> is set.</summary>
+    public const string ContainerDockerSocketPath = "/var/run/docker.sock";
+
+    /// <summary>Environment variable used to tag the processes of an exec so they can be killed on timeout.</summary>
+    internal const string ExecMarkerVariable = "PDK_EXEC_ID";
+
+    private static readonly TimeSpan RemoveTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan KillTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan MaxExecPollDelay = TimeSpan.FromMilliseconds(500);
+
     private readonly IDockerClient _dockerClient;
     private readonly ILogger<DockerContainerManager>? _logger;
-    private readonly ConcurrentBag<string> _createdContainers;
-    private readonly Uri _dockerEndpoint;
+    private readonly IDockerHostEnvironment _hostEnvironment;
+    private readonly IDockerRegistryAuthProvider _authProvider;
+    private readonly ConcurrentDictionary<string, byte> _createdContainers = new();
+    private DaemonResources? _daemonResources;
     private bool _disposed;
 
     /// <summary>
     /// Initializes a new instance of the DockerContainerManager.
-    /// Automatically detects the platform and configures the appropriate Docker endpoint.
+    /// Discovers the Docker endpoint (DOCKER_HOST, the current Docker context, then well-known sockets).
     /// </summary>
     /// <param name="logger">Optional logger for diagnostics and troubleshooting.</param>
     public DockerContainerManager(ILogger<DockerContainerManager>? logger = null)
+        : this(DockerEndpointResolver.Resolve(), logger)
     {
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the DockerContainerManager for an explicit endpoint.
+    /// </summary>
+    /// <param name="endpoint">The Docker daemon endpoint.</param>
+    /// <param name="logger">Optional logger for diagnostics and troubleshooting.</param>
+    public DockerContainerManager(DockerEndpoint endpoint, ILogger<DockerContainerManager>? logger = null)
+    {
+        Endpoint = endpoint ?? throw new ArgumentNullException(nameof(endpoint));
         _logger = logger;
-        _createdContainers = new ConcurrentBag<string>();
+        _hostEnvironment = DockerHostEnvironment.Instance;
+        _authProvider = new DockerConfigAuthProvider(_hostEnvironment, logger);
 
-        // Detect platform and set appropriate Docker endpoint
-        _dockerEndpoint = GetDockerEndpoint();
-        _logger?.LogDebug("Initializing Docker client with endpoint: {Endpoint}", _dockerEndpoint);
+        _logger?.LogDebug("Initializing Docker client with endpoint {Endpoint} ({Source})", endpoint.Uri, endpoint.Source);
 
-        var config = new DockerClientConfiguration(_dockerEndpoint);
-        _dockerClient = config.CreateClient();
+        var configuration = new DockerClientConfiguration(endpoint.Uri);
+        _dockerClient = configuration.CreateClient();
     }
 
     /// <summary>
@@ -46,13 +79,45 @@ public class DockerContainerManager : IContainerManager
     /// </summary>
     /// <param name="dockerClient">The Docker client to use for API communication.</param>
     /// <param name="logger">Optional logger for diagnostics and troubleshooting.</param>
-    internal DockerContainerManager(IDockerClient dockerClient, ILogger<DockerContainerManager>? logger = null)
+    /// <param name="hostEnvironment">Optional host environment seam.</param>
+    /// <param name="endpoint">Optional endpoint description (used in messages).</param>
+    /// <param name="authProvider">Optional registry credential provider.</param>
+    internal DockerContainerManager(
+        IDockerClient dockerClient,
+        ILogger<DockerContainerManager>? logger = null,
+        IDockerHostEnvironment? hostEnvironment = null,
+        DockerEndpoint? endpoint = null,
+        IDockerRegistryAuthProvider? authProvider = null)
     {
-        _dockerClient = dockerClient;
+        _dockerClient = dockerClient ?? throw new ArgumentNullException(nameof(dockerClient));
         _logger = logger;
-        _createdContainers = new ConcurrentBag<string>();
-        _dockerEndpoint = new Uri("npipe://./pipe/docker_engine"); // Dummy endpoint for testing
+        _hostEnvironment = hostEnvironment ?? DockerHostEnvironment.Instance;
+        Endpoint = endpoint ?? new DockerEndpoint(new Uri(DockerEndpointResolver.DefaultNamedPipe), "test endpoint");
+        _authProvider = authProvider ?? new DockerConfigAuthProvider(_hostEnvironment, logger);
     }
+
+    /// <summary>
+    /// Gets the Docker daemon endpoint this manager talks to and how it was chosen.
+    /// </summary>
+    public DockerEndpoint Endpoint { get; }
+
+    /// <summary>Gets or sets the timeout of the daemon ping (default 2 s).</summary>
+    internal TimeSpan PingTimeout { get; set; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>Gets or sets the timeout of the version query (default 3 s).</summary>
+    internal TimeSpan VersionTimeout { get; set; } = TimeSpan.FromSeconds(3);
+
+    /// <summary>Gets or sets the timeout of the info query (default 5 s).</summary>
+    internal TimeSpan InfoTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>Gets or sets how long an exec is polled for completion after its output ended (default 10 s).</summary>
+    internal TimeSpan ExecExitTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Gets the operating system of the daemon (<c>linux</c> or <c>windows</c>) as reported by the last
+    /// successful <see cref="GetDockerStatusAsync"/> / <see cref="GetDaemonResourcesAsync"/> call, or null when unknown.
+    /// </summary>
+    public string? DaemonOSType { get; private set; }
 
     /// <summary>
     /// Checks if Docker is available and accessible on the system.
@@ -63,17 +128,17 @@ public class DockerContainerManager : IContainerManager
     {
         try
         {
-            // Ping Docker daemon with 1 second timeout for performance (REQ-DK-NFR-001)
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            cts.CancelAfter(TimeSpan.FromSeconds(1));
-
-            await _dockerClient.System.PingAsync(cts.Token);
-            _logger?.LogDebug("Docker is available and responsive");
+            await PingAsync(cancellationToken).ConfigureAwait(false);
+            _logger?.LogDebug("Docker is available and responsive at {Endpoint}", Endpoint.Uri);
             return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            _logger?.LogWarning(ex, "Docker is not available: {Message}", ex.Message);
+            _logger?.LogWarning("Docker is not available at {Endpoint}: {Message}", Endpoint.Uri, ex.Message);
             return false;
         }
     }
@@ -87,154 +152,248 @@ public class DockerContainerManager : IContainerManager
     {
         try
         {
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            cts.CancelAfter(TimeSpan.FromSeconds(1));
+            var version = await WithTimeoutAsync(
+                t => _dockerClient.System.GetVersionAsync(t),
+                VersionTimeout,
+                "version",
+                cancellationToken).ConfigureAwait(false);
 
-            var version = await _dockerClient.System.GetVersionAsync(cts.Token);
             _logger?.LogDebug("Docker version: {Version}", version.Version);
             return version.Version;
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
-            _logger?.LogDebug(ex, "Failed to get Docker version: {Message}", ex.Message);
+            _logger?.LogDebug(ex, "Failed to get Docker version from {Endpoint}: {Message}", Endpoint.Uri, ex.Message);
             return null;
         }
     }
 
     /// <summary>
     /// Gets detailed Docker availability status including version, platform, and error information.
-    /// This method performs comprehensive diagnostics and categorizes errors (REQ-DK-007).
+    /// Ping, version and info each have their own timeout (2 s, 3 s and 5 s) and failures are categorised
+    /// by inspecting the exception chain (REQ-DK-007).
     /// </summary>
     /// <param name="cancellationToken">Token to cancel the operation.</param>
-    /// <returns>A detailed status object containing availability, version, and error information.</returns>
+    /// <returns>A detailed status object containing availability, version, and error information.
+    /// On success <see cref="DockerAvailabilityStatus.Platform"/> is <c>os/arch</c> and
+    /// <see cref="DockerAvailabilityStatus.Endpoint"/> names the endpoint that answered.</returns>
     public async Task<DockerAvailabilityStatus> GetDockerStatusAsync(CancellationToken cancellationToken = default)
     {
         try
         {
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            cts.CancelAfter(TimeSpan.FromSeconds(1));
+            await PingAsync(cancellationToken).ConfigureAwait(false);
 
-            // Try to ping Docker daemon
-            await _dockerClient.System.PingAsync(cts.Token);
+            var version = await WithTimeoutAsync(
+                t => _dockerClient.System.GetVersionAsync(t),
+                VersionTimeout,
+                "version",
+                cancellationToken).ConfigureAwait(false);
 
-            // If successful, get version and system info
-            var version = await _dockerClient.System.GetVersionAsync(cts.Token);
-            var systemInfo = await _dockerClient.System.GetSystemInfoAsync(cts.Token);
+            var info = await WithTimeoutAsync(
+                t => _dockerClient.System.GetSystemInfoAsync(t),
+                InfoTimeout,
+                "info",
+                cancellationToken).ConfigureAwait(false);
 
-            var platform = $"{systemInfo.OSType}/{systemInfo.Architecture}";
+            RecordSystemInfo(info);
 
-            _logger?.LogInformation("Docker is available - Version: {Version}, Platform: {Platform}",
-                version.Version, platform);
+            var platform = $"{info.OSType}/{info.Architecture}";
+            var versionText = string.IsNullOrEmpty(version.Version) ? "unknown" : version.Version;
 
-            return DockerAvailabilityStatus.CreateSuccess(version.Version, platform);
-        }
-        catch (FileNotFoundException ex)
-        {
-            // Docker is not installed
-            _logger?.LogWarning("Docker is not installed: {Message}", ex.Message);
-            return DockerAvailabilityStatus.CreateFailure(
-                DockerErrorType.NotInstalled,
-                "Docker is not installed");
-        }
-        catch (HttpRequestException ex) when (ex.Message.Contains("Connection refused") ||
-                                               ex.Message.Contains("No connection could be made"))
-        {
-            // Docker daemon is not running
-            _logger?.LogWarning("Docker daemon is not running: {Message}", ex.Message);
-            return DockerAvailabilityStatus.CreateFailure(
-                DockerErrorType.NotRunning,
-                "Docker daemon is not running");
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            // Permission denied
-            _logger?.LogWarning("Permission denied accessing Docker: {Message}", ex.Message);
-            return DockerAvailabilityStatus.CreateFailure(
-                DockerErrorType.PermissionDenied,
-                "Permission denied accessing Docker");
+            _logger?.LogDebug("Docker is available - Version: {Version}, Platform: {Platform}", versionText, platform);
+
+            return DockerAvailabilityStatus.CreateSuccess(versionText, platform) with { Endpoint = DescribeEndpoint() };
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // User cancelled the operation
             throw;
         }
         catch (Exception ex)
         {
-            // Unknown error
-            _logger?.LogWarning(ex, "Unknown error checking Docker availability: {Message}", ex.Message);
-            return DockerAvailabilityStatus.CreateFailure(
-                DockerErrorType.Unknown,
-                $"Unknown error checking Docker availability: {ex.Message}");
+            var (type, message) = DockerErrorClassifier.Classify(ex, Endpoint, _hostEnvironment);
+            _logger?.LogWarning("Docker is not available ({ErrorType}): {Message}", type, message);
+            return DockerAvailabilityStatus.CreateFailure(type, message) with { Endpoint = DescribeEndpoint() };
+        }
+    }
+
+    private string DescribeEndpoint() => $"{Endpoint.Uri} ({Endpoint.Source})";
+
+    /// <summary>
+    /// Gets the CPU and memory resources available to the Docker daemon (<c>docker info</c>).
+    /// </summary>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>The daemon resources, or null when the daemon cannot be reached.</returns>
+    public async Task<DaemonResources?> GetDaemonResourcesAsync(CancellationToken cancellationToken = default)
+    {
+        if (_daemonResources != null)
+        {
+            return _daemonResources;
+        }
+
+        try
+        {
+            var info = await WithTimeoutAsync(
+                t => _dockerClient.System.GetSystemInfoAsync(t),
+                InfoTimeout,
+                "info",
+                cancellationToken).ConfigureAwait(false);
+
+            RecordSystemInfo(info);
+            return _daemonResources;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogDebug(ex, "Failed to read daemon info from {Endpoint}: {Message}", Endpoint.Uri, ex.Message);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Checks whether an image is present locally (<c>docker image inspect</c>).
+    /// </summary>
+    /// <param name="image">The image reference.</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>True if the image exists locally; otherwise, false.</returns>
+    public async Task<bool> ImageExistsAsync(string image, CancellationToken cancellationToken = default)
+    {
+        if (!ImageReference.TryParse(image, out var reference))
+        {
+            return false;
+        }
+
+        try
+        {
+            await _dockerClient.Images.InspectImageAsync(reference.Canonical, cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (DockerApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            return false;
         }
     }
 
     /// <summary>
     /// Pulls a Docker image if it's not available locally.
-    /// Reports progress through the optional progress reporter.
+    /// Reports progress through the optional progress reporter. Registry credentials are taken from the
+    /// Docker CLI configuration (<c>~/.docker/config.json</c>) when present.
     /// </summary>
     /// <param name="image">The Docker image name to pull.</param>
     /// <param name="progress">Optional progress reporter for pull operation updates.</param>
     /// <param name="cancellationToken">Token to cancel the operation.</param>
     /// <exception cref="ContainerException">Thrown when image pull fails.</exception>
-    public async Task PullImageIfNeededAsync(
+    public Task PullImageIfNeededAsync(
         string image,
         IProgress<string>? progress = null,
         CancellationToken cancellationToken = default)
+        => PullImageCoreAsync(image, progress, force: false, cancellationToken);
+
+    /// <summary>
+    /// Pulls a Docker image even when a local copy exists.
+    /// </summary>
+    /// <param name="image">The Docker image name to pull.</param>
+    /// <param name="progress">Optional progress reporter for pull operation updates.</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <exception cref="ContainerException">Thrown when image pull fails.</exception>
+    public Task PullImageAsync(
+        string image,
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default)
+        => PullImageCoreAsync(image, progress, force: true, cancellationToken);
+
+    private async Task PullImageCoreAsync(
+        string image,
+        IProgress<string>? progress,
+        bool force,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(image))
         {
             throw new ArgumentException("Image name cannot be null or empty.", nameof(image));
         }
 
+        if (!ImageReference.TryParse(image, out var reference))
+        {
+            throw new ContainerException(
+                $"Image reference '{image}' is not valid. Expected [registry[:port]/]name[:tag][@digest].")
+            {
+                Image = image
+            };
+        }
+
         try
         {
-            // Parse image name into repository and tag
-            var (repository, tag) = ParseImageName(image);
             _logger?.LogDebug("Checking if image exists locally: {Image}", image);
-
-            // Check if image exists locally
-            var images = await _dockerClient.Images.ListImagesAsync(
-                new ImagesListParameters
-                {
-                    Filters = new Dictionary<string, IDictionary<string, bool>>
-                    {
-                        ["reference"] = new Dictionary<string, bool> { [image] = true }
-                    }
-                },
-                cancellationToken);
-
-            if (images.Count > 0)
+            if (!force && await ImageExistsAsync(image, cancellationToken).ConfigureAwait(false))
             {
                 _logger?.LogDebug("Image {Image} already exists locally", image);
                 return;
             }
 
-            // Image not found locally, pull it
             _logger?.LogInformation("Pulling image: {Image}", image);
             progress?.Report($"Pulling image: {image}");
+
+            var auth = await _authProvider.GetAuthConfigAsync(reference.RegistryHost, cancellationToken).ConfigureAwait(false);
+
+            string? streamError = null;
+            var reporter = new SynchronousProgress<JSONMessage>(message =>
+            {
+                var error = message.Error?.Message ?? message.ErrorMessage;
+                if (!string.IsNullOrEmpty(error))
+                {
+                    streamError = error;
+                    return;
+                }
+
+                if (!string.IsNullOrEmpty(message.Status))
+                {
+                    progress?.Report($"{message.Status} {message.ProgressMessage ?? string.Empty}".Trim());
+                }
+            });
 
             await _dockerClient.Images.CreateImageAsync(
                 new ImagesCreateParameters
                 {
-                    FromImage = repository,
-                    Tag = tag
+                    FromImage = reference.Name,
+                    Tag = reference.PullTag
                 },
-                null, // AuthConfig - null for public images
-                new Progress<JSONMessage>(msg =>
+                auth,
+                reporter,
+                cancellationToken).ConfigureAwait(false);
+
+            if (streamError != null)
+            {
+                throw new ContainerException($"Failed to pull image '{image}': {streamError}")
                 {
-                    if (!string.IsNullOrEmpty(msg.Status))
-                    {
-                        progress?.Report($"{msg.Status} {msg.ProgressMessage ?? string.Empty}".Trim());
-                    }
-                }),
-                cancellationToken);
+                    Image = image
+                };
+            }
 
             _logger?.LogInformation("Successfully pulled image: {Image}", image);
             progress?.Report($"Successfully pulled image: {image}");
         }
-        catch (DockerApiException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        catch (DockerApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
-            throw new ContainerException($"Image '{image}' not found in registry.", ex)
+            throw new ContainerException(
+                $"Image '{image}' not found in registry {reference.RegistryHost}. Check the image name and tag.",
+                ex)
+            {
+                Image = image
+            };
+        }
+        catch (DockerApiException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            throw new ContainerException(
+                $"Access denied pulling image '{image}' from {reference.RegistryHost}: {ex.Message} " +
+                $"Run 'docker login {reference.RegistryHost}' and retry.",
+                ex)
             {
                 Image = image
             };
@@ -245,6 +404,10 @@ public class DockerContainerManager : IContainerManager
             {
                 Image = image
             };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex) when (ex is not ContainerException)
         {
@@ -257,6 +420,9 @@ public class DockerContainerManager : IContainerManager
 
     /// <summary>
     /// Creates and starts a container from the specified Docker image.
+    /// The container idles on <c>tail -f /dev/null</c> (explicit entrypoint, so images with a custom
+    /// ENTRYPOINT still start), is labelled <c>pdk=true</c> / <c>pdk.job</c>, and on Linux hosts runs as the
+    /// invoking user unless <see cref="ContainerOptions.RunAsHostUser"/> is disabled.
     /// </summary>
     /// <param name="image">The Docker image name (e.g., "ubuntu:22.04").</param>
     /// <param name="options">Configuration options for the container.</param>
@@ -273,100 +439,62 @@ public class DockerContainerManager : IContainerManager
             throw new ArgumentException("Image name cannot be null or empty.", nameof(image));
         }
 
-        if (options == null)
-        {
-            throw new ArgumentNullException(nameof(options));
-        }
+        ArgumentNullException.ThrowIfNull(options);
 
         string? containerId = null;
 
         try
         {
-            // Generate unique container name (REQ-DK-009)
-            var containerName = GenerateContainerName(options.Name);
-            _logger?.LogDebug("Creating container '{Name}' from image '{Image}'", containerName, image);
+            var parameters = BuildCreateParameters(image, options);
+            _logger?.LogDebug("Creating container '{Name}' from image '{Image}'", parameters.Name, image);
 
-            // Prepare environment variables (REQ-DK-005)
-            var environmentVars = options.Environment
-                .Select(kvp => $"{kvp.Key}={kvp.Value}")
-                .ToList();
-
-            // Prepare volume binds (REQ-DK-003)
-            var binds = new List<string>();
-            if (!string.IsNullOrWhiteSpace(options.WorkspacePath))
-            {
-                var bind = $"{options.WorkspacePath}:{options.WorkingDirectory}:rw";
-                binds.Add(bind);
-                _logger?.LogDebug("Mounting volume: {Bind}", bind);
-            }
-
-            // Mount Docker socket if requested (for Docker-in-Docker)
-            if (options.MountDockerSocket)
-            {
-                var dockerSocketPath = GetDockerSocketPath();
-                var dockerSocketBind = $"{dockerSocketPath}:{dockerSocketPath}";
-                binds.Add(dockerSocketBind);
-                _logger?.LogDebug("Mounting Docker socket: {Bind}", dockerSocketBind);
-                _logger?.LogWarning("Docker socket mounted - container has full access to Docker daemon");
-            }
-
-            // Prepare host configuration
-            var hostConfig = new HostConfig
-            {
-                Binds = binds,
-                AutoRemove = false // We manage cleanup manually
-            };
-
-            // Apply memory limit if specified
-            if (options.MemoryLimit.HasValue)
-            {
-                hostConfig.Memory = options.MemoryLimit.Value;
-                _logger?.LogDebug("Setting memory limit: {Memory} bytes", options.MemoryLimit.Value);
-            }
-
-            // Apply CPU limit if specified (convert to NanoCPUs)
-            if (options.CpuLimit.HasValue)
-            {
-                hostConfig.NanoCPUs = (long)(options.CpuLimit.Value * 1_000_000_000);
-                _logger?.LogDebug("Setting CPU limit: {Cpu} cores ({NanoCPUs} nano CPUs)",
-                    options.CpuLimit.Value, hostConfig.NanoCPUs);
-            }
-
-            // Create container parameters
-            var createParams = new CreateContainerParameters
-            {
-                Image = image,
-                Name = containerName,
-                WorkingDir = options.WorkingDirectory,
-                Env = environmentVars,
-                Tty = false,
-                AttachStdin = false,
-                AttachStdout = true,
-                AttachStderr = true,
-                HostConfig = hostConfig,
-                // Keep container running by overriding CMD with a long-running process
-                // This allows us to exec commands into the container later
-                Cmd = new[] { "tail", "-f", "/dev/null" }
-            };
-
-            // Create container
-            var response = await _dockerClient.Containers.CreateContainerAsync(
-                createParams,
-                cancellationToken);
-
+            var response = await _dockerClient.Containers.CreateContainerAsync(parameters, cancellationToken).ConfigureAwait(false);
             containerId = response.ID;
-            _createdContainers.Add(containerId);
-            _logger?.LogInformation("Created container '{Name}' with ID: {ContainerId}", containerName, containerId);
 
-            // Start container
-            var started = await _dockerClient.Containers.StartContainerAsync(
-                containerId,
-                new ContainerStartParameters(),
-                cancellationToken);
+            if (!options.KeepContainer)
+            {
+                _createdContainers.TryAdd(containerId, 0);
+            }
+
+            _logger?.LogInformation("Created container '{Name}' with ID: {ContainerId}", parameters.Name, containerId);
+
+            bool started;
+            try
+            {
+                started = await _dockerClient.Containers.StartContainerAsync(
+                    containerId,
+                    new ContainerStartParameters(),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (DockerApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+            {
+                await TryRemoveAsync(containerId).ConfigureAwait(false);
+                throw new ContainerException(
+                    $"Container '{containerId}' failed to start: the daemon no longer knows the container it just created.",
+                    ex)
+                {
+                    ContainerId = containerId,
+                    Image = image
+                };
+            }
+            catch (DockerApiException ex)
+            {
+                await TryRemoveAsync(containerId).ConfigureAwait(false);
+                throw new ContainerException(
+                    $"Container '{containerId}' failed to start: {ex.Message.Trim()} " +
+                    "(the image must contain a shell and 'tail'; distroless images are not supported).",
+                    ex)
+                {
+                    ContainerId = containerId,
+                    Image = image
+                };
+            }
 
             if (!started)
             {
-                throw new ContainerException($"Failed to start container '{containerId}'")
+                await TryRemoveAsync(containerId).ConfigureAwait(false);
+                throw new ContainerException(
+                    $"Container '{containerId}' failed to start (the daemon reported it was not started).")
                 {
                     ContainerId = containerId,
                     Image = image
@@ -376,15 +504,14 @@ public class DockerContainerManager : IContainerManager
             _logger?.LogInformation("Started container: {ContainerId}", containerId);
             return containerId;
         }
-        catch (DockerApiException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        catch (DockerApiException ex) when (containerId == null && ex.StatusCode == HttpStatusCode.NotFound)
         {
             throw new ContainerException($"Image '{image}' not found. Try: docker pull {image}", ex)
             {
-                ContainerId = containerId,
                 Image = image
             };
         }
-        catch (DockerApiException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Conflict)
+        catch (DockerApiException ex) when (containerId == null && ex.StatusCode == HttpStatusCode.Conflict)
         {
             throw new ContainerException($"Container name '{options.Name}' already exists", ex)
             {
@@ -399,19 +526,20 @@ public class DockerContainerManager : IContainerManager
                 Image = image
             };
         }
-        catch (Exception ex) when (ex is not ContainerException)
+        catch (OperationCanceledException)
         {
-            // If container was created but start failed, try to clean it up
             if (containerId != null)
             {
-                try
-                {
-                    await RemoveContainerAsync(containerId, cancellationToken);
-                }
-                catch
-                {
-                    // Ignore cleanup errors
-                }
+                await TryRemoveAsync(containerId).ConfigureAwait(false);
+            }
+
+            throw;
+        }
+        catch (Exception ex) when (ex is not ContainerException)
+        {
+            if (containerId != null)
+            {
+                await TryRemoveAsync(containerId).ConfigureAwait(false);
             }
 
             throw new ContainerException($"Failed to create container from '{image}': {ex.Message}", ex)
@@ -423,7 +551,7 @@ public class DockerContainerManager : IContainerManager
     }
 
     /// <summary>
-    /// Executes a command in a running container and returns the result.
+    /// Executes a shell command (<c>sh -c</c>) in a running container and returns the result.
     /// </summary>
     /// <param name="containerId">The ID of the container.</param>
     /// <param name="command">The command to execute.</param>
@@ -432,7 +560,7 @@ public class DockerContainerManager : IContainerManager
     /// <param name="cancellationToken">Token to cancel the operation.</param>
     /// <returns>The execution result including exit code, output, and duration.</returns>
     /// <exception cref="ContainerException">Thrown when command execution fails.</exception>
-    public async Task<ExecutionResult> ExecuteCommandAsync(
+    public Task<ExecutionResult> ExecuteCommandAsync(
         string containerId,
         string command,
         string? workingDirectory = null,
@@ -449,102 +577,171 @@ public class DockerContainerManager : IContainerManager
             throw new ArgumentException("Command cannot be null or empty.", nameof(command));
         }
 
+        return ExecuteCommandAsync(
+            new ContainerExecRequest
+            {
+                ContainerId = containerId,
+                Command = command,
+                WorkingDirectory = workingDirectory,
+                Environment = environment
+            },
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Executes a command in a running container with support for an explicit argument vector,
+    /// live output streaming and a timeout.
+    /// </summary>
+    /// <remarks>
+    /// Output is decoded with one UTF-8 decoder per stream; after the stream ends the exec is polled until
+    /// the daemon reports it finished (up to 10 s) before the exit code is read. On timeout the processes
+    /// started by the exec are killed on a best-effort basis (they are tagged with a <c>PDK_EXEC_ID</c>
+    /// environment variable and located through <c>/proc</c>) and the result carries exit code 124.
+    /// </remarks>
+    /// <param name="request">The command to execute.</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>The execution result including exit code, output, and duration.</returns>
+    /// <exception cref="ContainerException">Thrown when command execution fails.</exception>
+    public async Task<ExecutionResult> ExecuteCommandAsync(
+        ContainerExecRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (string.IsNullOrWhiteSpace(request.ContainerId))
+        {
+            throw new ArgumentException("Container ID cannot be null or empty.", nameof(request));
+        }
+
+        var hasArguments = request.Arguments is { Count: > 0 };
+        if (!hasArguments && string.IsNullOrWhiteSpace(request.Command))
+        {
+            throw new ArgumentException("Either Command or Arguments must be specified.", nameof(request));
+        }
+
+        var containerId = request.ContainerId;
+        var displayCommand = request.DisplayCommand;
         var stopwatch = Stopwatch.StartNew();
+        var marker = Guid.NewGuid().ToString("N");
+        var reader = new MultiplexedOutputReader(request.OnOutputLine, request.OnErrorLine);
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (request.Timeout is { } timeout && timeout > TimeSpan.Zero)
+        {
+            timeoutCts.CancelAfter(timeout);
+        }
 
         try
         {
-            _logger?.LogDebug("Executing command in container {ContainerId}: {Command}", containerId, command);
+            _logger?.LogDebug("Executing command in container {ContainerId}: {Command}", containerId, displayCommand);
 
-            // Prepare command array (use sh for execution - compatible with Alpine and other minimal images)
-            var cmdArray = new[] { "sh", "-c", command };
+            var cmd = hasArguments
+                ? request.Arguments!.ToList()
+                : new List<string> { "sh", "-c", request.Command! };
 
-            // Prepare environment variables if provided
-            var envArray = environment?
+            var env = (request.Environment ?? new Dictionary<string, string>())
                 .Select(kvp => $"{kvp.Key}={kvp.Value}")
+                .Append($"{ExecMarkerVariable}={marker}")
                 .ToList();
 
-            // Create exec instance
-            var execCreateParams = new ContainerExecCreateParameters
-            {
-                Cmd = cmdArray,
-                AttachStdout = true,
-                AttachStderr = true,
-                WorkingDir = workingDirectory
-            };
-
-            // Only set Env if user provided environment variables
-            // Otherwise let Docker use the container's default environment
-            if (envArray != null && envArray.Count > 0)
-            {
-                execCreateParams.Env = envArray;
-            }
-
-            var execCreateResponse = await _dockerClient.Exec.ExecCreateContainerAsync(
+            var execCreate = await _dockerClient.Exec.ExecCreateContainerAsync(
                 containerId,
-                execCreateParams,
-                cancellationToken);
+                new ContainerExecCreateParameters
+                {
+                    Cmd = cmd,
+                    AttachStdout = true,
+                    AttachStderr = true,
+                    WorkingDir = request.WorkingDirectory,
+                    Env = env
+                },
+                timeoutCts.Token).ConfigureAwait(false);
 
-            var execId = execCreateResponse.ID;
+            var execId = execCreate.ID;
             _logger?.LogDebug("Created exec instance: {ExecId}", execId);
 
-            // Start exec and capture output
-            var multiplexedStream = await _dockerClient.Exec.StartAndAttachContainerExecAsync(
-                execId,
-                false, // tty
-                cancellationToken);
+            using (var stream = await _dockerClient.Exec.StartAndAttachContainerExecAsync(execId, false, timeoutCts.Token).ConfigureAwait(false))
+            {
+                await reader.ReadToEndAsync(stream, timeoutCts.Token).ConfigureAwait(false);
+            }
 
-            // Read stdout and stderr
-            var (stdout, stderr) = await ReadMultiplexedStreamAsync(multiplexedStream, cancellationToken);
-
-            // Get exit code
-            var execInspect = await _dockerClient.Exec.InspectContainerExecAsync(execId, cancellationToken);
-            var exitCode = (int)execInspect.ExitCode;
-
+            var (exitCode, completed) = await WaitForExecExitAsync(execId, timeoutCts.Token).ConfigureAwait(false);
             stopwatch.Stop();
 
-            _logger?.LogDebug(
-                "Command completed with exit code {ExitCode} in {Duration}ms",
-                exitCode,
-                stopwatch.ElapsedMilliseconds);
+            var standardError = reader.StandardError;
+            if (!completed)
+            {
+                _logger?.LogWarning(
+                    "Exec {ExecId} in container {ContainerId} still reported running {Seconds}s after its output ended",
+                    execId,
+                    containerId,
+                    ExecExitTimeout.TotalSeconds);
+
+                standardError = AppendLine(
+                    standardError,
+                    $"Command output ended but the daemon still reported the command running after {ExecExitTimeout.TotalSeconds:F0}s; exit code unknown.");
+                exitCode = -1;
+            }
+
+            _logger?.LogDebug("Command completed with exit code {ExitCode} in {Duration}ms", exitCode, stopwatch.ElapsedMilliseconds);
 
             return new ExecutionResult
             {
                 ExitCode = exitCode,
-                StandardOutput = stdout,
-                StandardError = stderr,
+                StandardOutput = reader.StandardOutput,
+                StandardError = standardError,
+                Duration = stopwatch.Elapsed
+            };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            stopwatch.Stop();
+            _logger?.LogDebug("Command cancelled in container {ContainerId}: {Command}", containerId, displayCommand);
+            await TryKillExecProcessesAsync(containerId, marker).ConfigureAwait(false);
+            throw;
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+        {
+            stopwatch.Stop();
+            var seconds = request.Timeout?.TotalSeconds ?? 0;
+            _logger?.LogWarning("Command timed out after {Seconds}s in container {ContainerId}", seconds, containerId);
+            await TryKillExecProcessesAsync(containerId, marker).ConfigureAwait(false);
+
+            return new ExecutionResult
+            {
+                ExitCode = ExecutionResult.TimeoutExitCode,
+                TimedOut = true,
+                StandardOutput = reader.StandardOutput,
+                StandardError = AppendLine(reader.StandardError, $"Command timed out after {seconds:F0} seconds"),
                 Duration = stopwatch.Elapsed
             };
         }
         catch (DockerApiException ex)
         {
             stopwatch.Stop();
-            throw new ContainerException(
-                $"Command execution failed in container '{containerId}': {ex.Message}",
-                ex)
+            throw new ContainerException($"Command execution failed in container '{containerId}': {ex.Message}", ex)
             {
                 ContainerId = containerId,
-                Command = command
+                Command = displayCommand
             };
         }
-        catch (Exception ex) when (ex is not ContainerException)
+        catch (Exception ex) when (ex is not ContainerException and not OperationCanceledException)
         {
             stopwatch.Stop();
-            throw new ContainerException(
-                $"Command execution failed in container '{containerId}': {ex.Message}",
-                ex)
+            throw new ContainerException($"Command execution failed in container '{containerId}': {ex.Message}", ex)
             {
                 ContainerId = containerId,
-                Command = command
+                Command = displayCommand
             };
         }
     }
 
     /// <summary>
-    /// Stops and removes a container.
-    /// Performs best-effort cleanup without throwing exceptions.
+    /// Stops and removes a container. Performs best-effort cleanup without throwing exceptions.
+    /// The daemon calls use their own 30 s timeout so cleanup still happens when the caller's token
+    /// has already been cancelled.
     /// </summary>
     /// <param name="containerId">The ID of the container to remove.</param>
-    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <param name="cancellationToken">Ignored for the daemon calls (kept for interface compatibility).</param>
     public async Task RemoveContainerAsync(string containerId, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(containerId))
@@ -552,19 +749,25 @@ public class DockerContainerManager : IContainerManager
             throw new ArgumentException("Container ID cannot be null or empty.", nameof(containerId));
         }
 
+        _ = cancellationToken;
+        using var cts = new CancellationTokenSource(RemoveTimeout);
+
         try
         {
             _logger?.LogDebug("Stopping container: {ContainerId}", containerId);
 
-            // Try to stop container gracefully first
             try
             {
                 await _dockerClient.Containers.StopContainerAsync(
                     containerId,
                     new ContainerStopParameters { WaitBeforeKillSeconds = 10 },
-                    cancellationToken);
+                    cts.Token).ConfigureAwait(false);
 
                 _logger?.LogDebug("Container stopped: {ContainerId}", containerId);
+            }
+            catch (DockerApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -575,7 +778,6 @@ public class DockerContainerManager : IContainerManager
                     ex.Message);
             }
 
-            // Remove container (force = true to remove even if running)
             await _dockerClient.Containers.RemoveContainerAsync(
                 containerId,
                 new ContainerRemoveParameters
@@ -583,24 +785,102 @@ public class DockerContainerManager : IContainerManager
                     Force = true,
                     RemoveVolumes = true
                 },
-                cancellationToken);
+                cts.Token).ConfigureAwait(false);
 
             _logger?.LogInformation("Removed container: {ContainerId}", containerId);
         }
-        catch (DockerApiException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        catch (DockerApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
-            // Container already removed, not an error
             _logger?.LogDebug("Container {ContainerId} already removed", containerId);
         }
         catch (Exception ex)
         {
-            // Log but don't throw - cleanup should be best-effort (REQ-DK-006)
-            _logger?.LogError(
-                ex,
-                "Failed to remove container {ContainerId}: {Message}",
-                containerId,
-                ex.Message);
+            _logger?.LogError(ex, "Failed to remove container {ContainerId}: {Message}", containerId, ex.Message);
         }
+        finally
+        {
+            _createdContainers.TryRemove(containerId, out _);
+        }
+    }
+
+    /// <summary>
+    /// Removes containers left behind by PDK processes that no longer run on this machine, whatever their
+    /// state (a killed run leaves its job container running). Containers of a live PDK process, containers
+    /// kept with <c>--keep-containers</c> and containers created from another host are never touched;
+    /// containers without ownership labels (earlier PDK versions) are removed only once they have exited.
+    /// </summary>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>The number of containers removed.</returns>
+    public async Task<int> RemoveOrphanedContainersAsync(CancellationToken cancellationToken = default)
+    {
+        IList<ContainerListResponse> containers;
+        try
+        {
+            containers = await _dockerClient.Containers.ListContainersAsync(
+                new ContainersListParameters
+                {
+                    All = true,
+                    Filters = new Dictionary<string, IDictionary<string, bool>>
+                    {
+                        ["label"] = new Dictionary<string, bool> { [$"{PdkLabel}=true"] = true }
+                    }
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Could not list orphaned PDK containers: {Message}", ex.Message);
+            return 0;
+        }
+
+        var removed = 0;
+        foreach (var container in containers)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (_createdContainers.ContainsKey(container.ID))
+            {
+                continue; // Belongs to this session; its owner will clean it up.
+            }
+
+            if (!ContainerOwnership.IsOrphan(container.Labels, container.State, Environment.MachineName, ContainerOwnership.ProbeProcess))
+            {
+                continue; // A live PDK process owns it, it is kept on request, or it was created elsewhere.
+            }
+
+            try
+            {
+                await _dockerClient.Containers.RemoveContainerAsync(
+                    container.ID,
+                    new ContainerRemoveParameters { Force = true, RemoveVolumes = true },
+                    cancellationToken).ConfigureAwait(false);
+
+                removed++;
+                _logger?.LogInformation(
+                    "Removed orphaned PDK container {ContainerId} ({Name}, {State})",
+                    container.ID,
+                    container.Names?.FirstOrDefault()?.TrimStart('/') ?? "unnamed",
+                    container.State);
+            }
+            catch (DockerApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+            {
+                // Already gone.
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Failed to remove orphaned container {ContainerId}: {Message}", container.ID, ex.Message);
+            }
+        }
+
+        return removed;
     }
 
     /// <summary>
@@ -616,151 +896,24 @@ public class DockerContainerManager : IContainerManager
 
         _logger?.LogDebug("Disposing DockerContainerManager, cleaning up {Count} containers", _createdContainers.Count);
 
-        // Remove all tracked containers (REQ-DK-NFR-002: No orphaned containers)
-        foreach (var containerId in _createdContainers)
+        foreach (var containerId in _createdContainers.Keys.ToList())
         {
             try
             {
-                await RemoveContainerAsync(containerId);
+                await RemoveContainerAsync(containerId).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
-                // Log but continue cleanup
-                _logger?.LogError(
-                    ex,
-                    "Error during cleanup of container {ContainerId}: {Message}",
-                    containerId,
-                    ex.Message);
+                _logger?.LogError(ex, "Error during cleanup of container {ContainerId}: {Message}", containerId, ex.Message);
             }
         }
 
-        // Dispose Docker client
         _dockerClient.Dispose();
 
         _disposed = true;
         _logger?.LogDebug("DockerContainerManager disposed successfully");
 
         GC.SuppressFinalize(this);
-    }
-
-    /// <summary>
-    /// Determines the appropriate Docker endpoint based on the current platform.
-    /// </summary>
-    /// <returns>The Docker endpoint URI for the current platform.</returns>
-    private static Uri GetDockerEndpoint()
-    {
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            return new Uri("npipe://./pipe/docker_engine");
-        }
-        else
-        {
-            // Linux and macOS use Unix socket
-            return new Uri("unix:///var/run/docker.sock");
-        }
-    }
-
-    /// <summary>
-    /// Gets the Docker socket path for bind mounting based on the current platform.
-    /// </summary>
-    /// <returns>The Docker socket path for the current platform.</returns>
-    /// <remarks>
-    /// On Windows with Docker Desktop using WSL2 backend (the default), Linux containers
-    /// still access the Docker socket via /var/run/docker.sock inside the WSL2 VM.
-    /// The named pipe is only used by the Docker client on the Windows host to communicate
-    /// with the Docker daemon, but for bind mounting into Linux containers, we use the Unix socket path.
-    /// </remarks>
-    private static string GetDockerSocketPath()
-    {
-        // For Linux containers (which is the typical case), always use Unix socket path
-        // This works on Linux, macOS, and Windows (with Docker Desktop/WSL2)
-        return "/var/run/docker.sock";
-    }
-
-    /// <summary>
-    /// Generates a unique container name following the pattern: pdk-{name}-{timestamp}-{randomId}
-    /// </summary>
-    /// <param name="baseName">The base name from options (job name).</param>
-    /// <returns>A unique, valid Docker container name.</returns>
-    private static string GenerateContainerName(string baseName)
-    {
-        // Sanitize base name (remove special characters, keep alphanumeric and hyphens)
-        var sanitized = string.IsNullOrWhiteSpace(baseName)
-            ? "job"
-            : new string(baseName
-                .ToLowerInvariant()
-                .Select(c => char.IsLetterOrDigit(c) ? c : '-')
-                .ToArray())
-                .Trim('-');
-
-        // Ensure name doesn't start with hyphen
-        if (sanitized.StartsWith('-'))
-        {
-            sanitized = sanitized.TrimStart('-');
-        }
-
-        // Limit length
-        if (sanitized.Length > 20)
-        {
-            sanitized = sanitized[..20];
-        }
-
-        var timestamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
-        var randomId = Guid.NewGuid().ToString("N")[..6];
-
-        return $"pdk-{sanitized}-{timestamp}-{randomId}";
-    }
-
-    /// <summary>
-    /// Parses a Docker image name into repository and tag components.
-    /// </summary>
-    /// <param name="image">The full image name (e.g., "ubuntu:22.04" or "ubuntu").</param>
-    /// <returns>A tuple containing the repository and tag.</returns>
-    private static (string repository, string tag) ParseImageName(string image)
-    {
-        var parts = image.Split(':', 2);
-        var repository = parts[0];
-        var tag = parts.Length > 1 ? parts[1] : "latest";
-        return (repository, tag);
-    }
-
-    /// <summary>
-    /// Reads stdout and stderr from a multiplexed Docker stream.
-    /// </summary>
-    /// <param name="stream">The multiplexed stream from Docker exec.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>A tuple containing stdout and stderr as strings.</returns>
-    private static async Task<(string stdout, string stderr)> ReadMultiplexedStreamAsync(
-        MultiplexedStream stream,
-        CancellationToken cancellationToken)
-    {
-        var stdoutBuilder = new StringBuilder();
-        var stderrBuilder = new StringBuilder();
-
-        var buffer = new byte[4096];
-
-        while (true)
-        {
-            var result = await stream.ReadOutputAsync(buffer, 0, buffer.Length, cancellationToken);
-
-            if (result.EOF)
-            {
-                break;
-            }
-
-            var output = Encoding.UTF8.GetString(buffer, 0, result.Count);
-
-            if (result.Target == MultiplexedStream.TargetStream.StandardOut)
-            {
-                stdoutBuilder.Append(output);
-            }
-            else if (result.Target == MultiplexedStream.TargetStream.StandardError)
-            {
-                stderrBuilder.Append(output);
-            }
-        }
-
-        return (stdoutBuilder.ToString(), stderrBuilder.ToString());
     }
 
     /// <inheritdoc/>
@@ -781,44 +934,38 @@ public class DockerContainerManager : IContainerManager
 
         try
         {
-            _logger?.LogDebug(
-                "Getting archive from container {ContainerId} at path {Path}",
-                containerId,
-                containerPath);
+            _logger?.LogDebug("Getting archive from container {ContainerId} at path {Path}", containerId, containerPath);
 
             var response = await _dockerClient.Containers.GetArchiveFromContainerAsync(
                 containerId,
                 new GetArchiveFromContainerParameters { Path = containerPath },
                 statOnly: false,
-                cancellationToken);
+                cancellationToken).ConfigureAwait(false);
 
             _logger?.LogDebug("Successfully retrieved archive from container");
-
             return response.Stream;
         }
-        catch (DockerApiException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        catch (DockerApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
-            throw new ContainerException(
-                $"Path '{containerPath}' not found in container '{containerId}'",
-                ex)
+            throw new ContainerException($"Path '{containerPath}' not found in container '{containerId}'", ex)
             {
                 ContainerId = containerId
             };
         }
         catch (DockerApiException ex)
         {
-            throw new ContainerException(
-                $"Failed to get archive from container '{containerId}': {ex.Message}",
-                ex)
+            throw new ContainerException($"Failed to get archive from container '{containerId}': {ex.Message}", ex)
             {
                 ContainerId = containerId
             };
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception ex) when (ex is not ContainerException)
         {
-            throw new ContainerException(
-                $"Failed to get archive from container '{containerId}': {ex.Message}",
-                ex)
+            throw new ContainerException($"Failed to get archive from container '{containerId}': {ex.Message}", ex)
             {
                 ContainerId = containerId
             };
@@ -842,52 +989,311 @@ public class DockerContainerManager : IContainerManager
             throw new ArgumentException("Container path cannot be null or empty.", nameof(containerPath));
         }
 
-        if (tarStream == null)
-        {
-            throw new ArgumentNullException(nameof(tarStream));
-        }
+        ArgumentNullException.ThrowIfNull(tarStream);
 
         try
         {
-            _logger?.LogDebug(
-                "Putting archive to container {ContainerId} at path {Path}",
-                containerId,
-                containerPath);
+            _logger?.LogDebug("Putting archive to container {ContainerId} at path {Path}", containerId, containerPath);
 
             await _dockerClient.Containers.ExtractArchiveToContainerAsync(
                 containerId,
                 new ContainerPathStatParameters { Path = containerPath, AllowOverwriteDirWithFile = false },
                 tarStream,
-                cancellationToken);
+                cancellationToken).ConfigureAwait(false);
 
             _logger?.LogDebug("Successfully extracted archive to container");
         }
-        catch (DockerApiException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        catch (DockerApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
-            throw new ContainerException(
-                $"Container '{containerId}' or path '{containerPath}' not found",
-                ex)
+            throw new ContainerException($"Container '{containerId}' or path '{containerPath}' not found", ex)
             {
                 ContainerId = containerId
             };
         }
         catch (DockerApiException ex)
         {
-            throw new ContainerException(
-                $"Failed to put archive to container '{containerId}': {ex.Message}",
-                ex)
+            throw new ContainerException($"Failed to put archive to container '{containerId}': {ex.Message}", ex)
             {
                 ContainerId = containerId
             };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex) when (ex is not ContainerException)
         {
-            throw new ContainerException(
-                $"Failed to put archive to container '{containerId}': {ex.Message}",
-                ex)
+            throw new ContainerException($"Failed to put archive to container '{containerId}': {ex.Message}", ex)
             {
                 ContainerId = containerId
             };
         }
+    }
+
+    /// <summary>
+    /// Builds the container creation parameters for the given image and options.
+    /// Exposed for unit tests.
+    /// </summary>
+    internal CreateContainerParameters BuildCreateParameters(string image, ContainerOptions options)
+    {
+        var containerName = ContainerNameGenerator.GenerateName(options.JobName ?? options.Name);
+        var environment = new Dictionary<string, string>(options.Environment);
+        var binds = new List<string>();
+        string? user = null;
+
+        if (!string.IsNullOrWhiteSpace(options.WorkspacePath))
+        {
+            var bind = $"{options.WorkspacePath}:{options.WorkingDirectory}:rw";
+            binds.Add(bind);
+            _logger?.LogDebug("Mounting volume: {Bind}", bind);
+        }
+
+        if (options.MountDockerSocket)
+        {
+            var hostSocket = Endpoint.SocketPath ?? ContainerDockerSocketPath;
+            var socketBind = $"{hostSocket}:{ContainerDockerSocketPath}";
+            binds.Add(socketBind);
+            _logger?.LogDebug("Mounting Docker socket: {Bind}", socketBind);
+            _logger?.LogWarning("Docker socket mounted - container has full access to Docker daemon");
+
+            if (options.RunAsHostUser)
+            {
+                _logger?.LogDebug("Running as root because the Docker socket is mounted (socket access requires root or the docker group)");
+            }
+        }
+        else if (options.RunAsHostUser && _hostEnvironment.IsLinux)
+        {
+            var ids = _hostEnvironment.GetEffectiveUser();
+            if (ids is { UserId: > 0 })
+            {
+                user = $"{ids.Value.UserId}:{ids.Value.GroupId}";
+                _logger?.LogDebug("Running container as host user {User}", user);
+
+                var hostHome = ResolveHostHomeDirectory(options);
+                if (hostHome != null)
+                {
+                    binds.Add($"{hostHome}:{ContainerHomeDirectory}:rw");
+                    environment.TryAdd("HOME", ContainerHomeDirectory);
+                }
+                else
+                {
+                    environment.TryAdd("HOME", "/tmp");
+                }
+            }
+        }
+
+        var hostConfig = new HostConfig
+        {
+            Binds = binds,
+            AutoRemove = false
+        };
+
+        if (options.MemoryLimit.HasValue)
+        {
+            hostConfig.Memory = options.MemoryLimit.Value;
+            _logger?.LogDebug("Setting memory limit: {Memory} bytes", options.MemoryLimit.Value);
+        }
+
+        if (options.CpuLimit.HasValue)
+        {
+            hostConfig.NanoCPUs = (long)(options.CpuLimit.Value * 1_000_000_000);
+            _logger?.LogDebug("Setting CPU limit: {Cpu} cores ({NanoCPUs} nano CPUs)", options.CpuLimit.Value, hostConfig.NanoCPUs);
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.Network))
+        {
+            hostConfig.NetworkMode = options.Network.Trim();
+            _logger?.LogDebug("Using network: {Network}", hostConfig.NetworkMode);
+        }
+
+        var labels = new Dictionary<string, string>(options.Labels)
+        {
+            [PdkLabel] = "true",
+            [JobLabel] = options.JobName ?? options.Name,
+            [CreatedLabel] = DateTimeOffset.UtcNow.ToString("O")
+        };
+        ContainerOwnership.Stamp(labels, options.KeepContainer);
+
+        return new CreateContainerParameters
+        {
+            Image = image,
+            Name = containerName,
+            WorkingDir = options.WorkingDirectory,
+            Env = environment.Select(kvp => $"{kvp.Key}={kvp.Value}").ToList(),
+            User = user,
+            Labels = labels,
+            Tty = false,
+            AttachStdin = false,
+            AttachStdout = true,
+            AttachStderr = true,
+            HostConfig = hostConfig,
+            // Keep the container alive so commands can be exec'd into it later. Setting the entrypoint
+            // explicitly bypasses any ENTRYPOINT baked into the image.
+            Entrypoint = new List<string> { "tail" },
+            Cmd = new List<string> { "-f", "/dev/null" }
+        };
+    }
+
+    private string? ResolveHostHomeDirectory(ContainerOptions options)
+    {
+        var path = options.HostHomePath;
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            var cacheRoot = _hostEnvironment.GetEnvironmentVariable("XDG_CACHE_HOME");
+            if (string.IsNullOrWhiteSpace(cacheRoot))
+            {
+                cacheRoot = Path.Combine(_hostEnvironment.HomeDirectory, ".cache");
+            }
+
+            path = Path.Combine(cacheRoot, "pdk", "home");
+        }
+
+        try
+        {
+            _hostEnvironment.EnsureDirectory(path);
+            return path;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger?.LogWarning(ex, "Could not create host home directory {Path}; HOME will point at /tmp inside the container", path);
+            return null;
+        }
+    }
+
+    private async Task PingAsync(CancellationToken cancellationToken)
+    {
+        await WithTimeoutAsync(
+            async t =>
+            {
+                await _dockerClient.System.PingAsync(t).ConfigureAwait(false);
+                return true;
+            },
+            PingTimeout,
+            "ping",
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<T> WithTimeoutAsync<T>(
+        Func<CancellationToken, Task<T>> operation,
+        TimeSpan timeout,
+        string operationName,
+        CancellationToken cancellationToken)
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(timeout);
+
+        try
+        {
+            return await operation(cts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"Docker daemon at {Endpoint.Uri} did not respond to '{operationName}' within {timeout.TotalSeconds:F0}s");
+        }
+    }
+
+    private void RecordSystemInfo(SystemInfoResponse info)
+    {
+        DaemonOSType = string.IsNullOrEmpty(info.OSType) ? DaemonOSType : info.OSType;
+        if (info.NCPU > 0 || info.MemTotal > 0)
+        {
+            _daemonResources = new DaemonResources(info.NCPU, info.MemTotal);
+        }
+    }
+
+    private async Task<(int ExitCode, bool Completed)> WaitForExecExitAsync(string execId, CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        var delay = TimeSpan.FromMilliseconds(20);
+
+        while (true)
+        {
+            var inspect = await _dockerClient.Exec.InspectContainerExecAsync(execId, cancellationToken).ConfigureAwait(false);
+            if (!inspect.Running)
+            {
+                return ((int)inspect.ExitCode, true);
+            }
+
+            if (stopwatch.Elapsed >= ExecExitTimeout)
+            {
+                return ((int)inspect.ExitCode, false);
+            }
+
+            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+            delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * 2, MaxExecPollDelay.TotalMilliseconds));
+        }
+    }
+
+    /// <summary>
+    /// Kills every process in the container whose environment carries the exec marker (best effort).
+    /// </summary>
+    private async Task TryKillExecProcessesAsync(string containerId, string marker)
+    {
+        var script =
+            "for p in /proc/[0-9]*; do " +
+            $"if tr '\\0' '\\n' < \"$p/environ\" 2>/dev/null | grep -qx '{ExecMarkerVariable}={marker}'; then " +
+            "kill -KILL \"${p#/proc/}\" 2>/dev/null || true; fi; done";
+
+        try
+        {
+            using var cts = new CancellationTokenSource(KillTimeout);
+            var exec = await _dockerClient.Exec.ExecCreateContainerAsync(
+                containerId,
+                new ContainerExecCreateParameters
+                {
+                    Cmd = new List<string> { "sh", "-c", script },
+                    AttachStdout = true,
+                    AttachStderr = true
+                },
+                cts.Token).ConfigureAwait(false);
+
+            using var stream = await _dockerClient.Exec.StartAndAttachContainerExecAsync(exec.ID, false, cts.Token).ConfigureAwait(false);
+            await new MultiplexedOutputReader(null, null).ReadToEndAsync(stream, cts.Token).ConfigureAwait(false);
+            _logger?.LogDebug("Killed processes of exec {Marker} in container {ContainerId}", marker, containerId);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogDebug(ex, "Could not kill processes of exec {Marker} in container {ContainerId}: {Message}", marker, containerId, ex.Message);
+        }
+    }
+
+    private async Task TryRemoveAsync(string containerId)
+    {
+        try
+        {
+            await RemoveContainerAsync(containerId).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogDebug(ex, "Cleanup of container {ContainerId} failed: {Message}", containerId, ex.Message);
+        }
+    }
+
+    private static string AppendLine(string text, string line)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return line;
+        }
+
+        return text.EndsWith('\n') ? text + line : text + Environment.NewLine + line;
+    }
+
+    /// <summary>
+    /// An <see cref="IProgress{T}"/> that invokes its handler synchronously on the reporting thread
+    /// (unlike <see cref="Progress{T}"/>, which posts to the captured synchronization context and would
+    /// race with the code that inspects the collected results).
+    /// </summary>
+    private sealed class SynchronousProgress<T> : IProgress<T>
+    {
+        private readonly Action<T> _handler;
+
+        public SynchronousProgress(Action<T> handler)
+        {
+            _handler = handler;
+        }
+
+        public void Report(T value) => _handler(value);
     }
 }

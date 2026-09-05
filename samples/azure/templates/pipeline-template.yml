@@ -1,0 +1,35 @@
+# Pipeline template used through 'extends:' by samples/azure/extends-pipeline.yml.
+parameters:
+  - name: projects
+    type: object
+    default: [Api, Worker]
+  - name: publish
+    type: boolean
+    default: false
+  - name: postBuildSteps
+    type: stepList
+    default: []
+
+variables:
+  templateVariable: from-template
+  buildConfiguration: Release
+
+stages:
+  - stage: Build
+    jobs:
+      - ${{ each project in parameters.projects }}:
+        - job: Build_${{ project }}
+          displayName: Build ${{ project }}
+          steps:
+            - script: echo "Building ${{ project }} in $(buildConfiguration) ($(templateVariable), $(pipelineVariable))"
+              displayName: Build ${{ project }}
+            - ${{ each step in parameters.postBuildSteps }}:
+              - ${{ step }}
+
+  - ${{ if parameters.publish }}:
+    - stage: Publish
+      jobs:
+        - job: Publish
+          steps:
+            - script: echo "Publishing ${{ join(' and ', parameters.projects) }}"
+              displayName: Publish

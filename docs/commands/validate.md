@@ -5,40 +5,49 @@ Validate a pipeline file's syntax and structure.
 ## Syntax
 
 ```bash
-pdk validate --file <path>
+pdk validate [--file <path>]
 ```
 
 ## Description
 
-The `validate` command checks a pipeline file for syntax errors and structural issues without executing it. This is useful for quick validation before committing changes.
+The `validate` command parses a pipeline file and reports syntax errors and structural issues without executing it. This is useful for quick validation before committing changes.
 
-For a more comprehensive validation that includes execution planning, use `pdk run --dry-run`.
+For a more comprehensive validation that includes execution planning, unsupported-step warnings and variable resolution, use `pdk run --dry-run`.
 
 ## Options
 
 | Option | Type | Required | Description |
 |--------|------|----------|-------------|
-| `-f, --file <path>` | string | Yes | Path to the pipeline file |
+| `-f, --file <path>` | string | No | Path to the pipeline file (auto-detected when omitted, see below) |
+| `--param <NAME=VALUE>` | string[] | No | Pipeline parameter / input value used while expanding the pipeline (repeatable; see [run](run.md#parameters)) |
 
 ## Output
 
 When validation succeeds:
 
 ```
-Pipeline: CI Build
-Provider: GitHub Actions
-Jobs: 2
-Total Steps: 8
-
-Pipeline is valid.
+✓ Pipeline is valid
+  Provider: GitHub
+  Jobs: 2
+  Total Steps: 8
 ```
 
-When validation fails:
+When validation fails, the error is shown with its code and suggestions:
 
 ```
-Pipeline validation failed:
-  Line 15: Invalid YAML syntax - expected ':' but found '|'
-  Line 23: Unknown action 'actions/checkout@v99'
+✗ Pipeline validation failed
+╭─Error PDK-E-PARSER-005──────────────────────────────────────────╮
+│ Job is missing required 'job' identifier.                       │
+│ Suggestion: Add a unique identifier like: job: BuildJob         │
+│                                                                 │
+│ Pipeline structure is invalid                                   │
+╰─────────────────────────────────────────────────────────────────╯
+
+Suggestions:
+  • Verify your pipeline follows the correct format
+  • Check the documentation for your CI/CD provider
+
+Documentation: docs/errors.md#pdk-e-parser-005
 ```
 
 ## Examples
@@ -55,23 +64,11 @@ pdk validate --file .github/workflows/ci.yml
 pdk validate --file azure-pipelines.yml
 ```
 
-### Validate with Error Details
+### Validate with Auto-Detection
 
 ```bash
-pdk validate --file .github/workflows/ci.yml
-```
-
-If errors exist, you'll see:
-
-```
-Pipeline validation failed:
-
-Errors:
-  - Line 10: 'runs-on' is required for job 'build'
-  - Line 15: Invalid step - missing 'run' or 'uses'
-
-Warnings:
-  - Line 5: 'on' trigger 'workflow_dispatch' has no inputs defined
+# Uses the single pipeline file found in the current directory
+pdk validate
 ```
 
 ## Exit Codes
@@ -80,26 +77,35 @@ Warnings:
 |------|---------|
 | 0 | Valid pipeline |
 | 1 | Invalid pipeline |
-| 2 | Invalid arguments |
+| 2 | Invalid arguments, or several candidate pipeline files found |
 | 3 | File not found |
 
 ## Validation Checks
 
-The validate command performs these checks:
+The validate command runs the provider parser, which checks:
 
 ### Syntax Validation
-- Valid YAML syntax
-- Correct indentation
-- Proper quoting
+- Valid YAML (`PDK-E-PARSER-001` with the line number on failure)
 
 ### Structure Validation
-- Required fields present (`name`, `on`, `jobs` for GitHub Actions)
-- Job definitions are valid
-- Step definitions are valid
+- GitHub: a `jobs:` mapping with at least one job, each job with `runs-on` (or a reusable-workflow
+  `uses`) and at least one step, each step with exactly one of `uses` / `run`
+- Azure: exactly one of `stages` / `jobs` / `steps` at the top level, job identifiers, at least one
+  step per job, each step with one of `task`, `bash`, `pwsh`, `script`, `powershell`, `checkout`,
+  `publish`, `download`
+- Dependencies: `needs` / `dependsOn` / stage `dependsOn` refer to existing jobs or stages and form no
+  cycle
+- Azure templates and `${{ if }}` / `${{ each }}` / `${{ insert }}` insertions are rejected with a
+  clear message
 
-### Reference Validation
-- Action references are formatted correctly
-- Script syntax is valid
+Parser warnings (unsupported tasks, ignored `services:` or `resources:` sections, variable groups) are
+not printed by `validate`; `pdk run --dry-run` and `pdk run` show them.
+
+## Pipeline Auto-Detection
+
+Without `--file`, PDK looks for exactly one of `.github/workflows/*.yml|yaml`,
+`azure-pipelines.yml|yaml`, `.azure-pipelines/*.yml|yaml`, `*.pipeline.yml|yaml` in the current
+directory.
 
 ## Comparison with Dry-Run
 

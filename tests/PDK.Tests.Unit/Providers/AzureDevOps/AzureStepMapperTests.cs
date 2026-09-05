@@ -85,7 +85,7 @@ public class AzureStepMapperTests
     }
 
     [Fact]
-    public void MapStep_WithBashTask_ReturnsBashStepType()
+    public void MapStep_WithBashTask_ReturnsScriptStepType()
     {
         // Arrange
         var azureStep = new AzureStep
@@ -102,7 +102,7 @@ public class AzureStepMapperTests
         var result = AzureStepMapper.MapStep(azureStep, 0);
 
         // Assert
-        result.Type.Should().Be(StepType.Bash);
+        result.Type.Should().Be(StepType.Script);
         result.Shell.Should().Be("bash");
         result.Script.Should().Be("echo 'Hello from Bash'");
     }
@@ -177,7 +177,7 @@ public class AzureStepMapperTests
     #region MapStep - Script Shortcuts
 
     [Fact]
-    public void MapStep_WithBashShortcut_MapsToBashType()
+    public void MapStep_WithBashShortcut_MapsToScriptType()
     {
         // Arrange
         var azureStep = new AzureStep
@@ -190,7 +190,7 @@ public class AzureStepMapperTests
         var result = AzureStepMapper.MapStep(azureStep, 0);
 
         // Assert
-        result.Type.Should().Be(StepType.Bash);
+        result.Type.Should().Be(StepType.Script);
         result.Shell.Should().Be("bash");
         result.Script.Should().Be("echo 'Hello from bash shortcut'");
         result.Name.Should().Be("Run bash script");
@@ -399,10 +399,10 @@ public class AzureStepMapperTests
 
     #endregion
 
-    #region Variable Syntax Conversion
+    #region Variable Syntax Kept Raw
 
     [Fact]
-    public void MapStep_ConvertsVariableSyntaxInDisplayName()
+    public void MapStep_KeepsVariableSyntaxRawInDisplayName()
     {
         // Arrange
         var azureStep = new AzureStep
@@ -415,11 +415,11 @@ public class AzureStepMapperTests
         var result = AzureStepMapper.MapStep(azureStep, 0);
 
         // Assert
-        result.Name.Should().Be("Build ${buildConfiguration} on ${Agent.OS}");
+        result.Name.Should().Be("Build $(buildConfiguration) on $(Agent.OS)");
     }
 
     [Fact]
-    public void MapStep_ConvertsVariableSyntaxInScript()
+    public void MapStep_KeepsVariableSyntaxRawInScript()
     {
         // Arrange
         var azureStep = new AzureStep
@@ -431,11 +431,11 @@ public class AzureStepMapperTests
         var result = AzureStepMapper.MapStep(azureStep, 0);
 
         // Assert
-        result.Script.Should().Be("dotnet build --configuration ${buildConfiguration}");
+        result.Script.Should().Be("dotnet build --configuration $(buildConfiguration)");
     }
 
     [Fact]
-    public void MapStep_ConvertsVariableSyntaxInInputs()
+    public void MapStep_KeepsVariableSyntaxRawInInputs()
     {
         // Arrange
         var azureStep = new AzureStep
@@ -451,11 +451,11 @@ public class AzureStepMapperTests
         var result = AzureStepMapper.MapStep(azureStep, 0);
 
         // Assert
-        result.With["arguments"].Should().Be("--configuration ${buildConfiguration}");
+        result.With["arguments"].Should().Be("--configuration $(buildConfiguration)");
     }
 
     [Fact]
-    public void MapStep_ConvertsVariableSyntaxInEnvironment()
+    public void MapStep_KeepsVariableSyntaxRawInEnvironment()
     {
         // Arrange
         var azureStep = new AzureStep
@@ -471,11 +471,11 @@ public class AzureStepMapperTests
         var result = AzureStepMapper.MapStep(azureStep, 0);
 
         // Assert
-        result.Environment["CONFIG"].Should().Be("${buildConfiguration}");
+        result.Environment["CONFIG"].Should().Be("$(buildConfiguration)");
     }
 
     [Fact]
-    public void MapStep_ConvertsVariableSyntaxInCondition()
+    public void MapStep_KeepsVariableSyntaxRawInCondition()
     {
         // Arrange
         var azureStep = new AzureStep
@@ -488,11 +488,11 @@ public class AzureStepMapperTests
         var result = AzureStepMapper.MapStep(azureStep, 0);
 
         // Assert
-        result.Condition!.Expression.Should().Be("eq(variables['Build.SourceBranch'], '${branchName}')");
+        result.Condition!.Expression.Should().Be("eq(variables['Build.SourceBranch'], '$(branchName)')");
     }
 
     [Fact]
-    public void MapStep_ConvertsVariableSyntaxInWorkingDirectory()
+    public void MapStep_KeepsVariableSyntaxRawInWorkingDirectory()
     {
         // Arrange
         var azureStep = new AzureStep
@@ -505,7 +505,7 @@ public class AzureStepMapperTests
         var result = AzureStepMapper.MapStep(azureStep, 0);
 
         // Assert
-        result.WorkingDirectory.Should().Be("${Build.SourcesDirectory}/src");
+        result.WorkingDirectory.Should().Be("$(Build.SourcesDirectory)/src");
     }
 
     #endregion
@@ -643,7 +643,7 @@ public class AzureStepMapperTests
     }
 
     [Fact]
-    public void MergeEnvironmentVariables_ConvertsVariableSyntax()
+    public void MergeEnvironmentVariables_KeepsVariableSyntaxRaw()
     {
         // Arrange
         var pipelineEnv = new Dictionary<string, string>
@@ -655,7 +655,7 @@ public class AzureStepMapperTests
         var result = AzureStepMapper.MergeEnvironmentVariables(pipelineEnv, null, null);
 
         // Assert
-        result["CONFIG"].Should().Be("${buildConfiguration}");
+        result["CONFIG"].Should().Be("$(buildConfiguration)");
     }
 
     #endregion

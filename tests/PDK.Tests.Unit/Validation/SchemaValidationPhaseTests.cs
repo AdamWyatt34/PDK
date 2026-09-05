@@ -106,7 +106,7 @@ public class SchemaValidationPhaseTests
     }
 
     [Fact]
-    public async Task ValidateAsync_UnknownStepType_ReturnsError()
+    public async Task ValidateAsync_UnknownStepType_ReturnsWarning()
     {
         // Arrange
         var pipeline = new Pipeline
@@ -132,6 +132,7 @@ public class SchemaValidationPhaseTests
 
         // Assert
         Assert.Single(errors);
+        Assert.Equal(ValidationSeverity.Warning, errors[0].Severity);
         Assert.Contains("unknown type", errors[0].Message, StringComparison.OrdinalIgnoreCase);
     }
 

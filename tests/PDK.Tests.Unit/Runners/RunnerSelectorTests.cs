@@ -336,4 +336,53 @@ public class RunnerSelectorTests
     }
 
     #endregion
+
+    #region Configuration Overload Tests
+
+    [Fact]
+    public async Task SelectRunnerAsync_WithExplicitConfig_UsesItInsteadOfDiscovery()
+    {
+        // Arrange - the loader would say "no config", the merged config says host
+        var job = CreateTestJob();
+        var config = new PdkConfig { Version = "1.0", Runner = new RunnerConfig { Default = "host", ShowHostModeWarnings = false } };
+
+        // Act
+        var result = await _selector.SelectRunnerAsync(RunnerType.Auto, job, config);
+
+        // Assert
+        result.SelectedRunner.Should().Be(RunnerType.Host);
+        result.Warning.Should().BeNull("showHostModeWarnings is false in the supplied configuration");
+        _mockConfigLoader.Verify(x => x.LoadAsync(It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        _mockDockerDetector.Verify(x => x.GetStatusAsync(It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task SelectRunnerAsync_CachesMissingConfiguration()
+    {
+        // Arrange - loader returns null (no config file)
+        var job = CreateTestJob();
+        SetupDockerAvailable("24.0.7", "linux/amd64");
+
+        // Act
+        await _selector.SelectRunnerAsync(RunnerType.Auto, job);
+        await _selector.SelectRunnerAsync(RunnerType.Auto, job);
+        await _selector.SelectRunnerAsync(RunnerType.Auto, job, null);
+
+        // Assert - discovery happens once even though it found nothing
+        _mockConfigLoader.Verify(x => x.LoadAsync(It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task SelectRunnerAsync_InterfaceDefault_DelegatesToDiscovery()
+    {
+        IRunnerSelector selector = _selector;
+        var job = CreateTestJob();
+        SetupDockerAvailable("24.0.7", "linux/amd64");
+
+        var result = await selector.SelectRunnerAsync(RunnerType.Auto, job, config: null);
+
+        result.SelectedRunner.Should().Be(RunnerType.Docker);
+    }
+
+    #endregion
 }

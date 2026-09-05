@@ -276,7 +276,7 @@ public class ArtifactIntegrationTests : IDisposable
         var metadata = ArtifactMetadata.FromJson(metadataJson);
 
         metadata.Should().NotBeNull();
-        metadata!.Version.Should().Be("1.0");
+        metadata!.Version.Should().Be(ArtifactMetadata.CurrentVersion);
         metadata.Artifact.Name.Should().Be("metadata-test");
         metadata.Summary.FileCount.Should().Be(1);
     }

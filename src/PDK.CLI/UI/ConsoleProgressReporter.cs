@@ -5,8 +5,9 @@ using PDK.Core.Progress;
 using Spectre.Console;
 
 /// <summary>
-/// Spectre.Console implementation of <see cref="IProgressReporter"/> with update buffering.
+/// Spectre.Console implementation of <see cref="IProgressReporter"/>.
 /// Provides real-time visual feedback during pipeline execution with NO_COLOR support.
+/// Every output line is printed (nothing is dropped); only percentage progress updates are throttled.
 /// </summary>
 public sealed class ConsoleProgressReporter : IProgressReporter, IDisposable
 {
@@ -15,27 +16,29 @@ public sealed class ConsoleProgressReporter : IProgressReporter, IDisposable
     /// </summary>
     public enum OutputMode
     {
-        /// <summary>Normal output with buffered updates.</summary>
+        /// <summary>Normal output: job/step status plus every step output line.</summary>
         Normal,
 
         /// <summary>Quiet mode - suppress step output, show only job/step status.</summary>
         Quiet,
 
-        /// <summary>Verbose mode - show all output without buffering.</summary>
-        Verbose
+        /// <summary>Verbose mode - show all output.</summary>
+        Verbose,
+
+        /// <summary>Silent mode - print nothing (errors are reported through <see cref="IConsoleOutput"/>).</summary>
+        Silent
     }
 
     private readonly IAnsiConsole _console;
     private readonly bool _noColor;
     private readonly object _updateLock = new();
-    private readonly Stopwatch _lastOutputUpdateTime = new();
     private readonly Stopwatch _lastProgressUpdateTime = new();
-    private bool _firstOutputCall = true;
     private bool _firstProgressCall = true;
     private OutputMode _outputMode = OutputMode.Normal;
 
     /// <summary>
-    /// Minimum interval between updates in milliseconds (max 20 updates per second).
+    /// Minimum interval between percentage progress updates in milliseconds (max 20 updates per second).
+    /// Output lines are never throttled.
     /// </summary>
     public const int MinUpdateIntervalMs = 50;
 
@@ -72,7 +75,8 @@ public sealed class ConsoleProgressReporter : IProgressReporter, IDisposable
     public OutputMode CurrentOutputMode => _outputMode;
 
     /// <summary>
-    /// Sets the output mode for this reporter.
+    /// Sets the output mode for this reporter. The CLI maps <c>--quiet</c> to <see cref="OutputMode.Quiet"/>,
+    /// <c>--verbose</c>/<c>--trace</c> to <see cref="OutputMode.Verbose"/> and <c>--silent</c> to <see cref="OutputMode.Silent"/>.
     /// </summary>
     /// <param name="mode">The output mode to use.</param>
     public void SetOutputMode(OutputMode mode)
@@ -99,16 +103,18 @@ public sealed class ConsoleProgressReporter : IProgressReporter, IDisposable
             _currentStepNumber = 0;
             _totalSteps = 0;
 
-            var escapedName = _noColor ? jobName : Markup.Escape(jobName);
-            var message = $"> Running job {currentJob} of {totalJobs}: {escapedName}";
+            if (_outputMode == OutputMode.Silent)
+            {
+                return Task.CompletedTask;
+            }
 
             if (_noColor)
             {
-                _console.WriteLine(message);
+                _console.WriteLine($"> Running job {currentJob} of {totalJobs}: {jobName}");
             }
             else
             {
-                _console.MarkupLine($"[cyan]>[/] Running job {currentJob} of {totalJobs}: [bold]{escapedName}[/]");
+                _console.MarkupLine($"[cyan]>[/] Running job {currentJob} of {totalJobs}: [bold]{Markup.Escape(jobName)}[/]");
             }
         }
 
@@ -124,24 +130,28 @@ public sealed class ConsoleProgressReporter : IProgressReporter, IDisposable
     {
         lock (_updateLock)
         {
-            var escapedName = _noColor ? jobName : Markup.Escape(jobName);
+            if (success)
+            {
+                _currentJobName = null;
+            }
+
+            if (_outputMode == OutputMode.Silent)
+            {
+                return Task.CompletedTask;
+            }
+
             var symbol = success ? "+" : "x";
             var status = success ? "completed" : "failed";
             var durationStr = $"{duration.TotalSeconds:F2}s";
 
             if (_noColor)
             {
-                _console.WriteLine($"  {symbol} Job {escapedName} {status} in {durationStr}");
+                _console.WriteLine($"  {symbol} Job {jobName} {status} in {durationStr}");
             }
             else
             {
                 var color = success ? "green" : "red";
-                _console.MarkupLine($"  [{color}]{symbol}[/] Job {escapedName} {status} in {durationStr}");
-            }
-
-            if (success)
-            {
-                _currentJobName = null;
+                _console.MarkupLine($"  [{color}]{symbol}[/] Job {Markup.Escape(jobName)} {status} in {durationStr}");
             }
         }
 
@@ -161,16 +171,18 @@ public sealed class ConsoleProgressReporter : IProgressReporter, IDisposable
             _currentStepNumber = currentStep;
             _totalSteps = totalSteps;
 
-            var escapedName = _noColor ? stepName : Markup.Escape(stepName);
-            var message = $"    * Step {currentStep}/{totalSteps}: {escapedName}";
+            if (_outputMode == OutputMode.Silent)
+            {
+                return Task.CompletedTask;
+            }
 
             if (_noColor)
             {
-                _console.WriteLine(message);
+                _console.WriteLine($"    * Step {currentStep}/{totalSteps}: {stepName}");
             }
             else
             {
-                _console.MarkupLine($"    [cyan]*[/] Step {currentStep}/{totalSteps}: {escapedName}");
+                _console.MarkupLine($"    [cyan]*[/] Step {currentStep}/{totalSteps}: {Markup.Escape(stepName)}");
             }
         }
 
@@ -186,23 +198,61 @@ public sealed class ConsoleProgressReporter : IProgressReporter, IDisposable
     {
         lock (_updateLock)
         {
-            var escapedName = _noColor ? stepName : Markup.Escape(stepName);
+            if (success)
+            {
+                _currentStepName = null;
+            }
+
+            if (_outputMode == OutputMode.Silent)
+            {
+                return Task.CompletedTask;
+            }
+
             var symbol = success ? "+" : "x";
             var durationStr = $"{duration.TotalSeconds:F2}s";
 
             if (_noColor)
             {
-                _console.WriteLine($"      {symbol} {escapedName} ({durationStr})");
+                _console.WriteLine($"      {symbol} {stepName} ({durationStr})");
             }
             else
             {
                 var color = success ? "green" : "red";
-                _console.MarkupLine($"      [{color}]{symbol}[/] {escapedName} ({durationStr})");
+                _console.MarkupLine($"      [{color}]{symbol}[/] {Markup.Escape(stepName)} ({durationStr})");
+            }
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc/>
+    public Task ReportStepSkippedAsync(
+        string stepName,
+        int currentStep,
+        int totalSteps,
+        string? reason,
+        CancellationToken cancellationToken = default)
+    {
+        lock (_updateLock)
+        {
+            _currentStepNumber = currentStep;
+            _totalSteps = totalSteps;
+
+            if (_outputMode == OutputMode.Silent)
+            {
+                return Task.CompletedTask;
             }
 
-            if (success)
+            var symbol = StepStatusDisplay.GetSymbol(StepStatusDisplay.StepStatus.Skipped, _noColor);
+            var detail = string.IsNullOrWhiteSpace(reason) ? "skipped" : $"skipped: {reason}";
+
+            if (_noColor)
             {
-                _currentStepName = null;
+                _console.WriteLine($"    {symbol} Step {currentStep}/{totalSteps}: {stepName} ({detail})");
+            }
+            else
+            {
+                _console.MarkupLine($"    [grey]{symbol}[/] Step {currentStep}/{totalSteps}: [grey]{Markup.Escape(stepName)}[/] [dim]({Markup.Escape(detail)})[/]");
             }
         }
 
@@ -214,44 +264,20 @@ public sealed class ConsoleProgressReporter : IProgressReporter, IDisposable
     {
         lock (_updateLock)
         {
-            // In quiet mode, suppress all output
-            if (_outputMode == OutputMode.Quiet)
+            // Quiet and silent modes suppress step output entirely
+            if (_outputMode is OutputMode.Quiet or OutputMode.Silent)
             {
                 return Task.CompletedTask;
             }
 
-            // In verbose mode, skip buffering
-            if (_outputMode == OutputMode.Verbose)
-            {
-                var escapedLine = _noColor ? line : Markup.Escape(line);
-                if (_noColor)
-                {
-                    _console.WriteLine($"      | {escapedLine}");
-                }
-                else
-                {
-                    _console.MarkupLine($"      [dim]|[/] {escapedLine}");
-                }
-                return Task.CompletedTask;
-            }
-
-            // Normal mode: Allow first call through, then buffer rapid updates
-            if (!_firstOutputCall && _lastOutputUpdateTime.ElapsedMilliseconds < MinUpdateIntervalMs)
-            {
-                return Task.CompletedTask;
-            }
-            _firstOutputCall = false;
-            _lastOutputUpdateTime.Restart();
-
-            var escapedLineNormal = _noColor ? line : Markup.Escape(line);
-
+            // Every line is written: dropping output would hide build errors
             if (_noColor)
             {
-                _console.WriteLine($"      | {escapedLineNormal}");
+                _console.WriteLine($"      | {line}");
             }
             else
             {
-                _console.MarkupLine($"      [dim]|[/] {escapedLineNormal}");
+                _console.MarkupLine($"      [dim]|[/] {Markup.Escape(line)}");
             }
         }
 
@@ -266,7 +292,12 @@ public sealed class ConsoleProgressReporter : IProgressReporter, IDisposable
     {
         lock (_updateLock)
         {
-            // Allow first call through, then buffer rapid updates
+            if (_outputMode == OutputMode.Silent)
+            {
+                return Task.CompletedTask;
+            }
+
+            // Allow first call through, then coalesce rapid percentage updates
             if (!_firstProgressCall && _lastProgressUpdateTime.ElapsedMilliseconds < MinUpdateIntervalMs)
             {
                 return Task.CompletedTask;
@@ -274,16 +305,15 @@ public sealed class ConsoleProgressReporter : IProgressReporter, IDisposable
             _firstProgressCall = false;
             _lastProgressUpdateTime.Restart();
 
-            var escapedMessage = _noColor ? message : Markup.Escape(message);
             var pct = $"{percentage:F1}%";
 
             if (_noColor)
             {
-                _console.WriteLine($"  [{pct}] {escapedMessage}");
+                _console.WriteLine($"  [{pct}] {message}");
             }
             else
             {
-                _console.MarkupLine($"  [dim][[{pct}]][/] {escapedMessage}");
+                _console.MarkupLine($"  [dim][[{pct}]][/] {Markup.Escape(message)}");
             }
         }
 

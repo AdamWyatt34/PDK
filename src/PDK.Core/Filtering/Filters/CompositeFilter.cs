@@ -95,12 +95,12 @@ public sealed class CompositeFilter : IStepFilter
         /// <summary>
         /// Adds a step name filter.
         /// </summary>
-        public Builder WithStepNames(IEnumerable<string> patterns, int fuzzyThreshold = StringMatcher.DefaultFuzzyThreshold)
+        public Builder WithStepNames(IEnumerable<string> patterns)
         {
             var patternList = patterns.ToList();
             if (patternList.Count > 0)
             {
-                _inclusionFilters.Add(new StepNameFilter(patternList, fuzzyThreshold));
+                _inclusionFilters.Add(new StepNameFilter(patternList));
             }
             return this;
         }
@@ -143,12 +143,12 @@ public sealed class CompositeFilter : IStepFilter
         /// <summary>
         /// Adds step exclusion patterns.
         /// </summary>
-        public Builder WithSkipSteps(IEnumerable<string> patterns, int fuzzyThreshold = StringMatcher.DefaultFuzzyThreshold)
+        public Builder WithSkipSteps(IEnumerable<string> patterns)
         {
             var patternList = patterns.ToList();
             if (patternList.Count > 0)
             {
-                _exclusionFilter = new StepExclusionFilter(patternList, fuzzyThreshold);
+                _exclusionFilter = new StepExclusionFilter(patternList);
             }
             return this;
         }

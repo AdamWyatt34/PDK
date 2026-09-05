@@ -3,156 +3,250 @@ using YamlDotNet.Serialization;
 namespace PDK.Providers.AzureDevOps.Models;
 
 /// <summary>
-/// Represents a step definition in an Azure Pipeline job.
-/// Steps are the individual actions executed as part of a job, such as running scripts or invoking tasks.
+/// Represents a single step in an Azure Pipeline job. A step is one of:
+/// <c>task:</c>, <c>bash:</c>, <c>pwsh:</c>, <c>powershell:</c>, <c>script:</c>, <c>checkout:</c>,
+/// <c>publish:</c>, <c>download:</c>, or a <c>template:</c> reference (expanded before the document is read).
 /// </summary>
-/// <remarks>
-/// Azure Pipelines supports multiple step formats:
-/// <list type="bullet">
-/// <item><description>Task format: task: TaskName@version with inputs</description></item>
-/// <item><description>Bash shortcut: bash: script content</description></item>
-/// <item><description>PowerShell shortcut: pwsh: script content</description></item>
-/// <item><description>Generic script: script: command</description></item>
-/// </list>
-/// </remarks>
 public sealed class AzureStep
 {
     /// <summary>
-    /// Gets or sets the task identifier in the format "TaskName@version".
-    /// Used for task-based steps (e.g., "DotNetCoreCLI@2").
-    /// Mutually exclusive with script shortcuts (Bash, Pwsh, Script).
+    /// Gets or sets the task reference in <c>TaskName@version</c> format.
     /// </summary>
     [YamlMember(Alias = "task")]
     public string? Task { get; set; }
 
     /// <summary>
-    /// Gets or sets the human-readable name displayed for this step in the pipeline run.
-    /// If not specified, Azure Pipelines generates a default display name based on the step type.
+    /// Gets or sets the display name (kept raw, including <c>$( )</c> macros).
     /// </summary>
     [YamlMember(Alias = "displayName")]
     public string? DisplayName { get; set; }
 
     /// <summary>
-    /// Gets or sets the input parameters for a task step.
-    /// Each task defines its own set of inputs. The value can be a string or complex object.
-    /// Only applicable when Task property is set.
+    /// Gets or sets the step name used as identifier for output variables (<c>name:</c>).
+    /// </summary>
+    [YamlMember(Alias = "name")]
+    public string? Name { get; set; }
+
+    /// <summary>
+    /// Gets or sets the task inputs.
     /// </summary>
     [YamlMember(Alias = "inputs")]
     public Dictionary<string, object>? Inputs { get; set; }
 
     /// <summary>
-    /// Gets or sets the Bash script to execute.
-    /// Script shortcut for running Bash commands. Can be single-line or multi-line script.
-    /// Mutually exclusive with Task, Pwsh, and Script properties.
+    /// Gets or sets the inline bash script (<c>bash:</c> shortcut).
     /// </summary>
     [YamlMember(Alias = "bash")]
     public string? Bash { get; set; }
 
     /// <summary>
-    /// Gets or sets the PowerShell script to execute.
-    /// Script shortcut for running PowerShell commands on any platform (Windows, Linux, macOS).
-    /// Can be single-line or multi-line script.
-    /// Mutually exclusive with Task, Bash, and Script properties.
+    /// Gets or sets the inline PowerShell Core script (<c>pwsh:</c> shortcut).
     /// </summary>
     [YamlMember(Alias = "pwsh")]
     public string? Pwsh { get; set; }
 
     /// <summary>
-    /// Gets or sets the generic script to execute.
-    /// Script shortcut that uses the platform's default shell (cmd.exe on Windows, bash on Linux/macOS).
-    /// Can be single-line or multi-line script.
-    /// Mutually exclusive with Task, Bash, and Pwsh properties.
+    /// Gets or sets the inline platform-default script (<c>script:</c> shortcut).
     /// </summary>
     [YamlMember(Alias = "script")]
     public string? Script { get; set; }
 
     /// <summary>
-    /// Gets or sets the PowerShell script to execute (Windows PowerShell).
-    /// Legacy script shortcut for running Windows PowerShell. Prefer 'pwsh' for cross-platform PowerShell.
-    /// Can be single-line or multi-line script.
+    /// Gets or sets the inline Windows PowerShell script (<c>powershell:</c> shortcut).
     /// </summary>
     [YamlMember(Alias = "powershell")]
     public string? PowerShell { get; set; }
 
     /// <summary>
-    /// Gets or sets the condition expression that determines whether the step runs.
-    /// Examples: "succeeded()", "failed()", "always()", "eq(variables['Build.Reason'], 'PullRequest')".
-    /// If not specified, the default is "succeeded()" (run only if previous steps succeeded).
+    /// Gets or sets the step condition (kept raw).
     /// </summary>
     [YamlMember(Alias = "condition")]
     public string? Condition { get; set; }
 
     /// <summary>
-    /// Gets or sets whether the step is enabled.
-    /// If false, the step is skipped during pipeline execution.
-    /// Useful for temporarily disabling steps without removing them.
+    /// Gets or sets whether the step is enabled (<c>enabled: false</c> keeps the step but skips it).
     /// </summary>
     [YamlMember(Alias = "enabled")]
     public bool? Enabled { get; set; }
 
     /// <summary>
-    /// Gets or sets whether the pipeline should continue if this step fails.
-    /// When true, subsequent steps will run even if this step fails.
-    /// The job will still be marked as failed, but execution continues.
+    /// Gets or sets whether the job continues when the step fails.
     /// </summary>
     [YamlMember(Alias = "continueOnError")]
     public bool? ContinueOnError { get; set; }
 
     /// <summary>
-    /// Gets or sets the timeout for the step in minutes.
-    /// If the step runs longer than the specified timeout, it is automatically cancelled.
+    /// Gets or sets the step timeout in minutes.
     /// </summary>
     [YamlMember(Alias = "timeoutInMinutes")]
     public int? TimeoutInMinutes { get; set; }
 
     /// <summary>
-    /// Gets or sets environment variables for the step.
-    /// These variables are available to the step during execution and override job-level variables.
+    /// Gets or sets the step environment variables (kept raw).
     /// </summary>
     [YamlMember(Alias = "env")]
     public Dictionary<string, string>? Env { get; set; }
 
     /// <summary>
-    /// Gets or sets the working directory for the step.
-    /// Specifies the directory where the step's script or task should execute.
-    /// Relative paths are resolved from the pipeline workspace root.
+    /// Gets or sets the working directory of script shortcuts.
     /// </summary>
     [YamlMember(Alias = "workingDirectory")]
     public string? WorkingDirectory { get; set; }
 
     /// <summary>
-    /// Gets or sets the target for checkout steps.
-    /// Specifies which repository to check out (e.g., 'self' for the current repository).
+    /// Gets or sets the checkout target: <c>self</c>, <c>none</c>, or a repository resource alias.
     /// </summary>
     [YamlMember(Alias = "checkout")]
     public string? Checkout { get; set; }
 
     /// <summary>
-    /// Gets or sets the retry count for the step.
-    /// If the step fails, it will be retried up to the specified number of times.
+    /// Gets or sets the checkout fetch depth.
+    /// </summary>
+    [YamlMember(Alias = "fetchDepth")]
+    public object? FetchDepth { get; set; }
+
+    /// <summary>
+    /// Gets or sets the checkout clean option.
+    /// </summary>
+    [YamlMember(Alias = "clean")]
+    public object? Clean { get; set; }
+
+    /// <summary>
+    /// Gets or sets the checkout submodules option.
+    /// </summary>
+    [YamlMember(Alias = "submodules")]
+    public object? Submodules { get; set; }
+
+    /// <summary>
+    /// Gets or sets the checkout LFS option.
+    /// </summary>
+    [YamlMember(Alias = "lfs")]
+    public object? Lfs { get; set; }
+
+    /// <summary>
+    /// Gets or sets the checkout persistCredentials option.
+    /// </summary>
+    [YamlMember(Alias = "persistCredentials")]
+    public object? PersistCredentials { get; set; }
+
+    /// <summary>
+    /// Gets or sets the <c>path</c> of a checkout (relative checkout directory) or of a download (target directory).
+    /// </summary>
+    [YamlMember(Alias = "path")]
+    public string? Path { get; set; }
+
+    /// <summary>
+    /// Gets or sets the publish shortcut (<c>- publish: &lt;path&gt;</c>).
+    /// </summary>
+    [YamlMember(Alias = "publish")]
+    public string? Publish { get; set; }
+
+    /// <summary>
+    /// Gets or sets the download shortcut (<c>- download: current|none|&lt;alias&gt;</c>).
+    /// </summary>
+    [YamlMember(Alias = "download")]
+    public string? Download { get; set; }
+
+    /// <summary>
+    /// Gets or sets the artifact name of a publish/download shortcut.
+    /// </summary>
+    [YamlMember(Alias = "artifact")]
+    public string? Artifact { get; set; }
+
+    /// <summary>
+    /// Gets or sets the file patterns of a download shortcut (string or list).
+    /// </summary>
+    [YamlMember(Alias = "patterns")]
+    public object? Patterns { get; set; }
+
+    /// <summary>
+    /// Gets or sets the steps template reference (<c>- template: steps.yml</c>). References are expanded before the
+    /// document is read; a value here means the reference sat where it could not be expanded.
+    /// </summary>
+    [YamlMember(Alias = "template")]
+    public string? Template { get; set; }
+
+    /// <summary>
+    /// Gets or sets the parameters passed to a steps template.
+    /// </summary>
+    [YamlMember(Alias = "parameters")]
+    public object? Parameters { get; set; }
+
+    /// <summary>
+    /// Gets or sets the retry count on task failure.
     /// </summary>
     [YamlMember(Alias = "retryCountOnTaskFailure")]
     public int? RetryCountOnTaskFailure { get; set; }
 
     /// <summary>
-    /// Determines the type of step based on its properties.
+    /// Gets or sets the failOnStderr option of script shortcuts.
     /// </summary>
-    /// <returns>A string indicating the step type: "task", "bash", "pwsh", "powershell", "script", or "checkout".</returns>
+    [YamlMember(Alias = "failOnStderr")]
+    public object? FailOnStderr { get; set; }
+
+    /// <summary>
+    /// Gets or sets the step target (container/host).
+    /// </summary>
+    [YamlMember(Alias = "target")]
+    public object? Target { get; set; }
+
+    /// <summary>
+    /// Determines the step kind.
+    /// </summary>
+    /// <returns>"template", "checkout", "task", "bash", "pwsh", "powershell", "script", "publish", "download", or "unknown".</returns>
     public string GetStepType()
     {
-        if (!string.IsNullOrEmpty(Checkout)) return "checkout";
-        if (!string.IsNullOrEmpty(Task)) return "task";
-        if (!string.IsNullOrEmpty(Bash)) return "bash";
-        if (!string.IsNullOrEmpty(Pwsh)) return "pwsh";
-        if (!string.IsNullOrEmpty(PowerShell)) return "powershell";
-        if (!string.IsNullOrEmpty(Script)) return "script";
+        if (Template is not null)
+        {
+            return "template";
+        }
+
+        if (Checkout is not null)
+        {
+            return "checkout";
+        }
+
+        if (Task is not null)
+        {
+            return "task";
+        }
+
+        if (Bash is not null)
+        {
+            return "bash";
+        }
+
+        if (Pwsh is not null)
+        {
+            return "pwsh";
+        }
+
+        if (PowerShell is not null)
+        {
+            return "powershell";
+        }
+
+        if (Script is not null)
+        {
+            return "script";
+        }
+
+        if (Publish is not null)
+        {
+            return "publish";
+        }
+
+        if (Download is not null)
+        {
+            return "download";
+        }
+
         return "unknown";
     }
 
     /// <summary>
-    /// Gets the script content based on the step type.
+    /// Gets the inline script content of a script shortcut, or null for other step kinds.
     /// </summary>
-    /// <returns>The script content if this is a script step, otherwise null.</returns>
     public string? GetScriptContent()
     {
         return Bash ?? Pwsh ?? PowerShell ?? Script;

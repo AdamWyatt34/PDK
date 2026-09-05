@@ -49,6 +49,16 @@ public record HostExecutionContext
     public ArtifactContext? ArtifactContext { get; init; }
 
     /// <summary>
+    /// Gets an optional callback that receives output lines while the step runs (live output).
+    /// </summary>
+    public Action<string>? OutputLineHandler { get; init; }
+
+    /// <summary>
+    /// Gets the per-step timeout, or null for none.
+    /// </summary>
+    public TimeSpan? Timeout { get; init; }
+
+    /// <summary>
     /// Resolves a working directory path relative to the workspace.
     /// </summary>
     /// <param name="relativePath">The relative path to resolve.</param>

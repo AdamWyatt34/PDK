@@ -51,7 +51,8 @@ public class RunCommandOutputTests
     [InlineData(StepStatusDisplay.StepStatus.Running, "cyan")]
     [InlineData(StepStatusDisplay.StepStatus.Success, "green")]
     [InlineData(StepStatusDisplay.StepStatus.Failed, "red")]
-    [InlineData(StepStatusDisplay.StepStatus.Skipped, "yellow")]
+    [InlineData(StepStatusDisplay.StepStatus.Skipped, "grey")]
+    [InlineData(StepStatusDisplay.StepStatus.AllowedFailure, "yellow")]
     public void StepStatusDisplay_GetColor_ReturnsCorrectColor(
         StepStatusDisplay.StepStatus status,
         string expectedColor)

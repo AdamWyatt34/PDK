@@ -286,4 +286,33 @@ public class ToolValidatorTests : RunnerTestBase
     }
 
     #endregion
+
+    #region CreateNotFoundException Tests
+
+    [Fact]
+    public void CreateNotFoundException_ReturnsExceptionWithToolSpecificSuggestions()
+    {
+        // Act
+        var exception = ToolValidator.CreateNotFoundException("dotnet", "alpine:3.19");
+
+        // Assert
+        exception.ToolName.Should().Be("dotnet");
+        exception.ImageName.Should().Be("alpine:3.19");
+        exception.Message.Should().Contain("dotnet").And.Contain("alpine:3.19");
+        exception.Suggestions.Should().NotBeEmpty();
+        exception.Suggestions.Should().Contain(s => s.Contains("mcr.microsoft.com/dotnet/sdk", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void CreateNotFoundException_UnknownTool_StillProvidesSuggestions()
+    {
+        // Act
+        var exception = ToolValidator.CreateNotFoundException("some-tool", "ubuntu:24.04");
+
+        // Assert
+        exception.ToolName.Should().Be("some-tool");
+        exception.Suggestions.Should().NotBeEmpty();
+    }
+
+    #endregion
 }

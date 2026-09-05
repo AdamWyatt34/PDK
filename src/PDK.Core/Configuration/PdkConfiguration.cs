@@ -1,6 +1,7 @@
 namespace PDK.Core.Configuration;
 
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Reflection;
 
 /// <summary>
@@ -51,7 +52,7 @@ public class PdkConfiguration : IConfiguration
                     int i => i,
                     long l => (int)l,
                     double d => (int)d,
-                    string s when int.TryParse(s, out var parsed) => parsed,
+                    string s when int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) => parsed,
                     _ => defaultValue
                 };
             }
@@ -93,7 +94,7 @@ public class PdkConfiguration : IConfiguration
                     float f => f,
                     int i => i,
                     long l => l,
-                    string s when double.TryParse(s, out var parsed) => parsed,
+                    string s when double.TryParse(s, NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out var parsed) => parsed,
                     _ => defaultValue
                 };
             }
@@ -239,6 +240,10 @@ public class PdkConfiguration : IConfiguration
         if (_config.Artifacts != null) keys.Add("artifacts");
         if (_config.Logging != null) keys.Add("logging");
         if (_config.Features != null) keys.Add("features");
+        if (_config.Runner != null) keys.Add("runner");
+        if (_config.Performance != null) keys.Add("performance");
+        if (_config.StepFiltering != null) keys.Add("stepFiltering");
+        if (_config.Watch != null) keys.Add("watch");
 
         return keys;
     }

@@ -1,10 +1,16 @@
 namespace PDK.Runners.Models;
 
 /// <summary>
-/// Represents the result of executing a command in a Docker container.
+/// Represents the result of executing a command in a Docker container or on the host.
 /// </summary>
 public record ExecutionResult
 {
+    /// <summary>
+    /// Exit code reported when a command was terminated because it exceeded its timeout
+    /// (mirrors the exit code of the <c>timeout(1)</c> utility).
+    /// </summary>
+    public const int TimeoutExitCode = 124;
+
     /// <summary>
     /// Gets or initializes the exit code returned by the command.
     /// A value of 0 typically indicates success, while non-zero values indicate errors.
@@ -25,6 +31,12 @@ public record ExecutionResult
     /// Gets or initializes the total duration of the command execution.
     /// </summary>
     public TimeSpan Duration { get; init; }
+
+    /// <summary>
+    /// Gets or initializes a value indicating whether the command was terminated because it exceeded
+    /// the requested timeout. When true, <see cref="ExitCode"/> is <see cref="TimeoutExitCode"/>.
+    /// </summary>
+    public bool TimedOut { get; init; }
 
     /// <summary>
     /// Gets a value indicating whether the command execution was successful.

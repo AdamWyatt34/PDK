@@ -184,6 +184,27 @@ public sealed class WatchModeUI
     }
 
     /// <summary>
+    /// Displays a cancelled run (Ctrl+C during execution). Not an error.
+    /// </summary>
+    /// <param name="runNumber">The run number.</param>
+    /// <param name="duration">How long the run was in flight.</param>
+    public void DisplayRunCancelled(int runNumber, TimeSpan duration)
+    {
+        _console.WriteLine();
+
+        if (_noColor)
+        {
+            _console.WriteLine($"- Run #{runNumber} cancelled after {FormatDuration(duration)}");
+        }
+        else
+        {
+            _console.MarkupLine($"[yellow]-[/] Run #{runNumber} [yellow]cancelled[/] after {FormatDuration(duration)}");
+        }
+
+        _console.WriteLine();
+    }
+
+    /// <summary>
     /// Displays the watch mode summary on exit.
     /// </summary>
     /// <param name="statistics">The execution statistics.</param>

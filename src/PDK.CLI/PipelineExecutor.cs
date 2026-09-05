@@ -8,6 +8,7 @@ using PDK.Core.Configuration;
 using PDK.Core.Filtering;
 using PDK.Core.Logging;
 using PDK.Core.Models;
+using PDK.Core.Performance;
 using PDK.Core.Progress;
 using PDK.CLI.Runners;
 using PDK.Core.Runners;
@@ -45,6 +46,7 @@ public class PipelineExecutor
     private readonly FilterConfirmationPrompt _confirmationPrompt;
     private readonly FilterOptionsBuilder _filterOptionsBuilder;
     private readonly ILoggerFactory _loggerFactory;
+    private readonly IPerformanceTracker? _performanceTracker;
 
     /// <summary>
     /// Initializes a new instance of <see cref="PipelineExecutor"/>.
@@ -69,6 +71,7 @@ public class PipelineExecutor
     /// <param name="confirmationPrompt">Filter confirmation prompt for user confirmation.</param>
     /// <param name="filterOptionsBuilder">Builder for converting ExecutionOptions to FilterOptions.</param>
     /// <param name="loggerFactory">Logger factory for creating loggers.</param>
+    /// <param name="performanceTracker">Optional performance tracker whose report is shown with --metrics.</param>
     public PipelineExecutor(
         PipelineParserFactory parserFactory,
         PDK.Runners.IContainerManager containerManager,
@@ -89,7 +92,8 @@ public class PipelineExecutor
         FilterPreviewUI previewUI,
         FilterConfirmationPrompt confirmationPrompt,
         FilterOptionsBuilder filterOptionsBuilder,
-        ILoggerFactory loggerFactory)
+        ILoggerFactory loggerFactory,
+        IPerformanceTracker? performanceTracker = null)
     {
         _parserFactory = parserFactory ?? throw new ArgumentNullException(nameof(parserFactory));
         _containerManager = containerManager ?? throw new ArgumentNullException(nameof(containerManager));
@@ -111,13 +115,16 @@ public class PipelineExecutor
         _confirmationPrompt = confirmationPrompt ?? throw new ArgumentNullException(nameof(confirmationPrompt));
         _filterOptionsBuilder = filterOptionsBuilder ?? throw new ArgumentNullException(nameof(filterOptionsBuilder));
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
+        _performanceTracker = performanceTracker;
     }
 
     /// <summary>
     /// Executes a pipeline based on the provided options.
     /// </summary>
     /// <param name="options">Execution options including file path, job selection, etc.</param>
-    public async Task Execute(ExecutionOptions options)
+    /// <param name="cancellationToken">Token that cancels the run (Ctrl+C).</param>
+    /// <returns>The outcome of the run, including the process exit code to use.</returns>
+    public async Task<PipelineRunResult> Execute(ExecutionOptions options, CancellationToken cancellationToken = default)
     {
         // Create correlation scope for this pipeline execution (REQ-11-005.5)
         using var correlationScope = CorrelationContext.CreateScope();
@@ -133,28 +140,65 @@ public class PipelineExecutor
 
         // Parse pipeline
         var parser = _parserFactory.GetParser(options.FilePath);
-        var pipeline = await parser.ParseFile(options.FilePath);
+        var pipeline = await parser.ParseFile(options.FilePath, options.ToParseOptions(Directory.GetCurrentDirectory()));
+
+        if (parser is PDK.Providers.IPipelineParserWarnings { Warnings.Count: > 0 } parserWarnings)
+        {
+            foreach (var warning in parserWarnings.Warnings)
+            {
+                _output.WriteWarning(warning);
+            }
+        }
 
         if (options.ValidateOnly)
         {
             _output.WriteSuccess("Pipeline validation successful");
-            return;
+            return PipelineRunResult.Succeeded();
         }
 
         // Initialize configuration, variables, and secrets (Sprint 7)
         var workspacePath = Directory.GetCurrentDirectory();
         var config = await InitializeVariablesAndSecretsAsync(options, workspacePath);
 
-        // Determine which jobs to run
-        var jobsToRun = string.IsNullOrEmpty(options.JobName)
-            ? pipeline.Jobs.Values.ToList()
-            : [pipeline.Jobs[options.JobName]];
+        // Determine which jobs to run, in dependency order
+        string? selectedJobId = null;
+        if (!string.IsNullOrEmpty(options.JobName))
+        {
+            selectedJobId = JobGraph.ResolveId(pipeline, options.JobName);
+            if (selectedJobId == null)
+            {
+                _output.WriteError($"Job '{options.JobName}' was not found in the pipeline.");
+                var available = pipeline.Jobs.Keys.Where(id => !string.IsNullOrEmpty(id)).ToList();
+                if (available.Count > 0)
+                {
+                    _output.WriteInfo($"Available jobs: {string.Join(", ", available)}");
+                }
+                return PipelineRunResult.Failed(ExitCodes.InvalidArguments, $"Job '{options.JobName}' not found");
+            }
+        }
+
+        IReadOnlyList<KeyValuePair<string, Job>> jobsToRun;
+        try
+        {
+            jobsToRun = JobGraph.Select(pipeline, selectedJobId, includeDependencies: !options.NoDependencies);
+        }
+        catch (PdkException ex)
+        {
+            _output.WriteError(ex.Message);
+            return PipelineRunResult.Failed(ExitCodes.Failure, ex.Message);
+        }
+
+        if (selectedJobId != null && jobsToRun.Count > 1)
+        {
+            var dependencies = jobsToRun.Where(j => j.Key != selectedJobId).Select(j => j.Key);
+            _output.WriteInfo($"Running dependencies of '{selectedJobId}' first: {string.Join(", ", dependencies)} (use --no-deps to skip them)");
+        }
 
         // Step filtering (Sprint 11 - REQ-11-007, REQ-11-008)
         IStepFilter? stepFilter = null;
         var filterOptions = _filterOptionsBuilder.Build(options, config);
 
-        if (filterOptions.HasFilters)
+        if (filterOptions.HasFilters || options.PreviewFilter || options.ConfirmFilter)
         {
             _logger.LogInformation("Step filtering active. Validating filter options...");
 
@@ -171,8 +215,7 @@ public class PipelineExecutor
                         _output.WriteInfo($"    Did you mean: {string.Join(", ", error.Suggestions)}?");
                     }
                 }
-                Environment.Exit(1);
-                return;
+                return PipelineRunResult.Failed(ExitCodes.InvalidArguments, "Filter validation failed");
             }
 
             // Display any warnings
@@ -192,7 +235,7 @@ public class PipelineExecutor
             if (filterOptions.PreviewOnly)
             {
                 _output.WriteInfo("Preview-only mode. Exiting without execution.");
-                return;
+                return PipelineRunResult.Succeeded();
             }
 
             // If confirmation required, prompt user
@@ -201,15 +244,15 @@ public class PipelineExecutor
                 if (!_confirmationPrompt.Confirm(preview))
                 {
                     _output.WriteInfo("Execution cancelled by user.");
-                    return;
+                    return PipelineRunResult.Succeeded();
                 }
             }
         }
 
         // Select runner (Sprint 10 - REQ-10-012)
         // Note: We select once for the first job's capabilities check
-        var firstJob = jobsToRun.FirstOrDefault();
-        var selection = await _runnerSelector.SelectRunnerAsync(options.RunnerType, firstJob);
+        var firstJob = jobsToRun.Select(j => j.Value).FirstOrDefault();
+        var selection = await _runnerSelector.SelectRunnerAsync(options.RunnerType, firstJob, config, cancellationToken);
         DisplayRunnerSelection(selection, options.Verbose);
 
         // Create the runner
@@ -224,41 +267,41 @@ public class PipelineExecutor
                 _progressReporter)
             : baseRunner;
 
-        // Execute jobs and collect results for summary
-        var allJobsSucceeded = true;
+        // Execute jobs in dependency order (independent jobs concurrently with --parallel) and collect results
         var totalJobs = jobsToRun.Count;
+        var runId = PDK.Core.Artifacts.ArtifactContext.GenerateRunId();
+        var maxParallel = options.ParallelSteps ? Math.Max(1, options.MaxParallelism) : 1;
         var jobResults = new List<JobExecutionResult>();
 
-        for (int i = 0; i < jobsToRun.Count; i++)
+        if (maxParallel > 1 && totalJobs > 1)
         {
-            var job = jobsToRun[i];
-            var jobNumber = i + 1;
+            _output.WriteInfo($"Running up to {maxParallel} independent jobs at a time; output lines are prefixed with the job name.");
+        }
 
-            // Report job start
-            await _progressReporter.ReportJobStartAsync(job.Name, jobNumber, totalJobs);
+        try
+        {
+            var completed = await JobScheduler.RunAsync(
+                jobsToRun,
+                (_, job) => JobGraph.DependencyIds(pipeline, job),
+                (jobId, job, number, finished, ct) => ExecuteJobAsync(
+                    pipeline, jobRunner, jobId, job, number, totalJobs, finished, options, config, workspacePath, runId, maxParallel > 1, ct),
+                maxParallel,
+                cancellationToken);
 
-            var stopwatch = Stopwatch.StartNew();
-
-            // Execute the job
-            var result = await jobRunner.RunJobAsync(job, workspacePath);
-            jobResults.Add(result);
-
-            stopwatch.Stop();
-
-            // Report job completion
-            await _progressReporter.ReportJobCompleteAsync(job.Name, result.Success, stopwatch.Elapsed);
-
-            if (!result.Success)
+            foreach (var (jobId, _) in jobsToRun)
             {
-                allJobsSucceeded = false;
-
-                // Display job error message if available
-                if (!string.IsNullOrEmpty(result.ErrorMessage))
+                if (completed.TryGetValue(jobId, out var jobResult))
                 {
-                    _output.WriteError($"  {result.ErrorMessage}");
+                    jobResults.Add(jobResult);
                 }
             }
         }
+        finally
+        {
+            CleanupRuntimeDirectory(workspacePath, runId);
+        }
+
+        var allJobsSucceeded = jobResults.All(r => r.Success);
 
         pipelineStartTime.Stop();
 
@@ -271,31 +314,285 @@ public class PipelineExecutor
             "Pipeline timing - Total: {TotalMs}ms, Jobs: {JobCount}, File: {FilePath}",
             pipelineStartTime.ElapsedMilliseconds, jobResults.Count, options.FilePath);
 
-        // Display execution summary (REQ-06-013)
-        var summaryData = BuildExecutionSummary(pipeline, jobResults, pipelineStartTime.Elapsed, allJobsSucceeded);
-        var summaryDisplay = new ExecutionSummaryDisplay(_console);
-        summaryDisplay.Display(summaryData);
-
-        // Display error context for failed steps (REQ-06-014)
-        if (!allJobsSucceeded)
+        // Display execution summary (REQ-06-013); --silent only shows errors
+        if (!options.Silent)
         {
-            var failedSteps = GetFailedSteps(jobResults);
-            if (failedSteps.Any())
+            var summaryData = ExecutionSummaryData.FromJobResults(pipeline, jobResults, pipelineStartTime.Elapsed, allJobsSucceeded);
+            var summaryDisplay = new ExecutionSummaryDisplay(_console);
+            summaryDisplay.Display(summaryData);
+
+            // Display error context for failed steps (REQ-06-014)
+            if (!allJobsSucceeded)
             {
-                summaryDisplay.DisplayErrorContext(failedSteps);
+                var failedSteps = ExecutionSummaryBuilder.GetFailedSteps(jobResults).ToList();
+                if (failedSteps.Count > 0)
+                {
+                    summaryDisplay.DisplayErrorContext(failedSteps);
+                }
             }
+        }
+
+        if (options.ShowMetrics)
+        {
+            DisplayMetrics(jobResults, pipelineStartTime.Elapsed);
         }
 
         _output.WriteLine();
         if (allJobsSucceeded)
         {
             _output.WriteSuccess("Pipeline execution complete!");
+            return PipelineRunResult.Succeeded(jobResults);
         }
-        else
+
+        _output.WriteError("Pipeline execution failed!");
+        return PipelineRunResult.Failed(ExitCodes.Failure, "One or more jobs failed", jobResults);
+    }
+
+    /// <summary>
+    /// Runs one job: evaluates its condition against the results of the jobs it depends on, then hands it
+    /// to the job runner. Never throws for job failures; cancellation propagates.
+    /// </summary>
+    private async Task<JobExecutionResult> ExecuteJobAsync(
+        Pipeline pipeline,
+        PDK.Runners.IJobRunner jobRunner,
+        string jobId,
+        Job job,
+        int jobNumber,
+        int totalJobs,
+        IReadOnlyDictionary<string, JobExecutionResult> finished,
+        ExecutionOptions options,
+        PdkConfig? config,
+        string workspacePath,
+        string runId,
+        bool concurrent,
+        CancellationToken cancellationToken)
+    {
+        var reporter = concurrent ? new PrefixedProgressReporter(_progressReporter, job.Name) : _progressReporter;
+        var runContext = BuildJobRunContext(pipeline, job, options, config, workspacePath, runId, finished, reporter, cancellationToken);
+
+        // Evaluate the job condition against its dependencies' results
+        var decision = JobConditionEvaluator.Evaluate(job, runContext);
+        if (!decision.Run)
         {
-            _output.WriteError("Pipeline execution failed!");
-            Environment.Exit(1);
+            var now = DateTimeOffset.Now;
+            var earlyResult = new JobExecutionResult
+            {
+                JobName = job.Name,
+                Success = !decision.Failed,
+                Skipped = !decision.Failed,
+                SkipReason = decision.Failed ? null : decision.Reason,
+                ErrorMessage = decision.Failed ? decision.Reason : null,
+                StepResults = [],
+                Duration = TimeSpan.Zero,
+                StartTime = now,
+                EndTime = now
+            };
+
+            if (decision.Failed)
+            {
+                _output.WriteError($"Job '{job.Name}' failed: {decision.Reason}");
+            }
+            else
+            {
+                _output.WriteWarning($"Skipping job '{job.Name}': {decision.Reason}");
+            }
+
+            return earlyResult;
         }
+
+        await reporter.ReportJobStartAsync(job.Name, jobNumber, totalJobs, cancellationToken);
+
+        var stopwatch = Stopwatch.StartNew();
+        var result = await jobRunner.RunJobAsync(job, runContext, cancellationToken);
+        stopwatch.Stop();
+
+        await reporter.ReportJobCompleteAsync(job.Name, result.Success, stopwatch.Elapsed, cancellationToken);
+
+        if (!result.Success && !string.IsNullOrEmpty(result.ErrorMessage))
+        {
+            _output.WriteError($"  {(concurrent ? $"[{job.Name}] " : string.Empty)}{result.ErrorMessage}");
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Builds the run context for one job: pipeline, event, policies, dependency results and outputs,
+    /// resolver variables/secrets, and Docker resource settings from configuration.
+    /// </summary>
+    private JobRunContext BuildJobRunContext(
+        Pipeline pipeline,
+        Job job,
+        ExecutionOptions options,
+        PdkConfig? config,
+        string workspacePath,
+        string runId,
+        IReadOnlyDictionary<string, JobExecutionResult> finished,
+        IProgressReporter reporter,
+        CancellationToken cancellationToken)
+    {
+        var dependencyIds = JobGraph.DependencyIds(pipeline, job);
+        var needsResults = new Dictionary<string, string>(StringComparer.Ordinal);
+        var needsOutputs = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal);
+
+        foreach (var id in dependencyIds)
+        {
+            // A dependency that was not part of this run (--no-deps) is assumed to have succeeded
+            if (finished.TryGetValue(id, out var dependency))
+            {
+                needsResults[id] = dependency.Skipped ? "skipped" : dependency.Success ? "success" : "failure";
+                needsOutputs[id] = dependency.Outputs;
+            }
+            else
+            {
+                needsResults[id] = "success";
+            }
+        }
+
+        var context = new JobRunContext
+        {
+            WorkspacePath = workspacePath,
+            Pipeline = pipeline,
+            NeedsResults = needsResults,
+            NeedsOutputs = needsOutputs,
+            EventName = string.IsNullOrWhiteSpace(options.EventName) ? "push" : options.EventName,
+            Inputs = options.Parameters,
+            RunId = runId,
+            StrictUnsupportedSteps = options.StrictUnsupportedSteps,
+            OutputLineHandler = CreateOutputHandler(reporter, cancellationToken),
+            ProgressReporter = ReferenceEquals(reporter, _progressReporter) ? null : reporter,
+            ContainerMemoryLimit = ParseMemoryLimit(config?.Docker?.MemoryLimit),
+            ContainerCpuLimit = config?.Docker?.CpuLimit,
+            KeepContainers = options.KeepContainers,
+            ForcePullImages = options.NoCacheImages,
+            ContainerNetwork = config?.Docker?.Network
+        };
+
+        return JobRunnerSupport.WithResolverVariables(context, _variableResolver);
+    }
+
+    /// <summary>
+    /// Shows the performance metrics (--metrics): container and image overhead in Docker mode and the slowest steps.
+    /// </summary>
+    private void DisplayMetrics(List<JobExecutionResult> jobResults, TimeSpan totalDuration)
+    {
+        var report = _performanceTracker?.GetReport();
+        var table = new Table().Border(TableBorder.Rounded).Title("Performance Metrics");
+        table.AddColumn("Metric");
+        table.AddColumn("Value");
+        table.AddRow("Total duration", StepStatusDisplay.FormatDuration(totalDuration));
+
+        var executed = jobResults.SelectMany(j => j.StepResults.Select(s => (Job: j.JobName, Step: s)))
+            .Where(x => !x.Step.Skipped)
+            .ToList();
+        var stepTime = TimeSpan.FromTicks(executed.Sum(x => x.Step.Duration.Ticks));
+        table.AddRow("Time in steps", StepStatusDisplay.FormatDuration(stepTime));
+
+        if (report != null && (report.ContainersCreated > 0 || report.ImagesPulled > 0 || report.ImagesCached > 0))
+        {
+            table.AddRow("Container overhead", StepStatusDisplay.FormatDuration(report.ContainerOverhead));
+            table.AddRow("Image pull time", StepStatusDisplay.FormatDuration(report.ImagePullTime));
+            table.AddRow("Containers created", report.ContainersCreated.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            table.AddRow("Images pulled / cached", $"{report.ImagesPulled} / {report.ImagesCached}");
+            if (report.PulledImages.Count > 0)
+            {
+                table.AddRow("Pulled images", Markup.Escape(string.Join(", ", report.PulledImages)));
+            }
+        }
+
+        foreach (var (jobName, step) in executed.OrderByDescending(x => x.Step.Duration).Take(10))
+        {
+            table.AddRow(Markup.Escape($"Step: {jobName} / {step.StepName}"), StepStatusDisplay.FormatDuration(step.Duration));
+        }
+
+        _console.WriteLine();
+        _console.Write(table);
+    }
+
+    /// <summary>
+    /// Removes the per-run scratch directory (<c>.pdk/runtime/&lt;runId&gt;</c>) the job runners used for
+    /// GITHUB_OUTPUT/GITHUB_ENV files, and the parent when it is empty.
+    /// </summary>
+    private void CleanupRuntimeDirectory(string workspacePath, string runId)
+    {
+        try
+        {
+            var runtimeRoot = Path.Combine(workspacePath, ".pdk", "runtime");
+            var runDirectory = Path.Combine(runtimeRoot, runId);
+            if (Directory.Exists(runDirectory))
+            {
+                Directory.Delete(runDirectory, recursive: true);
+            }
+
+            if (Directory.Exists(runtimeRoot) && !Directory.EnumerateFileSystemEntries(runtimeRoot).Any())
+            {
+                Directory.Delete(runtimeRoot);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogDebug(ex, "Could not remove the runtime directory for run {RunId}", runId);
+        }
+    }
+
+    /// <summary>
+    /// Creates the callback that streams step output lines to the progress reporter.
+    /// </summary>
+    private static Action<string>? CreateOutputHandler(IProgressReporter reporter, CancellationToken cancellationToken)
+    {
+        if (reporter is NullProgressReporter)
+        {
+            return null;
+        }
+
+        return line =>
+        {
+            try
+            {
+                reporter.ReportOutputAsync(line, cancellationToken).GetAwaiter().GetResult();
+            }
+            catch (OperationCanceledException)
+            {
+                // The run is being cancelled; dropping live output is fine.
+            }
+        };
+    }
+
+    /// <summary>
+    /// Parses a Docker memory limit such as <c>512m</c> or <c>2g</c> into bytes.
+    /// </summary>
+    internal static long? ParseMemoryLimit(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        var value = text.Trim().ToLowerInvariant();
+        var multiplier = 1L;
+        if (value.EndsWith('k'))
+        {
+            multiplier = 1024L;
+            value = value[..^1];
+        }
+        else if (value.EndsWith('m'))
+        {
+            multiplier = 1024L * 1024L;
+            value = value[..^1];
+        }
+        else if (value.EndsWith('g'))
+        {
+            multiplier = 1024L * 1024L * 1024L;
+            value = value[..^1];
+        }
+        else if (value.EndsWith('b'))
+        {
+            value = value[..^1];
+        }
+
+        return double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var number) && number > 0
+            ? (long)(number * multiplier)
+            : null;
     }
 
     /// <summary>
@@ -303,103 +600,34 @@ public class PipelineExecutor
     /// </summary>
     private void ConfigureProgressReporterMode(ExecutionOptions options)
     {
+        _output.SetMinimumLevel(options switch
+        {
+            { Silent: true } => Microsoft.Extensions.Logging.LogLevel.Error,
+            { Quiet: true } => Microsoft.Extensions.Logging.LogLevel.Warning,
+            { Trace: true } => Microsoft.Extensions.Logging.LogLevel.Trace,
+            { Verbose: true } => Microsoft.Extensions.Logging.LogLevel.Debug,
+            _ => Microsoft.Extensions.Logging.LogLevel.Information
+        });
+
         if (_progressReporter is ConsoleProgressReporter consoleReporter)
         {
-            if (options.Quiet)
+            if (options.Silent)
+            {
+                consoleReporter.SetOutputMode(ConsoleProgressReporter.OutputMode.Silent);
+            }
+            else if (options.Quiet)
             {
                 consoleReporter.SetOutputMode(ConsoleProgressReporter.OutputMode.Quiet);
             }
-            else if (options.Verbose)
+            else if (options.Verbose || options.Trace)
             {
                 consoleReporter.SetOutputMode(ConsoleProgressReporter.OutputMode.Verbose);
             }
-        }
-    }
-
-    /// <summary>
-    /// Builds the execution summary data from job results.
-    /// </summary>
-    private static ExecutionSummaryData BuildExecutionSummary(
-        Pipeline pipeline,
-        List<JobExecutionResult> jobResults,
-        TimeSpan totalDuration,
-        bool allJobsSucceeded)
-    {
-        var jobSummaries = new List<JobSummary>();
-        var totalSteps = 0;
-        var successfulSteps = 0;
-        var failedSteps = 0;
-        var skippedSteps = 0;
-
-        foreach (var jobResult in jobResults)
-        {
-            var stepSummaries = new List<StepSummary>();
-
-            foreach (var stepResult in jobResult.StepResults)
+            else
             {
-                totalSteps++;
-                if (stepResult.Success)
-                {
-                    successfulSteps++;
-                }
-                else
-                {
-                    failedSteps++;
-                }
-
-                stepSummaries.Add(new StepSummary
-                {
-                    Name = stepResult.StepName,
-                    Success = stepResult.Success,
-                    Duration = stepResult.Duration,
-                    ExitCode = stepResult.Success ? null : stepResult.ExitCode,
-                    Output = stepResult.Output,
-                    ErrorOutput = stepResult.ErrorOutput
-                });
+                consoleReporter.SetOutputMode(ConsoleProgressReporter.OutputMode.Normal);
             }
-
-            jobSummaries.Add(new JobSummary
-            {
-                Name = jobResult.JobName,
-                Success = jobResult.Success,
-                Duration = jobResult.Duration,
-                Steps = stepSummaries
-            });
         }
-
-        return new ExecutionSummaryData
-        {
-            PipelineName = pipeline.Name,
-            OverallSuccess = allJobsSucceeded,
-            TotalDuration = totalDuration,
-            TotalJobs = jobResults.Count,
-            SuccessfulJobs = jobResults.Count(j => j.Success),
-            FailedJobs = jobResults.Count(j => !j.Success),
-            TotalSteps = totalSteps,
-            SuccessfulSteps = successfulSteps,
-            FailedSteps = failedSteps,
-            SkippedSteps = skippedSteps,
-            Jobs = jobSummaries
-        };
-    }
-
-    /// <summary>
-    /// Gets all failed steps from job results for error context display.
-    /// </summary>
-    private static IEnumerable<StepSummary> GetFailedSteps(List<JobExecutionResult> jobResults)
-    {
-        return jobResults
-            .SelectMany(j => j.StepResults)
-            .Where(s => !s.Success)
-            .Select(s => new StepSummary
-            {
-                Name = s.StepName,
-                Success = s.Success,
-                Duration = s.Duration,
-                ExitCode = s.ExitCode,
-                Output = s.Output,
-                ErrorOutput = s.ErrorOutput
-            });
     }
 
     /// <summary>
@@ -440,20 +668,19 @@ public class PipelineExecutor
             _secretDetector.WarnIfPotentialSecret(name, value, _logger);
         }
 
-        // 5. Apply CLI --secret arguments (with warning already displayed in handler)
-        foreach (var (name, value) in options.CliSecrets)
-        {
-            _variableResolver.SetVariable(name, value, VariableSource.Secret);
-            _secretMasker.RegisterSecret(value);
-        }
-
-        // 6. Load secrets from storage
+        // 5. Load secrets from storage and register their values with the masker
         await _variableResolver.LoadSecretsAsync(_secretManager);
-
-        // 7. Register all stored secret values with masker
         var allSecrets = await _secretManager.GetAllSecretsAsync();
         foreach (var (_, value) in allSecrets)
         {
+            _secretMasker.RegisterSecret(value);
+        }
+
+        // 6. Apply CLI --secret arguments last so they override stored secrets of the same name
+        //    (the CLI warning is displayed by the command handler)
+        foreach (var (name, value) in options.CliSecrets)
+        {
+            _variableResolver.SetVariable(name, value, VariableSource.Secret);
             _secretMasker.RegisterSecret(value);
         }
 

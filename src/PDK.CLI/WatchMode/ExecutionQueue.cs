@@ -5,7 +5,9 @@ namespace PDK.CLI.WatchMode;
 
 /// <summary>
 /// Manages pipeline execution queue.
-/// Ensures sequential execution with at most one pending request.
+/// Guarantees sequential runs (a semaphore serialises executions and the run loop hands over to the
+/// pending request under the same lock that <see cref="EnqueueExecution"/> uses), with at most one
+/// pending request.
 /// </summary>
 public sealed class ExecutionQueue : IExecutionQueue, IDisposable
 {
@@ -32,7 +34,7 @@ public sealed class ExecutionQueue : IExecutionQueue, IDisposable
         {
             lock (_lock)
             {
-                return _currentExecution is not null && !_currentExecution.IsCompleted;
+                return _currentExecution is { IsCompleted: false };
             }
         }
     }
@@ -81,35 +83,30 @@ public sealed class ExecutionQueue : IExecutionQueue, IDisposable
 
         lock (_lock)
         {
-            if (!IsExecuting)
+            var request = new PendingExecution(trigger, executionFunc);
+
+            if (_currentExecution is null || _currentExecution.IsCompleted)
             {
-                // Start immediately
-                _runNumber++;
-                var runNumber = _runNumber;
-                _currentCts = new CancellationTokenSource();
-                var cts = _currentCts;
-
-                _currentExecution = Task.Run(async () =>
-                {
-                    await ExecuteWithEventsAsync(runNumber, trigger, executionFunc, cts.Token);
-                    ProcessPendingExecution();
-                });
-
-                _logger.LogDebug("Started execution run #{RunNumber}", runNumber);
+                // No run loop is active: start one. The loop only exits under this lock, so a
+                // concurrent enqueue can never start a second loop while one is still handing over.
+                // The token source exists before the loop starts, so a cancel that arrives before the
+                // run has begun still reaches it.
+                var cts = new CancellationTokenSource();
+                _currentCts = cts;
+                _currentExecution = Task.Run(() => RunLoopAsync(request, cts));
+                _logger.LogDebug("Started execution run loop");
                 return true;
             }
-            else
-            {
-                // Queue as pending (drop any existing pending)
-                if (_pendingExecution is not null)
-                {
-                    _logger.LogDebug("Dropping intermediate pending execution");
-                }
 
-                _pendingExecution = new PendingExecution(trigger, executionFunc);
-                _logger.LogDebug("Queued pending execution with {Count} changes", trigger.Count);
-                return true;
+            // Queue as pending (drop any existing pending)
+            if (_pendingExecution is not null)
+            {
+                _logger.LogDebug("Dropping intermediate pending execution");
             }
+
+            _pendingExecution = request;
+            _logger.LogDebug("Queued pending execution with {Count} changes", trigger.Count);
+            return true;
         }
     }
 
@@ -164,12 +161,9 @@ public sealed class ExecutionQueue : IExecutionQueue, IDisposable
             lock (_lock)
             {
                 execution = _currentExecution;
-                if (execution is null || execution.IsCompleted)
+                if ((execution is null || execution.IsCompleted) && _pendingExecution is null)
                 {
-                    if (_pendingExecution is null)
-                    {
-                        return;
-                    }
+                    return;
                 }
             }
 
@@ -190,7 +184,7 @@ public sealed class ExecutionQueue : IExecutionQueue, IDisposable
             }
 
             // Small delay before checking again for pending
-            await Task.Delay(50, cancellationToken);
+            await Task.Delay(20, cancellationToken);
         }
     }
 
@@ -201,12 +195,113 @@ public sealed class ExecutionQueue : IExecutionQueue, IDisposable
         {
             lock (_lock)
             {
-                _currentCts?.Cancel();
-                _currentCts?.Dispose();
+                try
+                {
+                    _currentCts?.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Already disposed by the run loop
+                }
+
                 _pendingExecution = null;
+                _disposed = true;
             }
             _executionSemaphore.Dispose();
-            _disposed = true;
+        }
+    }
+
+    /// <summary>
+    /// Runs the first request and then every pending request handed over while it was running.
+    /// A run owns a token source from before it is visible until it hands over to the next one,
+    /// so <see cref="CancelCurrentAsync"/> can never fall into a gap between two runs.
+    /// </summary>
+    private async Task RunLoopAsync(PendingExecution first, CancellationTokenSource firstCts)
+    {
+        var next = first;
+        var cts = firstCts;
+
+        while (true)
+        {
+            int runNumber;
+            lock (_lock)
+            {
+                _runNumber++;
+                runNumber = _runNumber;
+            }
+
+            if (!await TryAcquireSemaphoreAsync())
+            {
+                lock (_lock)
+                {
+                    if (ReferenceEquals(_currentCts, cts))
+                    {
+                        _currentCts = null;
+                    }
+                }
+
+                cts.Dispose();
+                return; // disposed
+            }
+
+            try
+            {
+                await ExecuteWithEventsAsync(runNumber, next.Trigger, next.ExecutionFunc, cts.Token);
+            }
+            finally
+            {
+                ReleaseSemaphore();
+            }
+
+            var finished = cts;
+            lock (_lock)
+            {
+                if (_pendingExecution is null || _disposed)
+                {
+                    // Exit under the lock so that EnqueueExecution observes either a running loop
+                    // or no loop at all - never a loop that is about to exit.
+                    if (ReferenceEquals(_currentCts, finished))
+                    {
+                        _currentCts = null;
+                    }
+
+                    _currentExecution = null;
+                    finished.Dispose();
+                    return;
+                }
+
+                next = _pendingExecution;
+                _pendingExecution = null;
+                cts = new CancellationTokenSource();
+                _currentCts = cts;
+                finished.Dispose();
+                _logger.LogDebug("Starting pending execution");
+            }
+        }
+    }
+
+    private async Task<bool> TryAcquireSemaphoreAsync()
+    {
+        try
+        {
+            await _executionSemaphore.WaitAsync();
+            return true;
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
+        }
+    }
+
+    private void ReleaseSemaphore()
+    {
+        try
+        {
+            _executionSemaphore.Release();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Queue disposed while a run was in flight
         }
     }
 
@@ -219,6 +314,7 @@ public sealed class ExecutionQueue : IExecutionQueue, IDisposable
         var startTime = DateTimeOffset.Now;
         var stopwatch = Stopwatch.StartNew();
         bool success = false;
+        bool cancelled = false;
         string? errorMessage = null;
 
         try
@@ -236,6 +332,7 @@ public sealed class ExecutionQueue : IExecutionQueue, IDisposable
         {
             _logger.LogDebug("Execution run #{RunNumber} was cancelled", runNumber);
             success = false;
+            cancelled = true;
             errorMessage = "Execution was cancelled";
         }
         catch (Exception ex)
@@ -248,49 +345,21 @@ public sealed class ExecutionQueue : IExecutionQueue, IDisposable
         {
             stopwatch.Stop();
 
-            ExecutionCompleted?.Invoke(this, new ExecutionCompletedEventArgs
+            try
             {
-                RunNumber = runNumber,
-                Success = success,
-                Duration = stopwatch.Elapsed,
-                ErrorMessage = errorMessage
-            });
-
-            lock (_lock)
-            {
-                _currentCts?.Dispose();
-                _currentCts = null;
-                _currentExecution = null;
+                ExecutionCompleted?.Invoke(this, new ExecutionCompletedEventArgs
+                {
+                    RunNumber = runNumber,
+                    Success = success,
+                    Duration = stopwatch.Elapsed,
+                    ErrorMessage = errorMessage,
+                    Cancelled = cancelled
+                });
             }
-        }
-    }
-
-    private void ProcessPendingExecution()
-    {
-        PendingExecution? pending;
-
-        lock (_lock)
-        {
-            pending = _pendingExecution;
-            _pendingExecution = null;
-
-            if (pending is null)
+            catch (Exception ex)
             {
-                return;
+                _logger.LogError(ex, "Error in execution completed handler");
             }
-
-            _runNumber++;
-            var runNumber = _runNumber;
-            _currentCts = new CancellationTokenSource();
-            var cts = _currentCts;
-
-            _currentExecution = Task.Run(async () =>
-            {
-                await ExecuteWithEventsAsync(runNumber, pending.Trigger, pending.ExecutionFunc, cts.Token);
-                ProcessPendingExecution();
-            });
-
-            _logger.LogDebug("Started pending execution run #{RunNumber}", runNumber);
         }
     }
 

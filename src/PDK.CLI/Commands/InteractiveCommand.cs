@@ -1,7 +1,9 @@
 namespace PDK.CLI.Commands;
 
+using PDK.CLI.Runners;
 using PDK.CLI.UI;
 using PDK.Core.Progress;
+using PDK.Core.Runners;
 using Spectre.Console;
 
 /// <summary>
@@ -12,23 +14,9 @@ public sealed class InteractiveCommand
 {
     private readonly IPipelineParserFactory _parserFactory;
     private readonly IAnsiConsole _console;
-    private readonly PDK.Runners.IJobRunner _jobRunner;
+    private readonly IRunnerFactory _runnerFactory;
+    private readonly IRunnerSelector _runnerSelector;
     private readonly IProgressReporter _progressReporter;
-
-    /// <summary>
-    /// Common pipeline file patterns to auto-detect.
-    /// </summary>
-    private static readonly string[] PipelinePatterns =
-    [
-        ".github/workflows/*.yml",
-        ".github/workflows/*.yaml",
-        "azure-pipelines.yml",
-        "azure-pipelines.yaml",
-        ".azure-pipelines/*.yml",
-        ".azure-pipelines/*.yaml",
-        "*.pipeline.yml",
-        "*.pipeline.yaml"
-    ];
 
     /// <summary>
     /// Gets or sets the pipeline file to use.
@@ -36,21 +24,29 @@ public sealed class InteractiveCommand
     public FileInfo? File { get; set; }
 
     /// <summary>
+    /// Gets or sets the requested runner type. Defaults to automatic selection.
+    /// </summary>
+    public RunnerType RunnerType { get; set; } = RunnerType.Auto;
+
+    /// <summary>
     /// Initializes a new instance of <see cref="InteractiveCommand"/>.
     /// </summary>
     /// <param name="parserFactory">Factory for getting pipeline parsers.</param>
     /// <param name="console">Spectre.Console instance for UI.</param>
-    /// <param name="jobRunner">Job runner for executing jobs.</param>
+    /// <param name="runnerFactory">Factory that creates the job runner for the selected runner type.</param>
+    /// <param name="runnerSelector">Selector that decides between Docker and host execution.</param>
     /// <param name="progressReporter">Progress reporter for execution feedback.</param>
     public InteractiveCommand(
         IPipelineParserFactory parserFactory,
         IAnsiConsole console,
-        PDK.Runners.IJobRunner jobRunner,
+        IRunnerFactory runnerFactory,
+        IRunnerSelector runnerSelector,
         IProgressReporter progressReporter)
     {
         _parserFactory = parserFactory ?? throw new ArgumentNullException(nameof(parserFactory));
         _console = console ?? throw new ArgumentNullException(nameof(console));
-        _jobRunner = jobRunner ?? throw new ArgumentNullException(nameof(jobRunner));
+        _runnerFactory = runnerFactory ?? throw new ArgumentNullException(nameof(runnerFactory));
+        _runnerSelector = runnerSelector ?? throw new ArgumentNullException(nameof(runnerSelector));
         _progressReporter = progressReporter ?? throw new ArgumentNullException(nameof(progressReporter));
     }
 
@@ -64,31 +60,43 @@ public sealed class InteractiveCommand
         try
         {
             // Determine pipeline file
-            var filePath = await ResolvePipelineFileAsync(cancellationToken);
+            var filePath = ResolvePipelineFile();
             if (filePath == null)
-                return 1;
+                return ExitCodes.FileNotFound;
 
             // Parse pipeline
             var parser = _parserFactory.GetParser(filePath);
             var pipeline = await parser.ParseFile(filePath);
 
+            // Select the runner the same way `pdk run` does (Docker when available, host otherwise)
+            var selection = await _runnerSelector.SelectRunnerAsync(
+                RunnerType,
+                pipeline.Jobs.Values.FirstOrDefault(),
+                cancellationToken);
+            _console.MarkupLine($"[dim]Using {selection.SelectedRunner} runner: {Markup.Escape(selection.Reason ?? string.Empty)}[/]");
+            if (!string.IsNullOrEmpty(selection.Warning))
+            {
+                _console.MarkupLine($"[yellow]{Markup.Escape(selection.Warning)}[/]");
+            }
+            var jobRunner = _runnerFactory.CreateRunner(selection.SelectedRunner);
+
             // Launch interactive menu
-            var menu = new InteractiveMenu(_console, _jobRunner, _progressReporter);
+            var menu = new InteractiveMenu(_console, jobRunner, _progressReporter);
             await menu.RunAsync(pipeline, filePath, cancellationToken);
 
-            return 0;
+            return ExitCodes.Success;
         }
         catch (OperationCanceledException)
         {
-            // Clean exit on Ctrl+C
+            // Ctrl+C is the normal way to leave the interactive menu, so treat it as a clean exit.
             _console.WriteLine();
             _console.MarkupLine("[dim]Cancelled.[/]");
-            return 0;
+            return ExitCodes.Success;
         }
         catch (Exception ex)
         {
             _console.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
-            return 1;
+            return ExitCodes.Failure;
         }
     }
 
@@ -96,7 +104,7 @@ public sealed class InteractiveCommand
     /// Resolves the pipeline file to use.
     /// If a file was specified, uses that. Otherwise, auto-detects or prompts.
     /// </summary>
-    private Task<string?> ResolvePipelineFileAsync(CancellationToken cancellationToken)
+    private string? ResolvePipelineFile()
     {
         // If file was explicitly specified, use it
         if (File != null)
@@ -104,19 +112,19 @@ public sealed class InteractiveCommand
             if (!File.Exists)
             {
                 _console.MarkupLine($"[red]Error:[/] File not found: {Markup.Escape(File.FullName)}");
-                return Task.FromResult<string?>(null);
+                return null;
             }
-            return Task.FromResult<string?>(File.FullName);
+            return File.FullName;
         }
 
         // Auto-detect pipeline files
-        var detectedFiles = DetectPipelineFiles();
+        var detectedFiles = PipelineFileLocator.Discover();
 
         if (detectedFiles.Count == 0)
         {
             _console.MarkupLine("[red]No pipeline files found.[/]");
-            _console.MarkupLine("[dim]Looked for: .github/workflows/*.yml, azure-pipelines.yml, etc.[/]");
-            return Task.FromResult<string?>(null);
+            _console.MarkupLine($"[dim]Looked for: {Markup.Escape(string.Join(", ", PipelineFileLocator.SearchDescriptions))}[/]");
+            return null;
         }
 
         if (detectedFiles.Count == 1)
@@ -124,7 +132,7 @@ public sealed class InteractiveCommand
             var filePath = detectedFiles[0];
             _console.MarkupLine($"[cyan]Auto-detected:[/] {Markup.Escape(filePath)}");
             _console.WriteLine();
-            return Task.FromResult<string?>(filePath);
+            return filePath;
         }
 
         // Multiple files - prompt user to select
@@ -133,57 +141,9 @@ public sealed class InteractiveCommand
             new SelectionPrompt<string>()
                 .Title("Select a pipeline file:")
                 .PageSize(10)
+                .UseConverter(Markup.Escape)
                 .AddChoices(detectedFiles));
 
-        return Task.FromResult<string?>(selected);
-    }
-
-    /// <summary>
-    /// Detects pipeline files in the current directory.
-    /// </summary>
-    private static List<string> DetectPipelineFiles()
-    {
-        var currentDir = Directory.GetCurrentDirectory();
-        var files = new List<string>();
-
-        // Check GitHub Actions workflows
-        var githubDir = Path.Combine(currentDir, ".github", "workflows");
-        if (Directory.Exists(githubDir))
-        {
-            files.AddRange(Directory.GetFiles(githubDir, "*.yml"));
-            files.AddRange(Directory.GetFiles(githubDir, "*.yaml"));
-        }
-
-        // Check Azure DevOps pipelines
-        var azurePipelinesFile = Path.Combine(currentDir, "azure-pipelines.yml");
-        if (System.IO.File.Exists(azurePipelinesFile))
-        {
-            files.Add(azurePipelinesFile);
-        }
-
-        var azurePipelinesFileYaml = Path.Combine(currentDir, "azure-pipelines.yaml");
-        if (System.IO.File.Exists(azurePipelinesFileYaml))
-        {
-            files.Add(azurePipelinesFileYaml);
-        }
-
-        // Check .azure-pipelines directory
-        var azureDir = Path.Combine(currentDir, ".azure-pipelines");
-        if (Directory.Exists(azureDir))
-        {
-            files.AddRange(Directory.GetFiles(azureDir, "*.yml"));
-            files.AddRange(Directory.GetFiles(azureDir, "*.yaml"));
-        }
-
-        // Check for *.pipeline.yml/yaml in current directory
-        files.AddRange(Directory.GetFiles(currentDir, "*.pipeline.yml"));
-        files.AddRange(Directory.GetFiles(currentDir, "*.pipeline.yaml"));
-
-        // Return relative paths for cleaner display
-        return files
-            .Distinct()
-            .Select(f => Path.GetRelativePath(currentDir, f))
-            .OrderBy(f => f)
-            .ToList();
+        return selected;
     }
 }

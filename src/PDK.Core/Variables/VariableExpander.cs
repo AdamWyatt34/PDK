@@ -252,8 +252,14 @@ public partial class VariableExpander : IVariableExpander
             throw VariableException.CircularReference(variableName, chain);
         }
 
-        // Resolve the variable
+        // Resolve the variable. An unknown variable without a modifier is left as written so
+        // that a typo does not silently become an empty string (use ${VAR:-} to blank it).
         var value = resolver.Resolve(variableName);
+        if (value == null && string.IsNullOrEmpty(varRef.Modifier))
+        {
+            return "${" + variableName + "}";
+        }
+
         var expanded = ProcessModifier(variableName, value, varRef.Modifier);
 
         // If the expanded value contains variables, recursively expand

@@ -1,5 +1,6 @@
 using FluentAssertions;
 using PDK.Runners.Docker;
+using PDK.Runners.Models;
 
 namespace PDK.Tests.Unit.Runners.Docker;
 
@@ -396,6 +397,60 @@ public class ResourceValidatorTests
         errors.Should().Contain(e => e.Contains("Memory"));
         errors.Should().Contain(e => e.Contains("CPU"));
         errors.Should().Contain(e => e.Contains("Timeout"));
+    }
+
+    #endregion
+
+    #region Daemon-aware validation
+
+    private static readonly DaemonResources SmallDaemon = new(CpuCount: 4, TotalMemoryBytes: 8L * 1024 * 1024 * 1024);
+    private static readonly DaemonResources BigDaemon = new(CpuCount: 128, TotalMemoryBytes: 512L * 1024 * 1024 * 1024);
+
+    [Fact]
+    public void ValidateMemoryLimit_ExceedsDaemonMemory_ReturnsInvalid()
+    {
+        var (isValid, errorMessage) = ResourceValidator.ValidateMemoryLimit(9L * 1024 * 1024 * 1024, SmallDaemon);
+
+        isValid.Should().BeFalse();
+        errorMessage.Should().Contain("Docker daemon");
+        errorMessage.Should().Contain("8.0GB");
+    }
+
+    [Fact]
+    public void ValidateMemoryLimit_WithinBigDaemon_AllowsMoreThanFallbackCap()
+    {
+        var (isValid, errorMessage) = ResourceValidator.ValidateMemoryLimit(64L * 1024 * 1024 * 1024, BigDaemon);
+
+        isValid.Should().BeTrue();
+        errorMessage.Should().BeNull();
+    }
+
+    [Fact]
+    public void ValidateCpuLimit_ExceedsDaemonCpus_ReturnsInvalid()
+    {
+        var (isValid, errorMessage) = ResourceValidator.ValidateCpuLimit(6.0, SmallDaemon);
+
+        isValid.Should().BeFalse();
+        errorMessage.Should().Contain("4 cores");
+        errorMessage.Should().Contain("Docker daemon");
+    }
+
+    [Fact]
+    public void ValidateCpuLimit_WithinDaemonCpus_IgnoresHostCount()
+    {
+        var (isValid, _) = ResourceValidator.ValidateCpuLimit(Environment.ProcessorCount + 10.0, BigDaemon);
+
+        isValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ValidateAll_WithDaemon_UsesDaemonBounds()
+    {
+        var errors = ResourceValidator.ValidateAll(16L * 1024 * 1024 * 1024, 8.0, 60, SmallDaemon);
+
+        errors.Should().HaveCount(2);
+        errors.Should().Contain(e => e.Contains("Memory"));
+        errors.Should().Contain(e => e.Contains("CPU"));
     }
 
     #endregion

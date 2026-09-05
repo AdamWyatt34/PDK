@@ -8,8 +8,6 @@ using PDK.Core.Models;
 /// </summary>
 public sealed class ErrorSuggestionEngine
 {
-    private const string DocsBaseUrl = "https://docs.pdk.dev/errors/";
-
     /// <summary>
     /// Gets suggestions for a PdkException based on error code and context.
     /// </summary>
@@ -89,7 +87,7 @@ public sealed class ErrorSuggestionEngine
                 "Exit code 128: invalid exit argument"
             ],
             137 => [
-                "Exit code 137: container killed (out of memory)",
+                "Exit code 137: process killed by SIGKILL (often out of memory)",
                 "Increase available memory for Docker",
                 "Optimize your process to use less memory"
             ],
@@ -97,8 +95,8 @@ public sealed class ErrorSuggestionEngine
                 "Exit code 143: process terminated (SIGTERM)",
                 "The step may have exceeded the timeout"
             ],
-            _ when exitCode > 128 => [
-                $"Process killed by signal {exitCode - 128}",
+            _ when IsSignalExitCode(exitCode) => [
+                $"Exit code {exitCode}: process killed by signal {exitCode - 128}{DescribeSignal(exitCode - 128)}",
                 "Check system resources and logs"
             ],
             _ => [
@@ -109,10 +107,16 @@ public sealed class ErrorSuggestionEngine
     }
 
     /// <summary>
-    /// Gets the documentation URL for an error code.
+    /// Determines whether an exit code denotes "killed by signal" (128 + signal number).
+    /// Only the conventional range 129-159 is interpreted that way.
+    /// </summary>
+    public static bool IsSignalExitCode(int exitCode) => exitCode > 128 && exitCode < 160;
+
+    /// <summary>
+    /// Gets the documentation reference for an error code (<c>docs/errors.md#code</c>).
     /// </summary>
     /// <param name="errorCode">The error code.</param>
-    /// <returns>The documentation URL.</returns>
+    /// <returns>The documentation reference.</returns>
     public string GetDocumentationUrl(string errorCode)
     {
         return ErrorCodes.GetDocumentationUrl(errorCode);
@@ -132,15 +136,45 @@ public sealed class ErrorSuggestionEngine
             ErrorCodes.DockerNotRunning => "docker info",
             ErrorCodes.DockerNotInstalled => "docker --version",
             ErrorCodes.DockerPermissionDenied => "groups $USER | grep docker",
+            ErrorCodes.DockerUnavailable => "pdk doctor",
             ErrorCodes.DockerImageNotFound when exception.Context.ImageName != null =>
                 $"docker pull {exception.Context.ImageName}",
             ErrorCodes.ContainerExecutionFailed when exception.Context.ContainerId != null =>
                 $"docker logs {exception.Context.ContainerId}",
             ErrorCodes.InvalidYamlSyntax when exception.Context.PipelineFile != null =>
                 $"pdk validate --file \"{exception.Context.PipelineFile}\"",
+            ErrorCodes.ConfigInvalidJson or ErrorCodes.ConfigValidationFailed or ErrorCodes.ConfigInvalidVersion
+                when exception.Context.PipelineFile != null =>
+                $"pdk config validate \"{exception.Context.PipelineFile}\"",
+            ErrorCodes.SecretNotFound => "pdk secret list",
             ErrorCodes.FileNotFound => "ls -la",
             _ => null
         };
+    }
+
+    private static string DescribeSignal(int signal)
+    {
+        var name = signal switch
+        {
+            1 => "SIGHUP",
+            2 => "SIGINT",
+            3 => "SIGQUIT",
+            4 => "SIGILL",
+            5 => "SIGTRAP",
+            6 => "SIGABRT",
+            7 => "SIGBUS",
+            8 => "SIGFPE",
+            9 => "SIGKILL",
+            10 => "SIGUSR1",
+            11 => "SIGSEGV",
+            12 => "SIGUSR2",
+            13 => "SIGPIPE",
+            14 => "SIGALRM",
+            15 => "SIGTERM",
+            _ => null
+        };
+
+        return name == null ? string.Empty : $" ({name})";
     }
 
     private static IEnumerable<string> GetErrorCodeSuggestions(string errorCode)
@@ -161,7 +195,8 @@ public sealed class ErrorSuggestionEngine
             ],
             ErrorCodes.DockerPermissionDenied => [
                 "Add your user to the docker group: sudo usermod -aG docker $USER",
-                "Log out and log back in for the group change to take effect"
+                "Log out and log back in for the group change to take effect",
+                "Try running with --host mode"
             ],
             ErrorCodes.DockerImageNotFound => [
                 "Check if the image name is correct",
@@ -194,6 +229,13 @@ public sealed class ErrorSuggestionEngine
             ErrorCodes.CircularDependency => [
                 "Review the 'needs' or 'dependsOn' fields in your jobs",
                 "Ensure jobs don't form a cycle"
+            ],
+            ErrorCodes.MissingDependency => [
+                "Check the spelling of the job or step referenced in 'needs' / 'dependsOn'",
+                "Run 'pdk list' to see the jobs defined in the pipeline"
+            ],
+            ErrorCodes.SelfDependency => [
+                "Remove the self-reference from 'needs' / 'dependsOn'"
             ],
             ErrorCodes.InvalidPipelineStructure => [
                 "Verify your pipeline follows the correct format",
@@ -229,6 +271,16 @@ public sealed class ErrorSuggestionEngine
                 "Check the supported step executors",
                 "Some features may require additional configuration"
             ],
+            ErrorCodes.DockerUnavailable => [
+                "Start Docker, or run without it: pdk run --host",
+                "Run 'pdk doctor' to diagnose the Docker installation",
+                "Set runner.fallback to 'host' in pdk.config.json to fall back automatically"
+            ],
+            ErrorCodes.RunnerCapabilityMismatch => [
+                "Run with Docker: pdk run --docker (custom images and Docker steps need Docker)",
+                "Remove the Docker-only features from the job, or pick a runner label such as ubuntu-latest",
+                "Run 'pdk doctor' to check whether Docker is available"
+            ],
 
             // File errors
             ErrorCodes.FileNotFound => [
@@ -261,6 +313,112 @@ public sealed class ErrorSuggestionEngine
             ErrorCodes.DnsResolutionFailed => [
                 "Check your DNS configuration",
                 "Verify the hostname is correct"
+            ],
+
+            // Configuration errors
+            ErrorCodes.ConfigFileNotFound => [
+                "Check the path passed to --config",
+                "PDK discovers .pdkrc or pdk.config.json in the current directory, then ~/.pdkrc and ~/.pdk/config.json"
+            ],
+            ErrorCodes.ConfigInvalidJson => [
+                "Fix the JSON syntax (quotes, commas, brackets); comments and trailing commas are tolerated",
+                "Validate the file with 'pdk config validate'"
+            ],
+            ErrorCodes.ConfigValidationFailed => [
+                "Fix the listed fields; see docs/configuration.md for the schema",
+                "Validate the file with 'pdk config validate'"
+            ],
+            ErrorCodes.ConfigInvalidVersion => [
+                "Set \"version\": \"1.0\" at the top level of the configuration file"
+            ],
+            ErrorCodes.ConfigInvalidVariableName => [
+                "Variable names must match ^[A-Z_][A-Z0-9_]*$ (e.g. BUILD_CONFIG)"
+            ],
+            ErrorCodes.ConfigInvalidMemoryLimit => [
+                "Use a number followed by k, m or g (e.g. '512m', '2g')"
+            ],
+            ErrorCodes.ConfigInvalidCpuLimit => [
+                "CPU limit must be at least 0.1 (e.g. 0.5, 2.0)"
+            ],
+            ErrorCodes.ConfigInvalidLogLevel => [
+                "Valid log levels: Trace, Debug, Information (Info), Warning (Warn), Error, Critical"
+            ],
+            ErrorCodes.ConfigInvalidRetentionDays => [
+                "artifacts.retentionDays must be 0 or greater"
+            ],
+
+            // Variable errors
+            ErrorCodes.VariableCircularReference => [
+                "Break the cycle: a variable must not reference itself directly or through other variables",
+                "Run with --dry-run to see the resolved variables"
+            ],
+            ErrorCodes.VariableRecursionLimit => [
+                "Simplify nested variable references; the expansion depth limit was exceeded",
+                "Check for variables that reference each other in a loop"
+            ],
+            ErrorCodes.VariableRequired => [
+                "Define the variable with --var NAME=value, in the configuration file, or as PDK_VAR_NAME",
+                "Use ${NAME:-default} to provide a default value"
+            ],
+            ErrorCodes.VariableInvalidSyntax => [
+                "Use ${NAME}, ${NAME:-default} or ${NAME:?message}; names match [A-Za-z_][A-Za-z0-9_]*",
+                "Escape a literal reference with \\${NAME}"
+            ],
+            ErrorCodes.VariableFileNotFound => [
+                "Check the path passed to --var-file",
+                "The file must contain a JSON object of NAME: value pairs"
+            ],
+
+            // Secret errors
+            ErrorCodes.SecretEncryptionFailed => [
+                "Retry the operation; if it keeps failing, delete ~/.pdk/secrets.json and ~/.pdk/secret.key and store the secrets again",
+                "Check that the current user can write to the secret store"
+            ],
+            ErrorCodes.SecretDecryptionFailed => [
+                "The secret store may have been created on another machine or user account; secrets are bound to both",
+                "Set the secret again: pdk secret set NAME"
+            ],
+            ErrorCodes.SecretNotFound => [
+                "List stored secrets: pdk secret list",
+                "Set the secret: pdk secret set NAME, or pass it with --secret NAME=value / PDK_SECRET_NAME"
+            ],
+            ErrorCodes.SecretStorageFailed => [
+                "Check permissions on ~/.pdk/secrets.json and ~/.pdk/secret.key (they must be writable by you only)",
+                "Retry the operation"
+            ],
+            ErrorCodes.SecretInvalidName => [
+                "Secret names must match ^[A-Z_][A-Z0-9_]*$ (e.g. API_TOKEN)"
+            ],
+
+            // Artifact errors
+            ErrorCodes.ArtifactInvalidName => [
+                "Artifact names cannot be empty, longer than 256 characters, or contain \" : < > | * ? \\ / or line breaks"
+            ],
+            ErrorCodes.ArtifactNoFilesMatched => [
+                "Check the path/glob pattern of the artifact step; paths are relative to the workspace",
+                "Make sure the files are produced by an earlier step"
+            ],
+            ErrorCodes.ArtifactAlreadyExists => [
+                "Use a different artifact name, or remove the existing artifact from the artifact store"
+            ],
+            ErrorCodes.ArtifactNotFound => [
+                "Upload the artifact in an earlier job/step before downloading it",
+                "Check the artifact name for typos"
+            ],
+            ErrorCodes.ArtifactPermissionDenied => [
+                "Check permissions on the artifact store (artifacts.basePath, default .pdk/artifacts)"
+            ],
+            ErrorCodes.ArtifactDiskSpaceLow => [
+                "Free disk space, or point artifacts.basePath at a volume with more room"
+            ],
+            ErrorCodes.ArtifactCorruptMetadata => [
+                "Delete the artifact directory and upload the artifact again"
+            ],
+            ErrorCodes.ArtifactCompressionFailed => [
+                "Check disk space and that the files to compress are readable"
+            ],
+            ErrorCodes.ArtifactDecompressionFailed => [
+                "The artifact archive may be corrupt; upload it again"
             ],
 
             // Config warnings

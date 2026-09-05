@@ -1,7 +1,11 @@
 namespace PDK.Tests.Unit.Secrets;
 
+using System.Security.Cryptography;
+using System.Text;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Moq;
+using PDK.Core.ErrorHandling;
 using PDK.Core.Logging;
 using PDK.Core.Secrets;
 using Xunit;
@@ -10,9 +14,11 @@ public class SecretManagerTests : IDisposable
 {
     private readonly string _testDir;
     private readonly string _testStoragePath;
+    private readonly string _keyPath;
     private readonly SecretStorage _storage;
     private readonly SecretEncryption _encryption;
     private readonly Mock<ISecretMasker> _mockMasker;
+    private readonly CapturingLogger _logger;
     private readonly SecretManager _manager;
 
     public SecretManagerTests()
@@ -25,11 +31,13 @@ public class SecretManagerTests : IDisposable
         Directory.CreateDirectory(_testDir);
 
         _testStoragePath = Path.Combine(_testDir, "secrets.json");
+        _keyPath = Path.Combine(_testDir, "secret.key");
 
         _storage = new SecretStorage(_testStoragePath);
-        _encryption = new SecretEncryption();
+        _encryption = new SecretEncryption(_keyPath);
         _mockMasker = new Mock<ISecretMasker>();
-        _manager = new SecretManager(_encryption, _storage, _mockMasker.Object);
+        _logger = new CapturingLogger();
+        _manager = new SecretManager(_encryption, _storage, _mockMasker.Object, _logger);
     }
 
     public void Dispose()
@@ -67,13 +75,17 @@ public class SecretManagerTests : IDisposable
     }
 
     [Fact]
-    public async Task GetSecretAsync_NonExistentSecret_ReturnsNull()
+    public async Task GetSecretAsync_NonExistentSecret_ThrowsNotFound()
     {
-        // Act
-        var result = await _manager.GetSecretAsync("NON_EXISTENT");
+        // Updated behaviour: GetSecretAsync used to return null for a missing secret; it now throws
+        // SecretException.NotFound so the CLI can show the error code and suggestions.
+        var act = async () => await _manager.GetSecretAsync("NON_EXISTENT");
 
-        // Assert
-        result.Should().BeNull();
+        var ex = (await act.Should().ThrowAsync<SecretException>()).Which;
+        ex.ErrorCode.Should().Be(ErrorCodes.SecretNotFound);
+        ex.SecretName.Should().Be("NON_EXISTENT");
+        ex.Message.Should().Contain("NON_EXISTENT");
+        ex.Suggestions.Should().Contain(s => s.Contains("pdk secret set NON_EXISTENT"));
     }
 
     [Fact]
@@ -84,10 +96,11 @@ public class SecretManagerTests : IDisposable
 
         // Act
         await _manager.DeleteSecretAsync("TO_DELETE");
-        var result = await _manager.GetSecretAsync("TO_DELETE");
 
-        // Assert
-        result.Should().BeNull();
+        // Assert (updated: a deleted secret no longer exists and GetSecretAsync throws NotFound instead of returning null)
+        (await _manager.SecretExistsAsync("TO_DELETE")).Should().BeFalse();
+        var act = async () => await _manager.GetSecretAsync("TO_DELETE");
+        (await act.Should().ThrowAsync<SecretException>()).Which.ErrorCode.Should().Be(ErrorCodes.SecretNotFound);
     }
 
     [Fact]
@@ -179,6 +192,24 @@ public class SecretManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task SetSecretAsync_PreservesCreatedAt_UpdatesUpdatedAt()
+    {
+        // Arrange
+        await _manager.SetSecretAsync("TS", "one");
+        var first = (await _storage.LoadAsync())["TS"];
+        await Task.Delay(20);
+
+        // Act
+        await _manager.SetSecretAsync("TS", "two");
+        var second = (await _storage.LoadAsync())["TS"];
+
+        // Assert
+        second.CreatedAt.Should().Be(first.CreatedAt);
+        second.UpdatedAt.Should().BeAfter(first.UpdatedAt);
+        second.Algorithm.Should().Be("AES-256-GCM");
+    }
+
+    [Fact]
     public async Task SetSecretAsync_RegistersWithMasker()
     {
         // Arrange
@@ -237,6 +268,7 @@ public class SecretManagerTests : IDisposable
         all["KEY1"].Should().Be("value1");
         all["KEY2"].Should().Be("value2");
         all["KEY3"].Should().Be("value3");
+        _manager.UnreadableSecrets.Should().BeEmpty();
     }
 
     [Fact]
@@ -267,8 +299,23 @@ public class SecretManagerTests : IDisposable
         foreach (var name in invalidNames)
         {
             var act = async () => await _manager.SetSecretAsync(name, "value");
-            await act.Should().ThrowAsync<SecretException>($"Should fail for: {name}");
+            var ex = (await act.Should().ThrowAsync<SecretException>($"Should fail for: {name}")).Which;
+            ex.ErrorCode.Should().Be(ErrorCodes.SecretInvalidName);
+            ex.Should().BeAssignableTo<PDK.Core.Models.PdkException>();
         }
+    }
+
+    [Fact]
+    public async Task SetSecretAsync_InvalidName_MessageIsHelpful()
+    {
+        // Act
+        var act = async () => await _manager.SetSecretAsync("has-hyphen", "value");
+
+        // Assert
+        var ex = (await act.Should().ThrowAsync<SecretException>()).Which;
+        ex.Message.Should().Contain("'has-hyphen'");
+        ex.Message.Should().Contain("unsupported character");
+        ex.Suggestions.Should().Contain(s => s.Contains("'has_hyphen'"));
     }
 
     [Fact]
@@ -350,10 +397,10 @@ public class SecretManagerTests : IDisposable
     }
 
     [Fact]
-    public void Constructor_NullMasker_DoesNotThrow()
+    public void Constructor_NullMaskerAndLogger_DoesNotThrow()
     {
-        // Act & Assert - Masker is optional
-        var act = () => new SecretManager(_encryption, _storage, null);
+        // Act & Assert - Masker and logger are optional
+        var act = () => new SecretManager(_encryption, _storage, null, null);
         act.Should().NotThrow();
     }
 
@@ -386,5 +433,267 @@ public class SecretManagerTests : IDisposable
         // Assert - All secrets exist
         var names = (await _manager.ListSecretNamesAsync()).ToList();
         names.Should().HaveCount(50);
+    }
+
+    [Fact]
+    public async Task SecretManager_TwoInstancesOnSameFile_ConcurrentWrites_AreAllPersisted()
+    {
+        // Arrange - separate storage instances simulate separate processes sharing the file
+        var managerA = new SecretManager(new SecretEncryption(_keyPath), new SecretStorage(_testStoragePath));
+        var managerB = new SecretManager(new SecretEncryption(_keyPath), new SecretStorage(_testStoragePath));
+
+        // Act - interleaved load-modify-save sequences from both instances
+        var writesA = Enumerable.Range(1, 20).Select(i => managerA.SetSecretAsync($"A_{i}", $"a{i}"));
+        var writesB = Enumerable.Range(1, 20).Select(i => managerB.SetSecretAsync($"B_{i}", $"b{i}"));
+        await Task.WhenAll(writesA.Concat(writesB));
+
+        // Assert - without the cross-process lock some writes would be lost
+        var names = (await _manager.ListSecretNamesAsync()).ToList();
+        names.Should().HaveCount(40);
+        File.Exists(_storage.LockFilePath).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task SetSecretAsync_ReleasesFileLock()
+    {
+        // Arrange
+        await _manager.SetSecretAsync("A", "1");
+
+        // Act - the lock must be free again
+        using var handle = await _storage.AcquireLockAsync(TimeSpan.FromMilliseconds(500));
+
+        // Assert
+        handle.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task GetAllSecretsAsync_LegacyEntry_IsDecryptedAndReencrypted()
+    {
+        // Arrange - a secrets.json written by PDK 1.0 (legacy scheme, produced independently of the new code)
+        var legacyCiphertext = LegacyScheme.Encrypt("legacy-value");
+        var legacyEntry = new SecretEntry
+        {
+            EncryptedValue = Convert.ToBase64String(legacyCiphertext),
+            Algorithm = OperatingSystem.IsWindows() ? "DPAPI" : "AES-256-CBC",
+            CreatedAt = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAt = new DateTime(2024, 1, 2, 0, 0, 0, DateTimeKind.Utc)
+        };
+        await _storage.SaveAsync(new Dictionary<string, SecretEntry> { ["LEGACY"] = legacyEntry });
+
+        // Act
+        var all = await _manager.GetAllSecretsAsync();
+
+        // Assert - value available
+        all.Should().ContainKey("LEGACY").WhoseValue.Should().Be("legacy-value");
+        _manager.UnreadableSecrets.Should().BeEmpty();
+
+        // Assert - entry re-encrypted on disk with the new scheme
+        var stored = (await _storage.LoadAsync())["LEGACY"];
+        stored.Algorithm.Should().Be("AES-256-GCM");
+        stored.EncryptedValue.Should().NotBe(legacyEntry.EncryptedValue);
+        var bytes = Convert.FromBase64String(stored.EncryptedValue);
+        Encoding.ASCII.GetString(bytes, 0, 3).Should().Be(SecretEncryption.PayloadVersionPrefix);
+        stored.CreatedAt.Should().Be(legacyEntry.CreatedAt);
+        stored.UpdatedAt.Should().BeAfter(legacyEntry.UpdatedAt);
+
+        // Assert - a fresh manager reads the migrated value with the key file
+        var fresh = new SecretManager(new SecretEncryption(_keyPath), new SecretStorage(_testStoragePath));
+        (await fresh.GetSecretAsync("LEGACY")).Should().Be("legacy-value");
+
+        _logger.Entries.Should().Contain(e => e.Level == LogLevel.Information && e.Message.Contains("LEGACY"));
+    }
+
+    [Fact]
+    public async Task GetSecretAsync_LegacyEntry_IsMigratedOnAccess()
+    {
+        // Arrange
+        var legacyEntry = new SecretEntry
+        {
+            EncryptedValue = Convert.ToBase64String(LegacyScheme.Encrypt("single-legacy")),
+            Algorithm = "AES-256-CBC",
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        };
+        await _storage.SaveAsync(new Dictionary<string, SecretEntry> { ["ONE"] = legacyEntry });
+
+        // Act
+        var value = await _manager.GetSecretAsync("ONE");
+
+        // Assert
+        value.Should().Be("single-legacy");
+        var stored = (await _storage.LoadAsync())["ONE"];
+        stored.Algorithm.Should().Be("AES-256-GCM");
+        _encryption.IsLegacyFormat(Convert.FromBase64String(stored.EncryptedValue)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task GetAllSecretsAsync_UnreadableEntry_IsReportedNotSilentlyDropped()
+    {
+        // Arrange - one good entry and one current-format entry encrypted with a different key
+        await _manager.SetSecretAsync("GOOD", "good-value");
+        var foreign = new SecretEncryption(Path.Combine(_testDir, "foreign.key"));
+        var brokenEntry = new SecretEntry
+        {
+            EncryptedValue = Convert.ToBase64String(foreign.Encrypt("cannot-read-me")),
+            Algorithm = "AES-256-GCM",
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        };
+        var secrets = await _storage.LoadAsync();
+        secrets["BROKEN"] = brokenEntry;
+        await _storage.SaveAsync(secrets);
+
+        var manager = new SecretManager(_encryption, _storage, null, _logger);
+
+        // Act
+        var all = await manager.GetAllSecretsAsync();
+
+        // Assert - readable secrets still returned, unreadable one reported
+        all.Should().ContainKey("GOOD").And.NotContainKey("BROKEN");
+        manager.UnreadableSecrets.Should().Equal("BROKEN");
+        (await manager.GetUnreadableSecretNamesAsync()).Should().Equal("BROKEN");
+
+        // Assert - warning logged naming the secret
+        _logger.Entries.Should().ContainSingle(e => e.Level == LogLevel.Warning)
+            .Which.Message.Should().Contain("BROKEN");
+
+        // Assert - entry kept in storage
+        (await manager.ListSecretNamesAsync()).Should().Contain("BROKEN");
+        (await _storage.LoadAsync()).Should().ContainKey("BROKEN");
+
+        // Assert - Exists/Get agree with the unreadable list
+        (await manager.SecretExistsAsync("BROKEN")).Should().BeTrue();
+        var act = async () => await manager.GetSecretAsync("BROKEN");
+        var ex = (await act.Should().ThrowAsync<SecretException>()).Which;
+        ex.ErrorCode.Should().Be(ErrorCodes.SecretDecryptionFailed);
+        ex.SecretName.Should().Be("BROKEN");
+        ex.Message.Should().Contain("BROKEN");
+        ex.Message.Should().NotContain("unknown");
+        ex.Suggestions.Should().Contain(s => s.Contains("pdk secret delete BROKEN"));
+    }
+
+    [Fact]
+    public async Task GetAllSecretsAsync_LegacyEntryWithNonMatchingKey_IsUnreadable()
+    {
+        // Arrange - legacy layout encrypted with a random key (secrets.json copied from another machine)
+        var otherMachineKey = RandomNumberGenerator.GetBytes(32);
+        var entry = new SecretEntry
+        {
+            EncryptedValue = Convert.ToBase64String(LegacyScheme.EncryptAesCbc("from-elsewhere", otherMachineKey)),
+            Algorithm = "AES-256-CBC",
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        };
+        await _storage.SaveAsync(new Dictionary<string, SecretEntry> { ["FOREIGN"] = entry });
+
+        // Act
+        var all = await _manager.GetAllSecretsAsync();
+
+        // Assert - kept, reported, not migrated
+        all.Should().BeEmpty();
+        _manager.UnreadableSecrets.Should().Equal("FOREIGN");
+        (await _storage.LoadAsync())["FOREIGN"].EncryptedValue.Should().Be(entry.EncryptedValue);
+        (await _manager.SecretExistsAsync("FOREIGN")).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task GetSecretAsync_StoredValueNotBase64_ThrowsNamedSecretException()
+    {
+        // Arrange
+        await _storage.SaveAsync(new Dictionary<string, SecretEntry>
+        {
+            ["CORRUPT"] = new SecretEntry { EncryptedValue = "not base64!", Algorithm = "AES-256-GCM", CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow }
+        });
+
+        // Act
+        var act = async () => await _manager.GetSecretAsync("CORRUPT");
+
+        // Assert
+        var ex = (await act.Should().ThrowAsync<SecretException>()).Which;
+        ex.SecretName.Should().Be("CORRUPT");
+        ex.Message.Should().Contain("CORRUPT").And.Contain("base64");
+        _manager.UnreadableSecrets.Should().Equal("CORRUPT");
+    }
+
+    [Fact]
+    public async Task SetSecretAsync_OverwritingUnreadableEntry_MakesItReadableAgain()
+    {
+        // Arrange
+        var foreign = new SecretEncryption(Path.Combine(_testDir, "foreign.key"));
+        await _storage.SaveAsync(new Dictionary<string, SecretEntry>
+        {
+            ["FIXME"] = new SecretEntry { EncryptedValue = Convert.ToBase64String(foreign.Encrypt("x")), Algorithm = "AES-256-GCM", CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow }
+        });
+        await _manager.GetAllSecretsAsync();
+        _manager.UnreadableSecrets.Should().Equal("FIXME");
+
+        // Act
+        await _manager.SetSecretAsync("FIXME", "fixed");
+
+        // Assert
+        _manager.UnreadableSecrets.Should().BeEmpty();
+        (await _manager.GetSecretAsync("FIXME")).Should().Be("fixed");
+        (await _manager.GetAllSecretsAsync()).Should().ContainKey("FIXME");
+    }
+
+    [Fact]
+    public async Task DeleteSecretAsync_UnreadableEntry_RemovesIt()
+    {
+        // Arrange
+        var foreign = new SecretEncryption(Path.Combine(_testDir, "foreign.key"));
+        await _storage.SaveAsync(new Dictionary<string, SecretEntry>
+        {
+            ["GONE"] = new SecretEntry { EncryptedValue = Convert.ToBase64String(foreign.Encrypt("x")), Algorithm = "AES-256-GCM", CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow }
+        });
+        await _manager.GetAllSecretsAsync();
+
+        // Act
+        await _manager.DeleteSecretAsync("GONE");
+
+        // Assert
+        _manager.UnreadableSecrets.Should().BeEmpty();
+        (await _manager.SecretExistsAsync("GONE")).Should().BeFalse();
+        (await _manager.ListSecretNamesAsync()).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetUnreadableSecretNamesAsync_NoSecrets_ReturnsEmpty()
+    {
+        (await _manager.GetUnreadableSecretNamesAsync()).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetAllSecretsAsync_ReturnsSnapshot_NotLiveCache()
+    {
+        // Arrange
+        await _manager.SetSecretAsync("A", "1");
+        var first = await _manager.GetAllSecretsAsync();
+
+        // Act
+        await _manager.SetSecretAsync("B", "2");
+
+        // Assert
+        first.Should().NotContainKey("B");
+        (await _manager.GetAllSecretsAsync()).Should().ContainKey("B");
+    }
+
+    /// <summary>
+    /// Minimal ILogger that records formatted entries for assertions.
+    /// </summary>
+    private sealed class CapturingLogger : ILogger
+    {
+        public List<(LogLevel Level, string Message, Exception? Exception)> Entries { get; } = new();
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            lock (Entries)
+            {
+                Entries.Add((logLevel, formatter(state, exception), exception));
+            }
+        }
     }
 }

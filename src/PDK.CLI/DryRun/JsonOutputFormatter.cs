@@ -38,15 +38,36 @@ public class JsonOutputFormatter
     }
 
     /// <summary>
-    /// Writes the dry-run result to a JSON file.
+    /// Path value that selects standard output instead of a file.
+    /// </summary>
+    public const string StdOutPath = "-";
+
+    /// <summary>
+    /// Writes the dry-run result to a JSON file, creating the parent directory when needed.
+    /// A path of <c>-</c> writes the JSON to standard output.
     /// </summary>
     public async Task WriteToFileAsync(
         DryRunResult result,
         string filePath,
         CancellationToken cancellationToken = default)
     {
-        var output = CreateOutputModel(result);
-        var json = JsonSerializer.Serialize(output, _jsonOptions);
+        ArgumentNullException.ThrowIfNull(result);
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+
+        var json = Serialize(result);
+
+        if (filePath == StdOutPath)
+        {
+            await Console.Out.WriteLineAsync(json.AsMemory(), cancellationToken);
+            await Console.Out.FlushAsync(cancellationToken);
+            return;
+        }
+
+        var directory = Path.GetDirectoryName(Path.GetFullPath(filePath));
+        if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
 
         await File.WriteAllTextAsync(filePath, json, cancellationToken);
         _logger.LogInformation("Dry-run results written to {FilePath}", filePath);
@@ -70,6 +91,7 @@ public class JsonOutputFormatter
             {
                 TotalJobs = result.ExecutionPlan?.TotalJobs ?? 0,
                 TotalSteps = result.ExecutionPlan?.TotalSteps ?? 0,
+                StepsToRun = result.ExecutionPlan?.StepsToRun ?? 0,
                 ErrorCount = result.Errors.Count,
                 WarningCount = result.Warnings.Count
             },
@@ -134,7 +156,9 @@ public class JsonOutputFormatter
                     Needs = s.Needs.ToList(),
                     ScriptPreview = s.ScriptPreview,
                     Environment = s.Environment.ToDictionary(kv => kv.Key, kv => kv.Value),
-                    Inputs = s.Inputs.ToDictionary(kv => kv.Key, kv => kv.Value)
+                    Inputs = s.Inputs.ToDictionary(kv => kv.Key, kv => kv.Value),
+                    WillRun = s.WillRun,
+                    SkipReason = s.SkipReason
                 }).ToList()
             }).ToList(),
             Variables = plan.ResolvedVariables.ToDictionary(kv => kv.Key, kv => kv.Value)
@@ -166,6 +190,7 @@ public class JsonOutputFormatter
     {
         public int TotalJobs { get; set; }
         public int TotalSteps { get; set; }
+        public int StepsToRun { get; set; }
         public int ErrorCount { get; set; }
         public int WarningCount { get; set; }
     }
@@ -227,6 +252,8 @@ public class JsonOutputFormatter
         public string? ScriptPreview { get; set; }
         public Dictionary<string, string>? Environment { get; set; }
         public Dictionary<string, string>? Inputs { get; set; }
+        public bool WillRun { get; set; } = true;
+        public string? SkipReason { get; set; }
     }
 
     #endregion

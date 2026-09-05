@@ -1,6 +1,6 @@
 # PDK Documentation
 
-PDK (Pipeline Development Kit) is a command-line tool that lets you run CI/CD pipelines locally before pushing to remote repositories. Test your GitHub Actions and Azure DevOps pipelines on your machine, catch errors early, and iterate faster.
+PDK (Pipeline Development Kit) is a command-line tool that lets you run CI/CD pipelines locally before pushing to remote repositories. Test your GitHub Actions, Azure DevOps and GitLab CI pipelines on your machine, catch errors early, and iterate faster.
 
 ## Why PDK?
 
@@ -18,6 +18,8 @@ PDK (Pipeline Development Kit) is a command-line tool that lets you run CI/CD pi
 ### Reference
 - [Command Reference](commands/README.md) - All PDK commands and options
 - [Configuration](configuration/README.md) - Configure PDK behavior
+- [Expressions and Execution Semantics](expressions.md) - Supported expression syntax, contexts, conditions, outputs and job ordering
+- [Error Codes](errors.md) - What each `PDK-E-...` code means and how to fix it
 
 ### Guides
 - [Troubleshooting](guides/troubleshooting.md) - Common issues and solutions
@@ -38,6 +40,7 @@ PDK supports the following CI/CD pipeline formats:
 |--------|--------|---------------|
 | GitHub Actions | Supported | `.github/workflows/*.yml` |
 | Azure DevOps | Supported | `azure-pipelines.yml` |
+| GitLab CI | Supported ([details](providers/gitlab.md)) | `.gitlab-ci.yml` |
 
 ## Features at a Glance
 

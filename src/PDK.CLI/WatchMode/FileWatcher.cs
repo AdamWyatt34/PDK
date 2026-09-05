@@ -5,15 +5,30 @@ namespace PDK.CLI.WatchMode;
 
 /// <summary>
 /// File system watcher implementation that wraps <see cref="FileSystemWatcher"/>.
-/// Handles file exclusion patterns and normalizes change events.
+/// Handles include/exclude patterns, watches individual files outside the directory,
+/// and normalizes change events.
 /// </summary>
 public sealed class FileWatcher : IFileWatcher
 {
+    /// <summary>
+    /// Internal buffer size handed to <see cref="FileSystemWatcher"/> (64 KB) so that bursts of
+    /// changes (e.g. a build) do not overflow the default 8 KB buffer.
+    /// </summary>
+    public const int InternalBufferSize = 64 * 1024;
+
+    private static readonly StringComparer PathComparer = OperatingSystem.IsLinux()
+        ? StringComparer.Ordinal
+        : StringComparer.OrdinalIgnoreCase;
+
     private readonly ILogger<FileWatcher> _logger;
+    private readonly object _lifecycleLock = new();
+    private readonly List<FileSystemWatcher> _fileWatchers = [];
     private FileSystemWatcher? _watcher;
     private FileWatcherOptions? _options;
     private string? _watchedDirectory;
     private List<Regex>? _excludePatterns;
+    private List<Regex>? _includePatterns;
+    private HashSet<string> _additionalFiles = new(PathComparer);
     private bool _disposed;
 
     /// <inheritdoc />
@@ -31,6 +46,11 @@ public sealed class FileWatcher : IFileWatcher
     /// <inheritdoc />
     public IReadOnlyList<string> ExcludedPatterns =>
         _options?.AllExcludePatterns.ToList() ?? [];
+
+    /// <summary>
+    /// Gets the individual files watched in addition to the directory.
+    /// </summary>
+    public IReadOnlyList<string> AdditionalFiles => _additionalFiles.ToList();
 
     /// <summary>
     /// Initializes a new instance of <see cref="FileWatcher"/>.
@@ -52,28 +72,49 @@ public sealed class FileWatcher : IFileWatcher
             throw new DirectoryNotFoundException($"Directory not found: {directory}");
         }
 
-        Stop();
-
-        _watchedDirectory = Path.GetFullPath(directory);
-        _options = options;
-        _excludePatterns = CompileExcludePatterns(options.AllExcludePatterns);
-
-        _watcher = new FileSystemWatcher(_watchedDirectory)
+        lock (_lifecycleLock)
         {
-            IncludeSubdirectories = true,
-            NotifyFilter = NotifyFilters.FileName |
-                          NotifyFilters.DirectoryName |
-                          NotifyFilters.LastWrite |
-                          NotifyFilters.Size
-        };
+            StopCore();
 
-        _watcher.Created += OnFileSystemEvent;
-        _watcher.Changed += OnFileSystemEvent;
-        _watcher.Deleted += OnFileSystemEvent;
-        _watcher.Renamed += OnFileRenamed;
-        _watcher.Error += OnWatcherError;
+            _watchedDirectory = Path.GetFullPath(directory);
+            _options = options;
+            _excludePatterns = CompilePatterns(options.AllExcludePatterns);
+            _includePatterns = options.IncludesAllFiles ? null : CompilePatterns(options.IncludePatterns);
+            _additionalFiles = new HashSet<string>(PathComparer);
 
-        _watcher.EnableRaisingEvents = true;
+            _watcher = CreateWatcher(_watchedDirectory, filter: null, includeSubdirectories: true);
+
+            foreach (var file in options.AdditionalFiles)
+            {
+                if (string.IsNullOrWhiteSpace(file))
+                {
+                    continue;
+                }
+
+                var fullPath = Path.GetFullPath(file);
+                if (IsInsideWatchedDirectory(fullPath))
+                {
+                    continue; // covered by the directory watcher
+                }
+
+                var fileDirectory = Path.GetDirectoryName(fullPath);
+                if (string.IsNullOrEmpty(fileDirectory) || !Directory.Exists(fileDirectory))
+                {
+                    _logger.LogWarning("Cannot watch {File}: its directory does not exist", fullPath);
+                    continue;
+                }
+
+                _additionalFiles.Add(fullPath);
+                _fileWatchers.Add(CreateWatcher(fileDirectory, Path.GetFileName(fullPath), includeSubdirectories: false));
+                _logger.LogDebug("Watching additional file: {File}", fullPath);
+            }
+
+            _watcher.EnableRaisingEvents = true;
+            foreach (var fileWatcher in _fileWatchers)
+            {
+                fileWatcher.EnableRaisingEvents = true;
+            }
+        }
 
         _logger.LogDebug("Started watching directory: {Directory}", _watchedDirectory);
     }
@@ -81,18 +122,9 @@ public sealed class FileWatcher : IFileWatcher
     /// <inheritdoc />
     public void Stop()
     {
-        if (_watcher is not null)
+        lock (_lifecycleLock)
         {
-            _watcher.EnableRaisingEvents = false;
-            _watcher.Created -= OnFileSystemEvent;
-            _watcher.Changed -= OnFileSystemEvent;
-            _watcher.Deleted -= OnFileSystemEvent;
-            _watcher.Renamed -= OnFileRenamed;
-            _watcher.Error -= OnWatcherError;
-            _watcher.Dispose();
-            _watcher = null;
-
-            _logger.LogDebug("Stopped watching directory: {Directory}", _watchedDirectory);
+            StopCore();
         }
     }
 
@@ -104,6 +136,67 @@ public sealed class FileWatcher : IFileWatcher
             Stop();
             _disposed = true;
         }
+    }
+
+    private FileSystemWatcher CreateWatcher(string directory, string? filter, bool includeSubdirectories)
+    {
+        var watcher = new FileSystemWatcher(directory)
+        {
+            IncludeSubdirectories = includeSubdirectories,
+            InternalBufferSize = InternalBufferSize,
+            NotifyFilter = NotifyFilters.FileName |
+                          NotifyFilters.DirectoryName |
+                          NotifyFilters.LastWrite |
+                          NotifyFilters.Size
+        };
+
+        if (!string.IsNullOrEmpty(filter))
+        {
+            watcher.Filter = filter;
+        }
+
+        watcher.Created += OnFileSystemEvent;
+        watcher.Changed += OnFileSystemEvent;
+        watcher.Deleted += OnFileSystemEvent;
+        watcher.Renamed += OnFileRenamed;
+        watcher.Error += OnWatcherError;
+
+        return watcher;
+    }
+
+    private void StopCore()
+    {
+        if (_watcher is not null)
+        {
+            DisposeWatcher(_watcher);
+            _watcher = null;
+            _logger.LogDebug("Stopped watching directory: {Directory}", _watchedDirectory);
+        }
+
+        foreach (var fileWatcher in _fileWatchers)
+        {
+            DisposeWatcher(fileWatcher);
+        }
+        _fileWatchers.Clear();
+    }
+
+    private void DisposeWatcher(FileSystemWatcher watcher)
+    {
+        try
+        {
+            watcher.EnableRaisingEvents = false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Error disabling file system watcher");
+        }
+
+        watcher.Created -= OnFileSystemEvent;
+        watcher.Changed -= OnFileSystemEvent;
+        watcher.Deleted -= OnFileSystemEvent;
+        watcher.Renamed -= OnFileRenamed;
+        watcher.Error -= OnWatcherError;
+        watcher.Dispose();
     }
 
     private void OnFileSystemEvent(object sender, FileSystemEventArgs e)
@@ -167,29 +260,48 @@ public sealed class FileWatcher : IFileWatcher
     {
         var exception = e.GetException();
         _logger.LogError(exception, "File watcher error occurred");
+
+        // Subscribers (the watch mode service) enqueue a catch-up run because events may have been lost.
         Error?.Invoke(this, exception);
 
-        // Attempt to recover by restarting the watcher
-        if (_watchedDirectory is not null && _options is not null)
+        // Attempt to recover by restarting the watcher off the watcher's thread
+        var directory = _watchedDirectory;
+        var options = _options;
+        if (directory is null || options is null || _disposed)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
         {
             try
             {
+                await Task.Delay(TimeSpan.FromSeconds(1));
+                if (_disposed)
+                {
+                    return;
+                }
+
                 _logger.LogInformation("Attempting to recover file watcher...");
-                Stop();
-                Thread.Sleep(1000);
-                Start(_watchedDirectory, _options);
+                Start(directory, options);
                 _logger.LogInformation("File watcher recovered successfully");
             }
             catch (Exception recoveryEx)
             {
                 _logger.LogError(recoveryEx, "Failed to recover file watcher");
             }
-        }
+        });
     }
 
     private bool ShouldIgnore(string fullPath)
     {
-        if (_excludePatterns is null || _watchedDirectory is null)
+        if (_watchedDirectory is null)
+        {
+            return false;
+        }
+
+        // Explicitly watched files are never filtered
+        if (_additionalFiles.Contains(fullPath))
         {
             return false;
         }
@@ -199,12 +311,15 @@ public sealed class FileWatcher : IFileWatcher
         // Normalize path separators to forward slashes for pattern matching
         var normalizedPath = relativePath.Replace('\\', '/');
 
-        // Check direct pattern matches
-        foreach (var pattern in _excludePatterns)
+        // Check direct exclude pattern matches
+        if (_excludePatterns is not null)
         {
-            if (pattern.IsMatch(normalizedPath))
+            foreach (var pattern in _excludePatterns)
             {
-                return true;
+                if (pattern.IsMatch(normalizedPath))
+                {
+                    return true;
+                }
             }
         }
 
@@ -215,10 +330,16 @@ public sealed class FileWatcher : IFileWatcher
             return true;
         }
 
+        // Include patterns: when configured, the file must match at least one
+        if (_includePatterns is not null && !_includePatterns.Any(pattern => pattern.IsMatch(normalizedPath)))
+        {
+            return true;
+        }
+
         return false;
     }
 
-    private bool IsWithinExcludedDirectory(string normalizedPath)
+    private static bool IsWithinExcludedDirectory(string normalizedPath)
     {
         // Check common excluded directories by checking path components
         var excludedDirs = new[] { ".git", "node_modules", ".pdk", "bin", "obj" };
@@ -238,6 +359,17 @@ public sealed class FileWatcher : IFileWatcher
         }
 
         return false;
+    }
+
+    private bool IsInsideWatchedDirectory(string fullPath)
+    {
+        if (_watchedDirectory is null)
+        {
+            return false;
+        }
+
+        var relative = Path.GetRelativePath(_watchedDirectory, fullPath);
+        return !relative.StartsWith("..", StringComparison.Ordinal) && !Path.IsPathRooted(relative);
     }
 
     private string GetRelativePath(string fullPath)
@@ -260,13 +392,18 @@ public sealed class FileWatcher : IFileWatcher
             _ => FileChangeType.Modified
         };
 
-    private static List<Regex> CompileExcludePatterns(IEnumerable<string> patterns)
+    private static List<Regex> CompilePatterns(IEnumerable<string> patterns)
     {
         var regexPatterns = new List<Regex>();
 
         foreach (var pattern in patterns)
         {
-            var regexPattern = GlobToRegex(pattern);
+            if (string.IsNullOrWhiteSpace(pattern))
+            {
+                continue;
+            }
+
+            var regexPattern = GlobToRegex(pattern.Trim());
             regexPatterns.Add(new Regex(regexPattern, RegexOptions.Compiled | RegexOptions.IgnoreCase));
         }
 

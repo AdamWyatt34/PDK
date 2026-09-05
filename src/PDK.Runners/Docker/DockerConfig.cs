@@ -1,5 +1,3 @@
-using System.Runtime.InteropServices;
-
 namespace PDK.Runners.Docker;
 
 /// <summary>
@@ -34,31 +32,13 @@ public record DockerConfig
     public bool KeepContainersForDebugging { get; init; } = false;
 
     /// <summary>
-    /// Gets the Docker socket URI for the current platform.
-    /// Windows: npipe://./pipe/docker_engine
-    /// Linux/macOS: unix:///var/run/docker.sock
+    /// Gets the Docker daemon endpoint URI, discovered by <see cref="DockerEndpointResolver"/>
+    /// (<c>DOCKER_HOST</c>, the current Docker context, then well-known sockets / the Windows named pipe).
     /// </summary>
-    public Uri DockerSocketUri => GetDockerSocketUri();
+    public Uri DockerSocketUri => DockerEndpointResolver.Resolve().Uri;
 
     /// <summary>
     /// Gets the default configuration instance with standard settings.
     /// </summary>
     public static DockerConfig Default { get; } = new();
-
-    /// <summary>
-    /// Determines the appropriate Docker socket URI based on the current platform.
-    /// </summary>
-    /// <returns>The Docker socket URI for the current platform.</returns>
-    private static Uri GetDockerSocketUri()
-    {
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            return new Uri("npipe://./pipe/docker_engine");
-        }
-        else
-        {
-            // Linux and macOS use Unix socket
-            return new Uri("unix:///var/run/docker.sock");
-        }
-    }
 }

@@ -9,50 +9,58 @@ PDK has three test projects:
 | Project | Purpose | Location |
 |---------|---------|----------|
 | `PDK.Tests.Unit` | Fast, isolated unit tests | `tests/PDK.Tests.Unit/` |
-| `PDK.Tests.Integration` | End-to-end scenarios | `tests/PDK.Tests.Integration/` |
-| `PDK.Tests.Performance` | Performance benchmarks | `tests/PDK.Tests.Performance/` |
+| `PDK.Tests.Integration` | End-to-end scenarios (some need a Docker daemon) | `tests/PDK.Tests.Integration/` |
+| `PDK.Tests.Performance` | BenchmarkDotNet benchmarks (run with `dotnet run`, not `dotnet test`) | `tests/PDK.Tests.Performance/` |
+
+Test projects import `tests/Directory.Build.props`, which relaxes a few analyzer rules for test code
+only; package versions come from `Directory.Packages.props` (central package management).
 
 ## Running Tests
 
-### Run All Tests
+CI builds in `Release`, so build once and run the suites against that build:
 
 ```bash
-dotnet test
-```
+# Build the solution (0 warnings required: TreatWarningsAsErrors is on)
+dotnet build -c Release
 
-### Run Specific Test Project
-
-```bash
-# Unit tests only
-dotnet test tests/PDK.Tests.Unit
-
-# Integration tests only
-dotnet test tests/PDK.Tests.Integration
-
-# Performance benchmarks
-dotnet test tests/PDK.Tests.Performance
-```
-
-### Run Tests by Category
-
-```bash
-# Unit tests
-dotnet test --filter Category=Unit
+# Unit tests (fast, no external dependencies)
+dotnet test tests/PDK.Tests.Unit --no-build -c Release
 
 # Integration tests
-dotnet test --filter Category=Integration
+dotnet test tests/PDK.Tests.Integration --no-build -c Release
+
+# Both suites in one go
+dotnet test --no-build -c Release
+```
+
+`dotnet test` without `-c Release` also works but builds Debug binaries first.
+
+### Tests that need Docker
+
+Integration tests that talk to a Docker daemon are marked `[DockerFact]` / `[DockerTheory]` together
+with `[Trait("Category", "RequiresDocker")]`. When no daemon that runs Linux containers is reachable
+(`DOCKER_HOST`, or the platform default socket / named pipe), those tests are reported as **Skipped**
+rather than failed, so the suite passes on machines without Docker. Two overrides exist:
+
+- `PDK_DOCKER_TESTS=require` never skips them (CI uses this on the Linux runner, where Docker must be present).
+- `PDK_DOCKER_TESTS=skip` skips them unconditionally.
+
+To leave them out explicitly:
+
+```bash
+dotnet test tests/PDK.Tests.Integration --no-build -c Release --filter "Category!=RequiresDocker"
 ```
 
 ### Run Specific Test Class
 
 ```bash
-dotnet test --filter FullyQualifiedName~GitHubActionsParserTests
+dotnet test tests/PDK.Tests.Unit --filter FullyQualifiedName~GitHubActionsParserTests
 ```
 
 ### Run Specific Test Method
 
 ```bash
-dotnet test --filter "FullyQualifiedName~GitHubActionsParserTests.ParseFile_ValidWorkflow_ReturnsPipeline"
+dotnet test tests/PDK.Tests.Unit --filter "FullyQualifiedName~GitHubActionsParserTests.ParseFile_ValidWorkflow_ReturnsPipeline"
 ```
 
 ### Run with Verbose Output
@@ -77,21 +85,33 @@ dotnet test --logger "trx;LogFileName=test-results.trx"
 
 ## Code Coverage
 
+Coverage is collected with the `coverlet.collector` data collector (referenced by both test projects)
+and the settings in `coverlet.runsettings`; Cobertura, lcov and OpenCover files are written under each
+project's `TestResults/` directory.
+
 ### Run with Coverage
 
 ```bash
-dotnet test /p:CollectCoverage=true
+dotnet test tests/PDK.Tests.Unit --no-build -c Release --collect:"XPlat Code Coverage" --settings coverlet.runsettings
+dotnet test tests/PDK.Tests.Integration --no-build -c Release --collect:"XPlat Code Coverage" --settings coverlet.runsettings
 ```
 
 ### Generate Coverage Report
 
 ```bash
-dotnet test /p:CollectCoverage=true /p:CoverletOutputFormat=opencover
+# Runs both suites with coverage and builds an HTML report with ReportGenerator
+./scripts/coverage.sh
+
+# Or manually
+dotnet tool install -g dotnet-reportgenerator-globaltool
+reportgenerator -reports:"**/coverage.cobertura.xml" -targetdir:coveragereport -reporttypes:"Html;TextSummary"
 ```
 
 ### Coverage Targets
 
-PDK maintains an **80% minimum code coverage** requirement for new code.
+CI fails when the combined line coverage of the unit and integration tests drops below **70%**
+(`MIN_LINE_COVERAGE` in `.github/workflows/ci.yml`, measured with ReportGenerator on the Linux runner).
+Aim for 80% or better on new code:
 
 | Area | Target |
 |------|--------|
@@ -107,7 +127,7 @@ PDK maintains an **80% minimum code coverage** requirement for new code.
 PDK uses these testing frameworks:
 
 - **xUnit** - Test framework
-- **FluentAssertions** - Readable assertions
+- **FluentAssertions** (7.x) - Readable assertions
 - **Moq** - Mocking framework
 
 ### Test Naming Convention
@@ -211,6 +231,8 @@ public class StepExecutorFactoryTests
 
 ### Integration Test Example
 
+Tests that need a Docker daemon use `[DockerFact]` so they skip themselves when none is reachable:
+
 ```csharp
 using FluentAssertions;
 using PDK.Providers.GitHub;
@@ -218,7 +240,6 @@ using Xunit;
 
 namespace PDK.Tests.Integration.Parsers;
 
-[Trait("Category", "Integration")]
 public class GitHubActionsParserIntegrationTests
 {
     [Fact]
@@ -237,6 +258,13 @@ public class GitHubActionsParserIntegrationTests
         pipeline.Should().NotBeNull();
         pipeline.Provider.Should().Be(PipelineProvider.GitHub);
         pipeline.Jobs.Should().NotBeEmpty();
+    }
+
+    [DockerFact]
+    [Trait("Category", "RequiresDocker")]
+    public async Task RunJob_InContainer_Succeeds()
+    {
+        // Runs only when a Docker daemon is available
     }
 }
 ```
@@ -309,16 +337,15 @@ public async Task ParseFile_InvalidYaml_ThrowsParseException()
 
 ```csharp
 [Theory]
-[InlineData("ubuntu-latest", "ubuntu:latest")]
-[InlineData("ubuntu-22.04", "ubuntu:22.04")]
-[InlineData("windows-latest", "mcr.microsoft.com/windows/servercore:ltsc2022")]
-public void MapImage_KnownRunner_ReturnsDockerImage(string runner, string expectedImage)
+[InlineData("ubuntu-latest", "buildpack-deps:noble")]
+[InlineData("node:18", "node:18")]
+public void MapRunnerToImage_KnownRunner_ReturnsDockerImage(string runner, string expectedImage)
 {
     // Arrange
     var mapper = new ImageMapper();
 
     // Act
-    var image = mapper.Map(runner);
+    var image = mapper.MapRunnerToImage(runner);
 
     // Assert
     image.Should().Be(expectedImage);
@@ -393,47 +420,53 @@ public class SecretMaskerBenchmarks
     [Benchmark]
     public string MaskSecrets()
     {
-        return _masker.Mask(_text);
+        return _masker.MaskSecrets(_text);
     }
 }
 ```
 
 ## Test Categories
 
-Mark tests with categories for filtering:
+Unit tests carry no `Category` trait (they are selected by project: `dotnet test tests/PDK.Tests.Unit`;
+`--filter Category=Unit` selects nothing). Integration tests use these traits:
+
+| Trait | Meaning |
+|-------|---------|
+| `Category=Integration` | Integration test (`dotnet test --filter Category=Integration`) |
+| `Category=RequiresDocker` | Needs a Docker daemon; paired with `[DockerFact]` / `[DockerTheory]` so it skips without one |
+| `Category=RequiresDotnet`, `Category=RequiresInternet` | Need the .NET SDK on the host / network access |
 
 ```csharp
-[Trait("Category", "Unit")]
-public class MyUnitTests { }
-
+[DockerFact]
 [Trait("Category", "Integration")]
-public class MyIntegrationTests { }
-
-[Trait("Category", "Performance")]
-public class MyPerformanceTests { }
+[Trait("Category", "RequiresDocker")]
+public async Task MyDockerTest() { }
 ```
 
 ## Continuous Integration
 
-Tests run automatically on every pull request. The CI pipeline:
+Tests run automatically on every pull request (`.github/workflows/ci.yml`, on Ubuntu, Windows and
+macOS). The CI pipeline:
 
-1. Runs all unit tests
-2. Runs integration tests (if Docker available)
-3. Reports code coverage
-4. Fails if coverage drops below threshold
+1. Builds in Release (warnings are errors)
+2. Runs the unit tests with coverage
+3. Runs the integration tests with coverage (`PDK_DOCKER_TESTS=require` on Ubuntu; the Docker tests
+   skip on Windows and macOS runners)
+4. Generates the coverage report on Ubuntu and fails when line coverage is below 70%
 
 ## Troubleshooting
 
 ### Tests Fail with Docker Errors
 
-Integration tests require Docker. If Docker is unavailable, some tests will be skipped.
+Docker-dependent integration tests skip automatically when no daemon is reachable. If they fail
+instead, `PDK_DOCKER_TESTS=require` is probably set, or the daemon is reachable but broken:
 
 ```bash
 # Check Docker status
 docker info
 
-# Run only non-Docker tests
-dotnet test --filter "Category!=Integration"
+# Skip the Docker tests explicitly
+PDK_DOCKER_TESTS=skip dotnet test tests/PDK.Tests.Integration
 ```
 
 ### Tests Fail Intermittently
@@ -445,11 +478,9 @@ For flaky tests:
 
 ### Coverage Not Generated
 
-Ensure Coverlet is installed:
-
-```bash
-dotnet add tests/PDK.Tests.Unit package coverlet.msbuild
-```
+Make sure you pass `--collect:"XPlat Code Coverage" --settings coverlet.runsettings`; the
+`coverlet.collector` package is already referenced by the test projects (version pinned in
+`Directory.Packages.props`).
 
 ## Next Steps
 

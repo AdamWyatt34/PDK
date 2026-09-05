@@ -70,14 +70,60 @@ public class ErrorSuggestionTests
     }
 
     [Fact]
-    public void GetDocumentationUrl_ReturnsValidUrl()
+    public void GetDocumentationUrl_ReturnsRepositoryDocReference()
     {
         // Act
         var url = _engine.GetDocumentationUrl(ErrorCodes.DockerNotRunning);
 
-        // Assert
-        url.Should().StartWith("https://");
-        url.Should().Contain("pdk");
+        // Assert - the docs.pdk.dev site does not exist; the reference points at docs/errors.md
+        url.Should().Be("docs/errors.md#pdk-e-docker-001");
+        url.Should().NotContain("https://");
+    }
+
+    [Theory]
+    [InlineData(ErrorCodes.DockerUnavailable, "--host")]
+    [InlineData(ErrorCodes.RunnerCapabilityMismatch, "--docker")]
+    [InlineData(ErrorCodes.ConfigInvalidJson, "JSON")]
+    [InlineData(ErrorCodes.ConfigInvalidVersion, "version")]
+    [InlineData(ErrorCodes.VariableRequired, "--var")]
+    [InlineData(ErrorCodes.VariableInvalidSyntax, "${NAME}")]
+    [InlineData(ErrorCodes.SecretNotFound, "pdk secret")]
+    [InlineData(ErrorCodes.SecretDecryptionFailed, "pdk secret set")]
+    [InlineData(ErrorCodes.ArtifactNotFound, "artifact")]
+    [InlineData(ErrorCodes.ArtifactNoFilesMatched, "pattern")]
+    [InlineData(ErrorCodes.MissingDependency, "needs")]
+    [InlineData(ErrorCodes.SelfDependency, "self-reference")]
+    public void GetSuggestions_ReturnsSpecificSuggestions_ForCodeFamilies(string errorCode, string expectedFragment)
+    {
+        var suggestions = _engine.GetSuggestions(errorCode);
+
+        suggestions.Should().NotBeEmpty();
+        suggestions.Should().Contain(s => s.Contains(expectedFragment, StringComparison.OrdinalIgnoreCase));
+        // Not the generic fallback
+        suggestions.Should().NotContain("Review the error message for details");
+    }
+
+    [Theory]
+    [InlineData(129, "SIGHUP")]
+    [InlineData(130, "SIGINT")]
+    [InlineData(139, "SIGSEGV")]
+    public void GetExitCodeSuggestions_NamesCommonSignals(int exitCode, string signalName)
+    {
+        var suggestions = _engine.GetExitCodeSuggestions(exitCode);
+
+        suggestions.Should().Contain(s => s.Contains(signalName) && s.Contains($"signal {exitCode - 128}"));
+    }
+
+    [Theory]
+    [InlineData(160)]
+    [InlineData(200)]
+    [InlineData(255)]
+    public void GetExitCodeSuggestions_DoesNotLabelHighCodesAsSignals(int exitCode)
+    {
+        var suggestions = _engine.GetExitCodeSuggestions(exitCode);
+
+        suggestions.Should().NotContain(s => s.Contains("signal", StringComparison.OrdinalIgnoreCase));
+        suggestions.Should().Contain(s => s.Contains(exitCode.ToString()));
     }
 
     [Fact]

@@ -1,8 +1,12 @@
+using PDK.Runners.Models;
+
 namespace PDK.Runners.Docker;
 
 /// <summary>
 /// Validates Docker container resource limits (memory, CPU, timeout).
-/// Ensures values are within Docker's acceptable ranges and system constraints.
+/// When the daemon's resources are known (<see cref="DaemonResources"/>, from <c>docker info</c>) the limits are
+/// checked against the daemon (the Docker Desktop VM on macOS/Windows); otherwise conservative host-based
+/// bounds are used.
 /// </summary>
 public static class ResourceValidator
 {
@@ -12,9 +16,9 @@ public static class ResourceValidator
     private const long MinMemoryBytes = 6_291_456; // 6MB
 
     /// <summary>
-    /// Maximum memory limit in bytes (16GB - reasonable upper limit).
+    /// Maximum memory limit in bytes used when the daemon's total memory is unknown (16GB).
     /// </summary>
-    private const long MaxMemoryBytes = 17_179_869_184; // 16GB
+    private const long FallbackMaxMemoryBytes = 17_179_869_184; // 16GB
 
     /// <summary>
     /// Maximum timeout in minutes (24 hours).
@@ -22,27 +26,25 @@ public static class ResourceValidator
     private const int MaxTimeoutMinutes = 1440; // 24 hours
 
     /// <summary>
-    /// Validates a memory limit value.
+    /// Validates a memory limit value against the fallback bounds (6MB - 16GB).
     /// Null values are considered valid (no limit specified).
     /// </summary>
     /// <param name="memoryBytes">The memory limit in bytes to validate.</param>
-    /// <returns>
-    /// A tuple containing:
-    /// - isValid: true if the value is valid, false otherwise
-    /// - errorMessage: a descriptive error message if invalid, null if valid
-    /// </returns>
-    /// <example>
-    /// <code>
-    /// var (isValid, error) = ResourceValidator.ValidateMemoryLimit(8_000_000_000);
-    /// if (!isValid)
-    /// {
-    ///     Console.WriteLine(error);
-    /// }
-    /// </code>
-    /// </example>
+    /// <returns>A tuple of (isValid, errorMessage).</returns>
     public static (bool isValid, string? errorMessage) ValidateMemoryLimit(long? memoryBytes)
     {
-        // Null is valid (no limit specified)
+        return ValidateMemoryLimit(memoryBytes, null);
+    }
+
+    /// <summary>
+    /// Validates a memory limit value. When <paramref name="daemon"/> is supplied the limit may not exceed the
+    /// daemon's total memory; otherwise a 16GB ceiling applies.
+    /// </summary>
+    /// <param name="memoryBytes">The memory limit in bytes to validate.</param>
+    /// <param name="daemon">Resources reported by the Docker daemon, or null when unknown.</param>
+    /// <returns>A tuple of (isValid, errorMessage).</returns>
+    public static (bool isValid, string? errorMessage) ValidateMemoryLimit(long? memoryBytes, DaemonResources? daemon)
+    {
         if (!memoryBytes.HasValue)
         {
             return (true, null);
@@ -50,43 +52,51 @@ public static class ResourceValidator
 
         var value = memoryBytes.Value;
 
-        // Check minimum
         if (value < MinMemoryBytes)
         {
             return (false, $"Memory limit must be at least {MinMemoryBytes:N0} bytes (6MB - Docker minimum). Provided: {value:N0} bytes.");
         }
 
-        // Check maximum
-        if (value > MaxMemoryBytes)
+        if (daemon is { TotalMemoryBytes: > 0 })
         {
-            return (false, $"Memory limit cannot exceed {MaxMemoryBytes:N0} bytes (16GB). Provided: {value:N0} bytes.");
+            if (value > daemon.TotalMemoryBytes)
+            {
+                return (false,
+                    $"Memory limit cannot exceed the Docker daemon's total memory of {daemon.TotalMemoryBytes:N0} bytes " +
+                    $"({BytesToGigabytes(daemon.TotalMemoryBytes):F1}GB). Provided: {value:N0} bytes.");
+            }
+
+            return (true, null);
+        }
+
+        if (value > FallbackMaxMemoryBytes)
+        {
+            return (false, $"Memory limit cannot exceed {FallbackMaxMemoryBytes:N0} bytes (16GB). Provided: {value:N0} bytes.");
         }
 
         return (true, null);
     }
 
     /// <summary>
-    /// Validates a CPU limit value.
+    /// Validates a CPU limit value against the processors of this machine.
     /// Null values are considered valid (no limit specified).
     /// </summary>
     /// <param name="cpuLimit">The CPU limit in cores to validate (e.g., 1.0 = 1 core, 2.5 = 2.5 cores).</param>
-    /// <returns>
-    /// A tuple containing:
-    /// - isValid: true if the value is valid, false otherwise
-    /// - errorMessage: a descriptive error message if invalid, null if valid
-    /// </returns>
-    /// <example>
-    /// <code>
-    /// var (isValid, error) = ResourceValidator.ValidateCpuLimit(2.0);
-    /// if (!isValid)
-    /// {
-    ///     Console.WriteLine(error);
-    /// }
-    /// </code>
-    /// </example>
+    /// <returns>A tuple of (isValid, errorMessage).</returns>
     public static (bool isValid, string? errorMessage) ValidateCpuLimit(double? cpuLimit)
     {
-        // Null is valid (no limit specified)
+        return ValidateCpuLimit(cpuLimit, null);
+    }
+
+    /// <summary>
+    /// Validates a CPU limit value. When <paramref name="daemon"/> is supplied the limit may not exceed the
+    /// CPUs available to the daemon; otherwise the host processor count is used.
+    /// </summary>
+    /// <param name="cpuLimit">The CPU limit in cores to validate.</param>
+    /// <param name="daemon">Resources reported by the Docker daemon, or null when unknown.</param>
+    /// <returns>A tuple of (isValid, errorMessage).</returns>
+    public static (bool isValid, string? errorMessage) ValidateCpuLimit(double? cpuLimit, DaemonResources? daemon)
+    {
         if (!cpuLimit.HasValue)
         {
             return (true, null);
@@ -94,13 +104,21 @@ public static class ResourceValidator
 
         var value = cpuLimit.Value;
 
-        // Check minimum (must be positive)
-        if (value <= 0)
+        if (double.IsNaN(value) || value <= 0)
         {
             return (false, $"CPU limit must be greater than 0. Provided: {value}.");
         }
 
-        // Check maximum (cannot exceed available processors)
+        if (daemon is { CpuCount: > 0 })
+        {
+            if (value > daemon.CpuCount)
+            {
+                return (false, $"CPU limit cannot exceed {daemon.CpuCount} cores (CPUs available to the Docker daemon). Provided: {value}.");
+            }
+
+            return (true, null);
+        }
+
         var maxCpus = Environment.ProcessorCount;
         if (value > maxCpus)
         {
@@ -115,23 +133,9 @@ public static class ResourceValidator
     /// Null values are considered valid (no timeout specified).
     /// </summary>
     /// <param name="timeoutMinutes">The timeout in minutes to validate.</param>
-    /// <returns>
-    /// A tuple containing:
-    /// - isValid: true if the value is valid, false otherwise
-    /// - errorMessage: a descriptive error message if invalid, null if valid
-    /// </returns>
-    /// <example>
-    /// <code>
-    /// var (isValid, error) = ResourceValidator.ValidateTimeout(60);
-    /// if (!isValid)
-    /// {
-    ///     Console.WriteLine(error);
-    /// }
-    /// </code>
-    /// </example>
+    /// <returns>A tuple of (isValid, errorMessage).</returns>
     public static (bool isValid, string? errorMessage) ValidateTimeout(int? timeoutMinutes)
     {
-        // Null is valid (no timeout specified)
         if (!timeoutMinutes.HasValue)
         {
             return (true, null);
@@ -139,13 +143,11 @@ public static class ResourceValidator
 
         var value = timeoutMinutes.Value;
 
-        // Check minimum (must be positive)
         if (value <= 0)
         {
             return (false, $"Timeout must be greater than 0 minutes. Provided: {value}.");
         }
 
-        // Check maximum (24 hours)
         if (value > MaxTimeoutMinutes)
         {
             return (false, $"Timeout cannot exceed {MaxTimeoutMinutes} minutes (24 hours). Provided: {value}.");
@@ -155,36 +157,36 @@ public static class ResourceValidator
     }
 
     /// <summary>
-    /// Validates all resource limits from a ContainerOptions object.
-    /// Returns a list of all validation errors found.
+    /// Validates all resource limits. Returns a list of all validation errors found.
     /// </summary>
     /// <param name="memoryLimit">Optional memory limit in bytes.</param>
     /// <param name="cpuLimit">Optional CPU limit in cores.</param>
     /// <param name="timeoutMinutes">Optional timeout in minutes.</param>
     /// <returns>A list of error messages for any invalid values. Empty list if all values are valid.</returns>
-    /// <example>
-    /// <code>
-    /// var errors = ResourceValidator.ValidateAll(8_000_000_000, 2.0, 60);
-    /// if (errors.Any())
-    /// {
-    ///     foreach (var error in errors)
-    ///     {
-    ///         Console.WriteLine(error);
-    ///     }
-    /// }
-    /// </code>
-    /// </example>
     public static List<string> ValidateAll(long? memoryLimit = null, double? cpuLimit = null, int? timeoutMinutes = null)
+    {
+        return ValidateAll(memoryLimit, cpuLimit, timeoutMinutes, null);
+    }
+
+    /// <summary>
+    /// Validates all resource limits against the daemon's resources when known.
+    /// </summary>
+    /// <param name="memoryLimit">Optional memory limit in bytes.</param>
+    /// <param name="cpuLimit">Optional CPU limit in cores.</param>
+    /// <param name="timeoutMinutes">Optional timeout in minutes.</param>
+    /// <param name="daemon">Resources reported by the Docker daemon, or null when unknown.</param>
+    /// <returns>A list of error messages for any invalid values. Empty list if all values are valid.</returns>
+    public static List<string> ValidateAll(long? memoryLimit, double? cpuLimit, int? timeoutMinutes, DaemonResources? daemon)
     {
         var errors = new List<string>();
 
-        var (memoryValid, memoryError) = ValidateMemoryLimit(memoryLimit);
+        var (memoryValid, memoryError) = ValidateMemoryLimit(memoryLimit, daemon);
         if (!memoryValid && memoryError != null)
         {
             errors.Add(memoryError);
         }
 
-        var (cpuValid, cpuError) = ValidateCpuLimit(cpuLimit);
+        var (cpuValid, cpuError) = ValidateCpuLimit(cpuLimit, daemon);
         if (!cpuValid && cpuError != null)
         {
             errors.Add(cpuError);
@@ -199,43 +201,23 @@ public static class ResourceValidator
         return errors;
     }
 
-    /// <summary>
-    /// Converts memory from megabytes to bytes.
-    /// </summary>
+    /// <summary>Converts megabytes to bytes.</summary>
     /// <param name="megabytes">The memory size in megabytes.</param>
     /// <returns>The memory size in bytes.</returns>
-    public static long MegabytesToBytes(long megabytes)
-    {
-        return megabytes * 1024 * 1024;
-    }
+    public static long MegabytesToBytes(long megabytes) => megabytes * 1024 * 1024;
 
-    /// <summary>
-    /// Converts memory from gigabytes to bytes.
-    /// </summary>
+    /// <summary>Converts gigabytes to bytes.</summary>
     /// <param name="gigabytes">The memory size in gigabytes.</param>
     /// <returns>The memory size in bytes.</returns>
-    public static long GigabytesToBytes(long gigabytes)
-    {
-        return gigabytes * 1024 * 1024 * 1024;
-    }
+    public static long GigabytesToBytes(long gigabytes) => gigabytes * 1024 * 1024 * 1024;
 
-    /// <summary>
-    /// Converts memory from bytes to megabytes.
-    /// </summary>
+    /// <summary>Converts bytes to megabytes.</summary>
     /// <param name="bytes">The memory size in bytes.</param>
     /// <returns>The memory size in megabytes.</returns>
-    public static long BytesToMegabytes(long bytes)
-    {
-        return bytes / 1024 / 1024;
-    }
+    public static long BytesToMegabytes(long bytes) => bytes / 1024 / 1024;
 
-    /// <summary>
-    /// Converts memory from bytes to gigabytes.
-    /// </summary>
+    /// <summary>Converts bytes to gigabytes.</summary>
     /// <param name="bytes">The memory size in bytes.</param>
     /// <returns>The memory size in gigabytes.</returns>
-    public static double BytesToGigabytes(long bytes)
-    {
-        return bytes / 1024.0 / 1024.0 / 1024.0;
-    }
+    public static double BytesToGigabytes(long bytes) => bytes / 1024.0 / 1024.0 / 1024.0;
 }

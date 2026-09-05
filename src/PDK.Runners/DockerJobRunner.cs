@@ -19,6 +19,8 @@ using PDK.Runners.StepExecutors;
 /// </summary>
 public class DockerJobRunner : IJobRunner
 {
+    private const string ContainerWorkspace = "/workspace";
+
     private readonly IContainerManager _containerManager;
     private readonly IImageMapper _imageMapper;
     private readonly StepExecutorFactory _executorFactory;
@@ -39,7 +41,7 @@ public class DockerJobRunner : IJobRunner
     /// <param name="executorFactory">The factory for resolving step executors.</param>
     /// <param name="logger">The logger for structured logging.</param>
     /// <param name="variableResolver">The variable resolver for managing variables.</param>
-    /// <param name="variableExpander">The variable expander for interpolating variable references.</param>
+    /// <param name="variableExpander">The variable expander for interpolating PDK <c>${VAR}</c> references in inputs.</param>
     /// <param name="secretMasker">The secret masker for hiding sensitive data in output.</param>
     /// <param name="progressReporter">Optional progress reporter for UI feedback. Defaults to NullProgressReporter if not provided.</param>
     /// <param name="performanceTracker">Optional performance tracker for metrics. Defaults to NullPerformanceTracker if not provided.</param>
@@ -72,14 +74,35 @@ public class DockerJobRunner : IJobRunner
     }
 
     /// <inheritdoc/>
-    public async Task<JobExecutionResult> RunJobAsync(
+    public Task<JobExecutionResult> RunJobAsync(
         Job job,
         string workspacePath,
         CancellationToken cancellationToken = default)
+        => RunJobAsync(job, JobRunContext.ForWorkspace(workspacePath), cancellationToken);
+
+    /// <inheritdoc/>
+    public async Task<JobExecutionResult> RunJobAsync(
+        Job job,
+        JobRunContext runContext,
+        CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(job);
+        ArgumentNullException.ThrowIfNull(runContext);
+
         var startTime = DateTimeOffset.Now;
         var stepResults = new List<StepExecutionResult>();
         string? containerId = null;
+        JobExecutionSession? session = null;
+        var keepContainer = runContext.KeepContainers;
+
+        using var jobCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (job.Timeout is { } jobTimeout && jobTimeout > TimeSpan.Zero)
+        {
+            jobCts.CancelAfter(jobTimeout);
+        }
+
+        var token = jobCts.Token;
+        var reporter = runContext.ProgressReporter ?? _progressReporter;
 
         // Start performance tracking
         _performanceTracker.StartTracking();
@@ -88,11 +111,25 @@ public class DockerJobRunner : IJobRunner
         {
             _logger.LogInformation("Starting job: {JobName} on runner: {Runner}", job.Name, job.RunsOn);
 
-            // 1. Map runner name to Docker image
-            var image = _imageMapper.MapRunnerToImage(job.RunsOn);
-            _logger.LogDebug("Mapped runner '{Runner}' to image '{Image}'", job.RunsOn, image);
+            var workspacePath = runContext.WorkspacePath;
+            var effectiveRun = JobRunnerSupport.WithResolverVariables(runContext, _variableResolver);
 
-            // 2. Pull image if needed (with progress logging and performance tracking)
+            // 1. Resolve the image: an explicit job container wins over the runner label mapping
+            if (_containerManager is DockerContainerManager { DaemonOSType: { Length: > 0 } daemonOs } && _imageMapper is ImageMapper mapper)
+            {
+                mapper.DaemonOSType = daemonOs;
+            }
+
+            var image = string.IsNullOrWhiteSpace(job.Container)
+                ? _imageMapper.MapRunnerToImage(job.RunsOn)
+                : job.Container.Trim();
+            _logger.LogDebug("Resolved runner '{Runner}' (container: {Container}) to image '{Image}'", job.RunsOn, job.Container ?? "<none>", image);
+
+            // 2. Session: expression contexts, exported environment, step outcomes
+            session = new JobExecutionSession(job, effectiveRun, ContainerWorkspace, image, _logger);
+            var outputHandler = JobRunnerSupport.MaskingOutputHandler(runContext.OutputLineHandler, _secretMasker, session);
+
+            // 3. Pull image if needed (with progress logging and performance tracking); --no-cache always pulls
             _logger.LogDebug("Pulling image if needed: {Image}", image);
             var imagePullStopwatch = Stopwatch.StartNew();
             var wasPulled = false;
@@ -101,10 +138,17 @@ public class DockerJobRunner : IJobRunner
                 wasPulled = true;
                 _logger.LogDebug("[Image Pull] {Message}", message);
             });
-            await _containerManager.PullImageIfNeededAsync(image, progress, cancellationToken);
+            if (runContext.ForcePullImages)
+            {
+                await _containerManager.PullImageAsync(image, progress, token);
+            }
+            else
+            {
+                await _containerManager.PullImageIfNeededAsync(image, progress, token);
+            }
+
             imagePullStopwatch.Stop();
 
-            // Track image pull/cache
             if (wasPulled)
             {
                 _performanceTracker.TrackImagePull(image, imagePullStopwatch.Elapsed);
@@ -114,216 +158,163 @@ public class DockerJobRunner : IJobRunner
                 _performanceTracker.TrackImageCache(image);
             }
 
-            // 3. Create container with workspace mounted (with performance tracking)
+            // 4. Remove containers left behind by interrupted runs, then create this job's container
+            try
+            {
+                var removed = await _containerManager.RemoveOrphanedContainersAsync(token);
+                if (removed > 0)
+                {
+                    _logger.LogInformation("Removed {Count} orphaned PDK container(s)", removed);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "Orphaned container cleanup failed");
+            }
+
             var containerStopwatch = Stopwatch.StartNew();
+            var containerEnvironment = BuildContainerEnvironment(session.BaseEnvironment, job.Environment);
+
             var containerOptions = new ContainerOptions
             {
-                Name = $"pdk-job-{job.Name}-{Guid.NewGuid():N}",
+                Name = $"pdk-job-{SanitizeContainerName(job.Id.Length > 0 ? job.Id : job.Name)}-{Guid.NewGuid():N}",
+                JobName = job.Name,
                 WorkspacePath = workspacePath,
-                WorkingDirectory = "/workspace",
-                Environment = new Dictionary<string, string>(job.Environment ?? new Dictionary<string, string>())
+                WorkingDirectory = ContainerWorkspace,
+                Environment = containerEnvironment,
+                MemoryLimit = runContext.ContainerMemoryLimit,
+                CpuLimit = runContext.ContainerCpuLimit,
+                Network = runContext.ContainerNetwork,
+                KeepContainer = keepContainer,
+                MountDockerSocket = job.Steps.Any(s => s.Type == StepType.Docker)
             };
 
             _logger.LogDebug("Creating container: {ContainerName}", containerOptions.Name);
-            containerId = await _containerManager.CreateContainerAsync(
-                image,
-                containerOptions,
-                cancellationToken);
+            containerId = await _containerManager.CreateContainerAsync(image, containerOptions, token);
             containerStopwatch.Stop();
             _performanceTracker.TrackContainerCreation(containerStopwatch.Elapsed);
             _logger.LogInformation("Container created: {ContainerId} in {Duration:F2}s", containerId, containerStopwatch.Elapsed.TotalSeconds);
 
-            // 4. Build base execution context
+            // 5. Build base execution context
             var baseContext = BuildExecutionContext(job, containerId, workspacePath);
 
-            // Generate run ID for artifact context (Sprint 8)
-            var runId = ArtifactContext.GenerateRunId();
-            _logger.LogDebug("Generated run ID for artifacts: {RunId}", runId);
+            // 6. Generate run ID for artifact context
+            var runId = runContext.RunId;
+            _logger.LogDebug("Run ID for artifacts: {RunId}", runId);
 
-            // Update variable context with job name (Sprint 7)
-            _variableResolver.UpdateContext(new VariableContext
-            {
-                Workspace = workspacePath,
-                Runner = job.RunsOn,
-                JobName = job.Name
-            });
+            // Per-job view of the variables: PDK_JOB/PDK_STEP are answered here, not from shared state
+            var scopedResolver = new JobScopedVariableResolver(_variableResolver, workspacePath, job.RunsOn, job.Name);
 
-            // 5. Execute each step in order
+            // 8. Execute each step in order
             for (int i = 0; i < job.Steps.Count; i++)
             {
+                token.ThrowIfCancellationRequested();
+
                 var step = job.Steps[i];
 
-                // Create artifact context for this step (Sprint 8)
-                var artifactContext = new ArtifactContext
-                {
-                    WorkspacePath = workspacePath,
-                    RunId = runId,
-                    JobName = SanitizeFileName(job.Name),
-                    StepIndex = i,
-                    StepName = SanitizeFileName(step.Name ?? $"step-{i}")
-                };
+                scopedResolver.StepName = step.Name;
 
-                // Create step-specific execution context with artifact context
-                var context = baseContext with { ArtifactContext = artifactContext };
+                var plan = session.PrepareStep(step, i);
+                var displayName = plan.Step.Name;
 
-                // Update variable context with step name (Sprint 7)
-                _variableResolver.UpdateContext(new VariableContext
-                {
-                    Workspace = workspacePath,
-                    Runner = job.RunsOn,
-                    JobName = job.Name,
-                    StepName = step.Name
-                });
-
-                // Expand variables in step properties (Sprint 7)
-                var expandedStep = ExpandStepVariables(step);
-
-                // Log step start
                 _logger.LogInformation(
                     "[{JobName}] Step {Current}/{Total}: {StepName}",
                     job.Name,
                     i + 1,
                     job.Steps.Count,
-                    expandedStep.Name);
+                    displayName);
 
-                // Report step start to progress reporter
-                await _progressReporter.ReportStepStartAsync(
-                    expandedStep.Name,
-                    i + 1,
-                    job.Steps.Count,
-                    cancellationToken);
+                await reporter.ReportStepStartAsync(displayName, i + 1, job.Steps.Count, token);
 
-                try
+                StepExecutionResult stepResult;
+                if (plan.Skip)
                 {
-                    // Resolve executor for this step type
-                    var executor = _executorFactory.GetExecutor(expandedStep.Type);
+                    stepResult = JobExecutionSession.SkippedResult(displayName, plan.SkipReason!);
+                    _logger.LogInformation("[{JobName}] Step skipped: {StepName} - {Reason}", job.Name, displayName, plan.SkipReason);
+                    await reporter.ReportStepSkippedAsync(displayName, i + 1, job.Steps.Count, plan.SkipReason, token);
+                }
+                else if (plan.Failed)
+                {
+                    stepResult = JobExecutionSession.FailedResult(displayName, plan.FailureMessage!, step.ContinueOnError);
+                    _logger.LogError("[{JobName}] Step could not run: {StepName} - {Message}", job.Name, displayName, plan.FailureMessage);
+                    await reporter.ReportStepCompleteAsync(displayName, false, TimeSpan.Zero, token);
+                }
+                else
+                {
+                    var artifactContext = new ArtifactContext
+                    {
+                        WorkspacePath = workspacePath,
+                        RunId = runId,
+                        JobName = SanitizeFileName(job.Name),
+                        StepIndex = i,
+                        StepName = SanitizeFileName(displayName)
+                    };
 
-                    // Execute step (executor handles step-level environment merging)
-                    var stepResult = await executor.ExecuteAsync(expandedStep, context, cancellationToken);
+                    var environment = new Dictionary<string, string>(plan.Environment, StringComparer.Ordinal);
+                    foreach (var (k, v) in baseContext.Environment)
+                    {
+                        environment.TryAdd(k, v);
+                    }
 
-                    // Mask secrets in output (Sprint 7)
-                    stepResult = MaskStepResultSecrets(stepResult);
-                    stepResults.Add(stepResult);
+                    var context = baseContext with
+                    {
+                        Environment = environment,
+                        ArtifactContext = artifactContext,
+                        OutputLineHandler = outputHandler,
+                        Timeout = plan.Timeout
+                    };
 
-                    // Track step duration for performance metrics
-                    _performanceTracker.TrackStepDuration(step.Name ?? $"step-{i}", stepResult.Duration);
+                    stepResult = await ExecuteStepAsync(ExpandPdkVariables(plan.Step, scopedResolver), context, plan.Timeout, job.Name, token);
+                    stepResult = JobRunnerSupport.MaskResult(stepResult, _secretMasker, session) with
+                    {
+                        AllowedFailure = !stepResult.Success && step.ContinueOnError
+                    };
 
-                    // Report step completion to progress reporter
-                    await _progressReporter.ReportStepCompleteAsync(
-                        step.Name,
-                        stepResult.Success,
+                    _performanceTracker.TrackStepDuration(displayName ?? $"step-{i}", stepResult.Duration);
+
+                    await reporter.ReportStepCompleteAsync(
+                        displayName,
+                        stepResult.Success || stepResult.AllowedFailure,
                         stepResult.Duration,
-                        cancellationToken);
+                        token);
 
-                    // Log step completion with correlation ID (REQ-11-005)
-                    var correlationId = PDK.Core.Logging.CorrelationContext.CurrentIdOrNull;
-                    if (stepResult.Success)
-                    {
-                        _logger.LogInformation(
-                            "[{JobName}] Step completed: {StepName} - Success ({Duration:F2}s)",
-                            job.Name,
-                            step.Name,
-                            stepResult.Duration.TotalSeconds);
-
-                        // Debug-level performance logging (REQ-11-005.7)
-                        _logger.LogDebug(
-                            "Step timing - Job: {JobName}, Step: {StepName}, DurationMs: {DurationMs}, ContainerId: {ContainerId}, CorrelationId: {CorrelationId}",
-                            job.Name,
-                            step.Name,
-                            stepResult.Duration.TotalMilliseconds,
-                            containerId?[..12],
-                            correlationId);
-                    }
-                    else
-                    {
-                        _logger.LogWarning(
-                            "[{JobName}] Step failed: {StepName} - Exit code: {ExitCode} ({Duration:F2}s)",
-                            job.Name,
-                            step.Name,
-                            stepResult.ExitCode,
-                            stepResult.Duration.TotalSeconds);
-
-                        // Debug-level failure details
-                        _logger.LogDebug(
-                            "Step failure details - Job: {JobName}, Step: {StepName}, ExitCode: {ExitCode}, DurationMs: {DurationMs}, ContainerId: {ContainerId}, CorrelationId: {CorrelationId}",
-                            job.Name,
-                            step.Name,
-                            stepResult.ExitCode,
-                            stepResult.Duration.TotalMilliseconds,
-                            containerId?[..12],
-                            correlationId);
-
-                        // Check if we should continue on error
-                        if (!step.ContinueOnError)
-                        {
-                            _logger.LogWarning(
-                                "[{JobName}] Job stopped due to step failure: {StepName}",
-                                job.Name,
-                                step.Name);
-                            break; // Stop execution on failure
-                        }
-                        else
-                        {
-                            _logger.LogInformation(
-                                "[{JobName}] Continuing despite step failure (ContinueOnError=true): {StepName}",
-                                job.Name,
-                                step.Name);
-                        }
-                    }
+                    LogStepCompletion(job.Name, displayName, containerId, stepResult);
                 }
-                catch (NotSupportedException ex)
-                {
-                    // Step executor not found for step type
-                    _logger.LogError(
-                        ex,
-                        "[{JobName}] No executor found for step type '{StepType}' in step '{StepName}'",
-                        job.Name,
-                        step.Type,
-                        step.Name);
 
-                    // Create failed step result
-                    stepResults.Add(new StepExecutionResult
-                    {
-                        StepName = step.Name,
-                        Success = false,
-                        ExitCode = -1,
-                        Output = string.Empty,
-                        ErrorOutput = ex.Message,
-                        Duration = TimeSpan.Zero,
-                        StartTime = DateTimeOffset.Now,
-                        EndTime = DateTimeOffset.Now
-                    });
-
-                    if (!step.ContinueOnError)
-                    {
-                        break; // Stop on executor resolution failure
-                    }
-                }
+                stepResults.Add(stepResult);
+                session.Record(step, i, stepResult);
             }
 
-            // 6. Calculate job duration and build result
-            var endTime = DateTimeOffset.Now;
-            var jobDuration = endTime - startTime;
-            var jobSuccess = stepResults.All(r => r.Success);
+            // 9. Calculate job duration and build result
+            var result = BuildJobResult(job.Name, stepResults, startTime, session.Outputs);
 
             _logger.LogInformation(
                 "Job completed: {JobName} - {Status} ({Duration:F2}s, {SuccessCount}/{TotalCount} steps succeeded)",
                 job.Name,
-                jobSuccess ? "Success" : "Failed",
-                jobDuration.TotalSeconds,
+                result.Success ? "Success" : "Failed",
+                result.Duration.TotalSeconds,
                 stepResults.Count(r => r.Success),
                 stepResults.Count);
 
+            return result;
+        }
+        catch (OperationCanceledException) when (jobCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogError("Job timed out: {JobName}", job.Name);
             return new JobExecutionResult
             {
                 JobName = job.Name,
-                Success = jobSuccess,
+                Success = false,
                 StepResults = stepResults,
-                Duration = jobDuration,
+                Duration = DateTimeOffset.Now - startTime,
                 StartTime = startTime,
-                EndTime = endTime,
-                ErrorMessage = jobSuccess ? null : "One or more steps failed"
+                EndTime = DateTimeOffset.Now,
+                ErrorMessage = $"Job timed out after {job.Timeout}"
             };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -346,25 +337,97 @@ public class DockerJobRunner : IJobRunner
         {
             // Stop performance tracking
             _performanceTracker.StopTracking();
+            session?.Cleanup();
 
-            // 7. Cleanup: Always remove container
+            // 10. Cleanup: remove the container even when the run was cancelled
             if (containerId != null)
             {
-                try
+                if (keepContainer)
                 {
-                    _logger.LogDebug("Removing container: {ContainerId}", containerId);
-                    await _containerManager.RemoveContainerAsync(containerId, cancellationToken);
-                    _logger.LogDebug("Container removed successfully: {ContainerId}", containerId);
+                    _logger.LogInformation("Keeping container for inspection: {ContainerId}", containerId);
                 }
-                catch (Exception ex)
+                else
                 {
-                    _logger.LogWarning(
-                        ex,
-                        "Failed to remove container: {ContainerId}. Manual cleanup may be required.",
-                        containerId);
+                    try
+                    {
+                        _logger.LogDebug("Removing container: {ContainerId}", containerId);
+                        await _containerManager.RemoveContainerAsync(containerId, CancellationToken.None);
+                        _logger.LogDebug("Container removed successfully: {ContainerId}", containerId);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(
+                            ex,
+                            "Failed to remove container: {ContainerId}. Manual cleanup may be required.",
+                            containerId);
+                    }
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Runs one step through its executor, converting executor problems into failed step results
+    /// so that a single bad step never aborts the whole job.
+    /// </summary>
+    private async Task<StepExecutionResult> ExecuteStepAsync(
+        Step step,
+        ExecutionContext context,
+        TimeSpan? timeout,
+        string jobName,
+        CancellationToken token)
+    {
+        using var stepCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+        if (timeout is { } t && t > TimeSpan.Zero)
+        {
+            stepCts.CancelAfter(t);
+        }
+
+        try
+        {
+            var executor = _executorFactory.GetExecutor(step.Type);
+            return await executor.ExecuteAsync(step, context, stepCts.Token);
+        }
+        catch (NotSupportedException ex)
+        {
+            _logger.LogError(ex, "[{JobName}] No executor found for step type '{StepType}' in step '{StepName}'", jobName, step.Type, step.Name);
+            return JobExecutionSession.FailedResult(step.Name, ex.Message, step.ContinueOnError);
+        }
+        catch (OperationCanceledException) when (stepCts.IsCancellationRequested && !token.IsCancellationRequested)
+        {
+            _logger.LogError("[{JobName}] Step timed out: {StepName} ({Timeout})", jobName, step.Name, timeout);
+            return JobExecutionSession.FailedResult(step.Name, $"Step timed out after {timeout}", step.ContinueOnError, exitCode: 124);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[{JobName}] Step '{StepName}' failed with an unexpected error", jobName, step.Name);
+            return JobExecutionSession.FailedResult(step.Name, $"Step failed: {ex.Message}", step.ContinueOnError);
+        }
+    }
+
+    /// <summary>
+    /// Builds the environment the container is created with: platform variables plus job-level values.
+    /// </summary>
+    private static Dictionary<string, string> BuildContainerEnvironment(
+        IReadOnlyDictionary<string, string> baseEnvironment,
+        Dictionary<string, string>? jobEnvironment)
+    {
+        var environment = new Dictionary<string, string>(baseEnvironment, StringComparer.Ordinal);
+        if (jobEnvironment == null)
+        {
+            return environment;
+        }
+
+        foreach (var pair in jobEnvironment)
+        {
+            environment[pair.Key] = pair.Value;
+        }
+
+        return environment;
     }
 
     /// <summary>
@@ -380,7 +443,7 @@ public class DockerJobRunner : IJobRunner
         // Build environment from job variables and add built-in variables
         var environment = new Dictionary<string, string>(job.Environment ?? new Dictionary<string, string>())
         {
-            ["WORKSPACE"] = "/workspace",
+            ["WORKSPACE"] = ContainerWorkspace,
             ["JOB_NAME"] = job.Name,
             ["RUNNER"] = job.RunsOn
         };
@@ -390,7 +453,7 @@ public class DockerJobRunner : IJobRunner
             ContainerId = containerId,
             ContainerManager = _containerManager,
             WorkspacePath = workspacePath,
-            ContainerWorkspacePath = "/workspace",
+            ContainerWorkspacePath = ContainerWorkspace,
             Environment = environment,
             WorkingDirectory = ".",
             JobInfo = new JobMetadata
@@ -403,63 +466,106 @@ public class DockerJobRunner : IJobRunner
     }
 
     /// <summary>
-    /// Expands variables in all step properties that may contain variable references.
+    /// Expands PDK <c>${VAR}</c> references in step inputs, environment and working directory.
+    /// Scripts are not rewritten: variables are exported to the shell instead.
     /// </summary>
-    /// <param name="step">The step with variable references.</param>
-    /// <returns>A new step with all variables expanded.</returns>
-    private Step ExpandStepVariables(Step step)
+    private Step ExpandPdkVariables(Step step, IVariableResolver resolver)
     {
-        return new Step
-        {
-            Id = step.Id,
-            Name = step.Name,
-            Type = step.Type,
-            Script = step.Script != null
-                ? _variableExpander.Expand(step.Script, _variableResolver)
-                : null,
-            Shell = step.Shell,
-            With = ExpandDictionary(step.With),
-            Environment = ExpandDictionary(step.Environment),
-            ContinueOnError = step.ContinueOnError,
-            Condition = step.Condition,
-            WorkingDirectory = step.WorkingDirectory != null
-                ? _variableExpander.Expand(step.WorkingDirectory, _variableResolver)
-                : null
-        };
+        var expanded = step.Clone();
+        expanded.With = ExpandDictionary(step.With, resolver);
+        expanded.Environment = ExpandDictionary(step.Environment, resolver);
+        expanded.WorkingDirectory = step.WorkingDirectory != null
+            ? _variableExpander.Expand(step.WorkingDirectory, resolver)
+            : null;
+        return expanded;
     }
 
     /// <summary>
     /// Expands variables in all dictionary values.
     /// </summary>
     /// <param name="dict">The dictionary with variable references in values.</param>
+    /// <param name="resolver">The (job-scoped) resolver that supplies the values.</param>
     /// <returns>A new dictionary with all values expanded.</returns>
-    private Dictionary<string, string> ExpandDictionary(Dictionary<string, string> dict)
+    private Dictionary<string, string> ExpandDictionary(Dictionary<string, string> dict, IVariableResolver resolver)
     {
         var result = new Dictionary<string, string>();
         foreach (var (key, value) in dict)
         {
-            result[key] = _variableExpander.Expand(value, _variableResolver);
+            result[key] = _variableExpander.Expand(value, resolver);
         }
         return result;
     }
 
     /// <summary>
-    /// Masks secret values in step output and error output.
+    /// Logs step completion with appropriate level based on success.
     /// </summary>
-    /// <param name="result">The step execution result.</param>
-    /// <returns>A new result with secrets masked.</returns>
-    private StepExecutionResult MaskStepResultSecrets(StepExecutionResult result)
+    private void LogStepCompletion(string jobName, string stepName, string containerId, StepExecutionResult result)
     {
-        return new StepExecutionResult
+        // Correlation ID for structured logging (REQ-11-005)
+        var correlationId = CorrelationContext.CurrentIdOrNull;
+        var shortContainerId = containerId.Length > 12 ? containerId[..12] : containerId;
+
+        if (result.Success)
         {
-            StepName = result.StepName,
-            Success = result.Success,
-            ExitCode = result.ExitCode,
-            Output = _secretMasker.MaskSecrets(result.Output),
-            ErrorOutput = _secretMasker.MaskSecrets(result.ErrorOutput),
-            Duration = result.Duration,
-            StartTime = result.StartTime,
-            EndTime = result.EndTime
+            _logger.LogInformation(
+                "[{JobName}] Step completed: {StepName} - Success ({Duration:F2}s)",
+                jobName,
+                stepName,
+                result.Duration.TotalSeconds);
+
+            // Debug-level performance logging (REQ-11-005.7)
+            _logger.LogDebug(
+                "Step timing - Job: {JobName}, Step: {StepName}, DurationMs: {DurationMs}, ContainerId: {ContainerId}, CorrelationId: {CorrelationId}",
+                jobName,
+                stepName,
+                result.Duration.TotalMilliseconds,
+                shortContainerId,
+                correlationId);
+        }
+        else
+        {
+            _logger.LogWarning(
+                "[{JobName}] Step failed: {StepName} - Exit code: {ExitCode} ({Duration:F2}s){Allowed}",
+                jobName,
+                stepName,
+                result.ExitCode,
+                result.Duration.TotalSeconds,
+                result.AllowedFailure ? " (continue-on-error)" : string.Empty);
+
+            // Debug-level failure details
+            _logger.LogDebug(
+                "Step failure details - Job: {JobName}, Step: {StepName}, ExitCode: {ExitCode}, DurationMs: {DurationMs}, ContainerId: {ContainerId}, CorrelationId: {CorrelationId}",
+                jobName,
+                stepName,
+                result.ExitCode,
+                result.Duration.TotalMilliseconds,
+                shortContainerId,
+                correlationId);
+        }
+    }
+
+    /// <summary>
+    /// Builds the final job result from step results.
+    /// </summary>
+    private static JobExecutionResult BuildJobResult(
+        string jobName,
+        List<StepExecutionResult> stepResults,
+        DateTimeOffset startTime,
+        IReadOnlyDictionary<string, string> outputs)
+    {
+        var endTime = DateTimeOffset.Now;
+        var jobSuccess = JobRunnerSupport.AllStepsCountAsSuccess(stepResults);
+
+        return new JobExecutionResult
+        {
+            JobName = jobName,
+            Success = jobSuccess,
+            StepResults = stepResults,
+            Duration = endTime - startTime,
+            StartTime = startTime,
+            EndTime = endTime,
+            ErrorMessage = jobSuccess ? null : "One or more steps failed",
+            Outputs = new Dictionary<string, string>(outputs)
         };
     }
 
@@ -477,6 +583,22 @@ public class DockerJobRunner : IJobRunner
 
         var invalidChars = Path.GetInvalidFileNameChars();
         return string.Join("_", name.Split(invalidChars, StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    /// <summary>
+    /// Reduces a job identifier to the character set Docker accepts in container names
+    /// (<c>[a-zA-Z0-9][a-zA-Z0-9_.-]</c>).
+    /// </summary>
+    private static string SanitizeContainerName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return "job";
+        }
+
+        var chars = name.Select(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '.' or '-' ? c : '-').ToArray();
+        var sanitized = new string(chars).Trim('-', '.', '_');
+        return sanitized.Length == 0 ? "job" : sanitized;
     }
 
     /// <summary>

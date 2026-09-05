@@ -55,6 +55,16 @@ public class ExecutionOptions
     public bool Quiet { get; set; }
 
     /// <summary>
+    /// Gets or sets whether trace output is enabled (--trace): everything --verbose shows plus trace-level logs.
+    /// </summary>
+    public bool Trace { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether all console output is suppressed except errors (--silent).
+    /// </summary>
+    public bool Silent { get; set; }
+
+    /// <summary>
     /// Gets or sets the explicit path to a configuration file.
     /// If null, configuration is auto-discovered using standard search order.
     /// </summary>
@@ -193,6 +203,49 @@ public class ExecutionOptions
     /// Gets or sets the filter preset name to load from configuration.
     /// </summary>
     public string? FilterPreset { get; set; }
+
+    // Job graph and execution policies
+
+    /// <summary>
+    /// Gets or sets whether the transitive dependencies of the selected job (--job) are NOT run first.
+    /// Default is false: dependencies run before the selected job, as they would on the CI server.
+    /// </summary>
+    public bool NoDependencies { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether unsupported actions/tasks fail the job instead of being skipped with a warning.
+    /// </summary>
+    public bool StrictUnsupportedSteps { get; set; }
+
+    /// <summary>
+    /// Gets or sets the event name presented to the pipeline (<c>github.event_name</c>, <c>Build.Reason</c>).
+    /// Default is "push".
+    /// </summary>
+    public string EventName { get; set; } = "push";
+
+    /// <summary>
+    /// Gets or sets whether job containers are kept after the run for inspection (Docker mode).
+    /// </summary>
+    public bool KeepContainers { get; set; }
+
+    /// <summary>
+    /// Gets or sets the parameter / input values given on the command line (<c>--param NAME=VALUE</c>):
+    /// Azure Pipelines <c>parameters</c>, GitHub <c>inputs</c>.
+    /// </summary>
+    public Dictionary<string, string> Parameters { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Builds the options handed to the pipeline parser.
+    /// </summary>
+    /// <param name="workspacePath">The workspace the pipeline runs in.</param>
+    /// <returns>The parse options.</returns>
+    public PDK.Core.Models.PipelineParseOptions ToParseOptions(string? workspacePath = null) => new()
+    {
+        Parameters = Parameters,
+        Variables = CliVariables,
+        WorkspacePath = workspacePath,
+        EventName = string.IsNullOrWhiteSpace(EventName) ? "push" : EventName
+    };
 
     /// <summary>
     /// Gets whether any step filtering is active.

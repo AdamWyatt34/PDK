@@ -263,11 +263,16 @@ public class ConfigurationMerger : IConfigurationMerger
 
 | Source | Priority | Example |
 |--------|----------|---------|
-| Built-in | Lowest | `${WORKSPACE}`, `${JOB_NAME}` |
-| Config file | Low | `variables:` in .pdkrc |
-| Environment | Medium | `PDK_VAR_*` or any env var |
-| CLI | High | `--var NAME=VALUE` |
-| Pipeline | Highest | `env:` in workflow |
+| Built-in | Lowest | `${PDK_WORKSPACE}`, `${PDK_JOB}` |
+| Config file / `--var-file` | Low | `variables:` in .pdkrc |
+| Environment | Medium | `PDK_VAR_*` only (other host variables are resolvable for `${VAR}` expansion but never stored, exported or listed) |
+| Secrets | High | `pdk secret set`, `PDK_SECRET_*` |
+| CLI | Highest | `--var NAME=VALUE`, `--secret NAME=VALUE` |
+
+Pipeline `env:` values are not PDK variables: they are exported to steps and exposed through the
+expression contexts by `PipelineContextBuilder` (see `src/PDK.Core/Expressions`). Variables and
+secrets are exported to steps by name; PDK's `${VAR}` expansion is applied to step inputs, step
+environment values and working directories (`VariableExpander`), while scripts are left to the shell.
 
 ### IVariableResolver
 

@@ -1,0 +1,83 @@
+# Exercises the GitHub Actions expression and execution semantics that PDK supports locally.
+# It needs no project: run it with `pdk run --file samples/github/expressions.yml --host`.
+# See docs/expressions.md for the details.
+name: Expressions Sample
+
+on: [push]
+
+env:
+  WORKFLOW_ENV: from-workflow
+
+jobs:
+  produce:
+    runs-on: ubuntu-latest
+    env:
+      JOB_ENV: from-job
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - id: version
+        name: Produce an output and extend the environment
+        run: |
+          echo "version=1.2.3" >> "$GITHUB_OUTPUT"
+          echo "DYNAMIC=set-by-earlier-step" >> "$GITHUB_ENV"
+          echo "$PWD/tools" >> "$GITHUB_PATH"
+
+      - name: Read contexts
+        env:
+          STEP_ENV: ${{ format('{0}-{1}', 'built', 'here') }}
+        run: |
+          echo "event=${{ github.event_name }} os=${{ runner.os }} job=${{ github.job }}"
+          echo "version from step output: ${{ steps.version.outputs.version }}"
+          echo "DYNAMIC=$DYNAMIC (also as env.DYNAMIC=${{ env.DYNAMIC }})"
+          echo "WORKFLOW_ENV=$WORKFLOW_ENV JOB_ENV=$JOB_ENV STEP_ENV=$STEP_ENV"
+          echo "contains=${{ contains('abc', 'B') }} json=${{ toJSON(github.event_name) }}"
+          echo "PATH starts with: ${PATH%%:*}"
+
+      - name: A step that fails
+        run: exit 3
+
+      - name: Skipped because a previous step failed
+        run: echo "never printed"
+
+      - name: Runs only after a failure
+        if: failure()
+        run: echo "failure() is true"
+
+      - name: Always runs
+        if: always()
+        run: echo "always() is true"
+
+  tolerant:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Allowed to fail
+        continue-on-error: true
+        run: exit 1
+
+      - name: Still runs, and the job stays green
+        run: echo "continue-on-error kept the job going"
+
+      - name: Setup actions are no-ops locally
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Unsupported actions are skipped with a warning (fail with --strict)
+        uses: some-org/some-action@v1
+
+  consume:
+    needs: [produce, tolerant]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "produce result: ${{ needs.produce.result }} (its output: ${{ needs.produce.outputs.version }})"
+          echo "tolerant result: ${{ needs.tolerant.result }}"
+
+  only-on-pull-request:
+    needs: tolerant
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "run me with --event pull_request"

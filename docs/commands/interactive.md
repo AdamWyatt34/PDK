@@ -143,6 +143,8 @@ Press Enter to continue...
 |------|---------|
 | 0 | Normal exit |
 | 1 | Error during execution |
+| 2 | Several candidate pipeline files found (use `--file`) |
+| 3 | Pipeline file not found |
 
 ## See Also
 
