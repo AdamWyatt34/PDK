@@ -1,0 +1,139 @@
+# A GitLab CI configuration that exercises the keywords PDK supports: workflow rules, include:local,
+# default, hidden job templates with extends and !reference, YAML anchors, rules (if / exists / when /
+# variables), needs, parallel:matrix, artifacts with exclude/expire_in/when, dependencies, allow_failure,
+# after_script, manual jobs and the .post stage.
+#
+# Every job uses plain shell commands, so it runs on the host from any directory:
+#
+#   pdk run -f samples/gitlab/full-pipeline.yml --host
+#   pdk run -f samples/gitlab/full-pipeline.yml --host --param DEPLOY_ENV=production
+#   pdk run -f samples/gitlab/full-pipeline.yml --host --event schedule   # integration-tests is skipped
+
+workflow:
+  name: "Full pipeline for $CI_COMMIT_REF_NAME"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_PIPELINE_SOURCE == "web"
+
+include:
+  - local: templates/common.yml
+
+stages:
+  - build
+  - test
+  - package
+  - deploy
+
+variables:
+  APP_NAME: sample-app
+  BUILD_DIR: "build/$APP_NAME"
+  DEPLOY_ENV:
+    value: staging
+    description: "Target environment; override with --param DEPLOY_ENV=production"
+    options: [staging, production]
+
+default:
+  image: alpine:3.20
+  before_script:
+    - echo "job '$CI_JOB_NAME' in stage '$CI_JOB_STAGE' ($CI_PIPELINE_SOURCE pipeline on '$CI_COMMIT_REF_NAME')"
+  timeout: 30 minutes
+
+.test-defaults: &test-defaults
+  interruptible: true
+  retry: 1
+
+build:
+  stage: build
+  extends: .with-summary           # after_script from templates/common.yml
+  script:
+    - mkdir -p "$BUILD_DIR"
+    - echo "built $APP_NAME" > "$BUILD_DIR/app.txt"
+    - echo "source map" > "$BUILD_DIR/app.map"
+  artifacts:
+    name: "$APP_NAME-build"
+    paths:
+      - build/
+    exclude:
+      - build/**/*.map
+    expire_in: 1 week
+
+unit-tests:
+  stage: test
+  <<: *test-defaults
+  parallel:
+    matrix:
+      - TARGET: [linux, windows]
+        DOTNET: ["8.0"]
+  script:
+    - !reference [.log, script]
+    - echo "unit tests for $TARGET / .NET $DOTNET (node $CI_NODE_INDEX of $CI_NODE_TOTAL)"
+    - test -f "$BUILD_DIR/app.txt"
+  after_script:
+    - echo "unit-tests finished with status $CI_JOB_STATUS"
+
+lint:
+  stage: test
+  needs: []
+  allow_failure: true
+  script:
+    - echo "linting (this job is allowed to fail)"
+    - exit 3
+
+integration-tests:
+  stage: test
+  needs:
+    - build
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - exists:
+        - Dockerfile
+      variables:
+        WITH_DOCKER: "true"
+    - when: on_success
+  script:
+    - echo "integration tests (docker=${WITH_DOCKER:-false})"
+
+package:
+  stage: package
+  needs: [unit-tests, build]
+  dependencies: [build]
+  script:
+    - tar -czf "$APP_NAME.tgz" build
+    - ls -l "$APP_NAME.tgz"
+  artifacts:
+    paths:
+      - "$APP_NAME.tgz"
+    when: always
+
+deploy-staging:
+  stage: deploy
+  extends: .deploy                 # script and environment from templates/common.yml
+  rules:
+    - if: $DEPLOY_ENV == "staging"
+  variables:
+    TARGET_ENV: staging
+
+deploy-production:
+  stage: deploy
+  extends: .deploy
+  rules:
+    - if: $DEPLOY_ENV == "production"
+    - when: manual                 # skipped locally: manual jobs are never started
+  variables:
+    TARGET_ENV: production
+
+notify-failure:
+  stage: .post
+  when: on_failure
+  script:
+    - echo "a job failed"
+
+cleanup:
+  stage: .post
+  when: always
+  script:
+    - rm -rf build "$APP_NAME.tgz"
+    - echo "workspace cleaned"

@@ -210,6 +210,7 @@ exits with code `130`.
 ## See also
 
 - [pdk run](commands/run.md) - command-line options and exit codes
+- [GitLab CI](providers/gitlab.md) - `rules`/`only`/`except` evaluation, predefined `CI_*` variables and the GitLab job mapping
 - [Variables](configuration/variables.md) - PDK's own `${VAR}` expansion for step inputs
 - [Secrets](configuration/secrets.md) - how secret values reach steps and get masked
 - [Error codes](errors.md)

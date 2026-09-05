@@ -2,13 +2,14 @@ using FluentAssertions;
 using PDK.Core.Models;
 using PDK.Providers.AzureDevOps;
 using PDK.Providers.GitHub;
+using PDK.Providers.GitLab;
 using Xunit;
 
 namespace PDK.Tests.Unit.Providers;
 
 /// <summary>
-/// Proves that the repository's own pipeline definitions (.github/workflows, azure-pipelines.yml, samples and
-/// examples) parse with the right provider and are routed to the right parser by CanParse.
+/// Proves that the repository's own pipeline definitions (.github/workflows, azure-pipelines.yml, .gitlab-ci.yml,
+/// samples and examples) parse with the right provider and are routed to the right parser by CanParse.
 /// </summary>
 public class RepositoryFixtureParsingTests
 {
@@ -16,6 +17,13 @@ public class RepositoryFixtureParsingTests
 
     private readonly GitHubActionsParser _gitHub = new();
     private readonly AzureDevOpsParser _azure = new();
+    private readonly GitLabCiParser _gitLab = new();
+
+    public static IEnumerable<object[]> GitLabPipelineFiles()
+    {
+        yield return new object[] { "samples/gitlab/.gitlab-ci.yml" };
+        yield return new object[] { "samples/gitlab/full-pipeline.yml" };
+    }
 
     public static IEnumerable<object[]> GitHubWorkflowFiles()
     {
@@ -51,6 +59,7 @@ public class RepositoryFixtureParsingTests
 
         _gitHub.CanParse(path).Should().BeTrue($"{relativePath} is a GitHub workflow");
         _azure.CanParse(path).Should().BeFalse($"{relativePath} must not be claimed by the Azure parser");
+        _gitLab.CanParse(path).Should().BeFalse($"{relativePath} must not be claimed by the GitLab parser");
 
         var pipeline = await _gitHub.ParseFile(path);
 
@@ -75,6 +84,7 @@ public class RepositoryFixtureParsingTests
 
         _azure.CanParse(path).Should().BeTrue($"{relativePath} is an Azure pipeline");
         _gitHub.CanParse(path).Should().BeFalse($"{relativePath} must not be claimed by the GitHub parser");
+        _gitLab.CanParse(path).Should().BeFalse($"{relativePath} must not be claimed by the GitLab parser");
 
         var pipeline = await _azure.ParseFile(path);
 
@@ -169,13 +179,68 @@ public class RepositoryFixtureParsingTests
             .WithMessage("*missing required 'job' identifier*");
     }
 
+    [Theory]
+    [MemberData(nameof(GitLabPipelineFiles))]
+    public async Task GitLabPipeline_ParsesAndIsRoutedToGitLabParser(string relativePath)
+    {
+        var path = Resolve(relativePath);
+
+        _gitLab.CanParse(path).Should().BeTrue($"{relativePath} is a GitLab CI configuration");
+        _gitHub.CanParse(path).Should().BeFalse($"{relativePath} must not be claimed by the GitHub parser");
+        _azure.CanParse(path).Should().BeFalse($"{relativePath} must not be claimed by the Azure parser");
+
+        var pipeline = await _gitLab.ParseFile(path, new PipelineParseOptions { WorkspacePath = Path.GetDirectoryName(path) });
+
+        pipeline.Provider.Should().Be(PipelineProvider.GitLab);
+        pipeline.Jobs.Should().NotBeEmpty();
+        foreach (var job in pipeline.Jobs.Values)
+        {
+            job.RunsOn.Should().NotBeNullOrWhiteSpace();
+            job.Stage.Should().NotBeNullOrWhiteSpace();
+            job.Steps.Should().NotBeEmpty();
+            job.Steps.Should().OnlyContain(step => !string.IsNullOrWhiteSpace(step.Name));
+            job.Steps.Where(step => step.Type == StepType.Unknown)
+                .Should().NotContain(step => string.IsNullOrWhiteSpace(step.ActionReference));
+        }
+    }
+
     [Fact]
-    public void GitLabSample_IsClaimedByNeitherParser()
+    public async Task GitLabSample_MapsStagesArtifactsAndDependencies()
     {
         var path = Resolve("samples/gitlab/.gitlab-ci.yml");
+        var pipeline = await _gitLab.ParseFile(path, new PipelineParseOptions { WorkspacePath = Path.GetDirectoryName(path) });
 
-        _gitHub.CanParse(path).Should().BeFalse();
-        _azure.CanParse(path).Should().BeFalse();
+        pipeline.Variables["BUILD_CONFIGURATION"].Should().Be("Release");
+        pipeline.Jobs.Keys.Should().Equal("build", "test");
+
+        var build = pipeline.Jobs["build"];
+        build.Stage.Should().Be("build");
+        build.Container.Should().Be("mcr.microsoft.com/dotnet/sdk:8.0");
+        build.DependsOn.Should().BeEmpty();
+        build.Steps.Select(s => s.Type).Should().Equal(StepType.Script, StepType.UploadArtifact);
+        build.Steps[0].Script.Should().Contain("dotnet build --configuration $BUILD_CONFIGURATION --no-restore");
+        build.Steps[1].Artifact!.Name.Should().Be("build");
+        build.Steps[1].Artifact!.Patterns.Should().Equal("bin");
+
+        var test = pipeline.Jobs["test"];
+        test.Stage.Should().Be("test");
+        test.DependsOn.Should().Equal("build");
+        test.Steps.Select(s => s.Type).Should().Equal(StepType.DownloadArtifact, StepType.Script);
+        test.Steps[0].Artifact!.Name.Should().Be("build");
+    }
+
+    [Fact]
+    public async Task GitLabFullSample_UsesRulesExtendsParallelAndAfterScript()
+    {
+        var path = Resolve("samples/gitlab/full-pipeline.yml");
+        var pipeline = await _gitLab.ParseFile(path, new PipelineParseOptions { WorkspacePath = Path.GetDirectoryName(path) });
+
+        pipeline.Jobs.Keys.Should().Contain("build", "unit-tests: [linux, 8.0]", "package", "deploy-production");
+        pipeline.Jobs["unit-tests: [linux, 8.0]"].Matrix.Should().ContainKey("TARGET");
+        pipeline.Jobs["deploy-production"].Condition!.Description.Should().StartWith("manual job");
+        pipeline.Jobs["build"].Steps.Should().Contain(s => s.Name == "after_script" && s.Condition!.Expression == "always()");
+        pipeline.Jobs["package"].DependsOn.Should().Contain("build");
+        _gitLab.Warnings.Should().BeEmpty();
     }
 
     private static string Resolve(string relativePath)

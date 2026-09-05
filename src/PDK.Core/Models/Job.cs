@@ -57,6 +57,13 @@ public class Job
     public string? Container { get; set; }
 
     /// <summary>
+    /// Gets or sets whether <see cref="Container"/> is only a preference for Docker mode rather than a requirement:
+    /// when true the job also runs directly on the host (GitLab <c>image:</c>, which GitLab's own shell executor
+    /// ignores). When false (GitHub/Azure <c>container:</c>) the host runner rejects the job.
+    /// </summary>
+    public bool ContainerOptional { get; set; }
+
+    /// <summary>
     /// Gets or sets the matrix values this job instance was expanded from (GitHub <c>strategy.matrix</c>,
     /// Azure <c>strategy.matrix</c>). Null for jobs that are not part of a matrix.
     /// </summary>

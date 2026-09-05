@@ -38,6 +38,10 @@
       href: configuration/variables.md
     - name: Secrets
       href: configuration/secrets.md
+- name: Providers
+  items:
+    - name: GitLab CI
+      href: providers/gitlab.md
 - name: Reference
   items:
     - name: Expressions and Execution Semantics

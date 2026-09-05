@@ -29,6 +29,9 @@ public sealed record GitInfo
     /// <summary>Whether the directory is inside a git work tree.</summary>
     public bool IsRepository { get; init; }
 
+    /// <summary>Default branch of the origin remote (from <c>refs/remotes/origin/HEAD</c>), or empty when unknown.</summary>
+    public string DefaultBranch { get; init; } = string.Empty;
+
     /// <summary>Owner part of <see cref="Repository"/>.</summary>
     public string Owner => Repository.Contains('/') ? Repository[..Repository.IndexOf('/')] : string.Empty;
 
@@ -68,6 +71,8 @@ public sealed record GitInfo
         var branch = Run(path, "symbolic-ref", "--short", "-q", "HEAD") ?? string.Empty;
         var remote = Run(path, "config", "--get", "remote.origin.url") ?? string.Empty;
         var reference = branch.Length > 0 ? $"refs/heads/{branch}" : (sha.Length > 0 ? sha : string.Empty);
+        var originHead = Run(path, "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD") ?? string.Empty;
+        var defaultBranch = originHead.StartsWith("origin/", StringComparison.Ordinal) ? originHead["origin/".Length..] : originHead;
 
         return new GitInfo
         {
@@ -76,7 +81,8 @@ public sealed record GitInfo
             Branch = branch,
             Ref = reference,
             RemoteUrl = remote,
-            Repository = ParseRepository(remote)
+            Repository = ParseRepository(remote),
+            DefaultBranch = defaultBranch
         };
     }
 

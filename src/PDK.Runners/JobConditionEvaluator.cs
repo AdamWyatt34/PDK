@@ -72,6 +72,12 @@ public static class JobConditionEvaluator
             return JobDecision.Runs;
         }
 
+        // Parse-time decisions (GitLab rules/only/except, manual jobs, workflow rules) carry their own explanation
+        if (!string.IsNullOrWhiteSpace(job.Condition?.Description))
+        {
+            return JobDecision.Skip(job.Condition.Description.Trim());
+        }
+
         if (string.IsNullOrWhiteSpace(expression))
         {
             var blocking = run.NeedsResults

@@ -110,14 +110,22 @@ public sealed class JobExecutionSession
             _maskValues.Add(secret);
         }
 
-        if (IsGitHub)
+        if (IsGitHub && !IsGitLab)
         {
             WriteEventFile();
         }
     }
 
-    /// <summary>Gets whether the pipeline uses GitHub syntax (otherwise Azure).</summary>
+    /// <summary>Gets whether the pipeline uses GitHub syntax (otherwise Azure). GitLab pipelines use GitHub syntax too; see <see cref="IsGitLab"/>.</summary>
     public bool IsGitHub => _jobContext.Syntax == ExpressionSyntax.GitHub;
+
+    /// <summary>
+    /// Gets whether the pipeline is a GitLab CI pipeline. GitLab jobs share the GitHub expression dialect and
+    /// workflow-command handling (<c>::add-path::</c>, <c>::add-mask::</c>, <c>::set-env::</c>) but get no
+    /// <c>event.json</c> and no <c>GITHUB_OUTPUT</c>/<c>GITHUB_ENV</c>/<c>GITHUB_PATH</c> files, and see
+    /// <c>CI_JOB_STATUS</c> as GitLab sets it (<c>running</c>, then <c>success</c>/<c>failed</c>/<c>canceled</c> for <c>after_script</c>).
+    /// </summary>
+    public bool IsGitLab => _pipeline.Provider == PipelineProvider.GitLab;
 
     /// <summary>Gets the current status used by status functions.</summary>
     public ExpressionJobStatus Status { get; private set; } = ExpressionJobStatus.Success;
@@ -236,7 +244,16 @@ public sealed class JobExecutionSession
             environment["PATH"] = string.Join(separator, _extraPaths.AsEnumerable().Reverse()) + separator + basePath;
         }
 
-        if (IsGitHub)
+        if (IsGitLab)
+        {
+            environment["CI_JOB_STATUS"] = Status switch
+            {
+                ExpressionJobStatus.Failure => "failed",
+                ExpressionJobStatus.Cancelled => "canceled",
+                _ => string.Equals(step.Id, "after_script", StringComparison.Ordinal) ? "success" : "running"
+            };
+        }
+        else if (IsGitHub)
         {
             var dir = HostStepRuntimeDirectory(index);
             Directory.CreateDirectory(dir);
@@ -284,7 +301,11 @@ public sealed class JobExecutionSession
         {
             if (IsGitHub)
             {
-                HarvestGitHubFiles(index, outputs);
+                if (!IsGitLab)
+                {
+                    HarvestGitHubFiles(index, outputs);
+                }
+
                 HarvestWorkflowCommands(result.Output, outputs);
             }
             else
