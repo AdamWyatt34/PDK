@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-05
+
 ### Breaking Changes
 - Exit codes: 0 success, 1 pipeline or validation failure, 2 invalid arguments (also unknown `--job` and several candidate pipeline files), 3 pipeline file not found, 4 Docker unavailable, 130 cancelled.
 - Pipeline auto-detection searches `.github/workflows/*.yml|yaml`, `azure-pipelines.yml|yaml`, `.azure-pipelines/*.yml|yaml`, `.gitlab-ci.yml|yaml` and `*.pipeline.yml|yaml`; more than one candidate is an error instead of a silent pick.
@@ -69,7 +71,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Host environment variables are no longer exported into job containers or exposed as pipeline variables.
 - `--dry-run-json` never writes secret values in clear text.
 
-
 ## [1.0.0] - 2025-12-26
 
 ### Other
@@ -115,5 +116,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add Docker container management features and diagnostics (121433f)
 - Add Azure DevOps pipeline support and related models (c212bb7)
 - Initial commit (bae09fb)
-
-
