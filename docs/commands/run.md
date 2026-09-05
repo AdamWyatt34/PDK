@@ -133,9 +133,16 @@ Variables and secrets are exported to every step by name and are available in ex
 | `-i, --interactive` | flag | false | Run in interactive mode |
 | `-c, --config <path>` | string | Auto-detect | Path to the configuration file |
 
-`--parallel`, `--max-parallel` and `--no-reuse` are still accepted for compatibility but have no
-effect (steps run sequentially, jobs run in dependency order, every job gets a fresh container);
-they print a warning.
+`--parallel` runs independent jobs concurrently, up to `--max-parallel` (default 4) at a time. Jobs
+still start only after the jobs they depend on have finished, so the dependency order is preserved and
+`needs.<job>.result` / `needs.<job>.outputs` are complete when a job starts. Because the output of
+concurrent jobs interleaves, every step name and output line is prefixed with its job name
+(`build › Restore`, `[build] Restoring packages...`). Jobs within one run share the workspace, so only
+enable it for jobs that do not write the same files. `--no-reuse` is still accepted for compatibility
+but has no effect: every job already runs in a fresh container.
+
+`--param NAME=VALUE` (alias `--input`) supplies Azure Pipelines `parameters:` values and GitHub
+`workflow_dispatch` inputs (`${{ inputs.name }}`); repeat it for several values.
 
 ## Execution semantics
 

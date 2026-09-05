@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `--parallel` runs independent jobs concurrently (up to `--max-parallel`, default 4), preserving dependency order; step names and output lines are prefixed with the job name.
+- `--param NAME=VALUE` (alias `--input`) supplies Azure `parameters:` values and GitHub `inputs`; parsers receive parameters, variables, workspace and event through `PipelineParseOptions`.
 - Expression engine for both providers: GitHub `${{ }}` expressions and `if:` conditions (contexts `github`, `env`, `vars`, `secrets`, `inputs`, `matrix`, `needs`, `steps`, `runner`, `job`; functions `contains`, `startsWith`, `endsWith`, `format`, `join`, `toJSON`, `fromJSON`, `hashFiles`; status functions), Azure `$(macro)` for known variables, `${{ }}` and `$[ ]` expressions and function-style `condition:` (`eq`, `ne`, `and`, `or`, `not`, `in`, `notIn`, `contains`, `startsWith`, `endsWith`, `coalesce`, ..., `succeeded`, `failed`, `canceled`, `succeededOrFailed`, `always`, `variables[...]`, `dependencies.X.result/outputs`). See docs/expressions.md.
 - Job graph: jobs run in dependency order, `--job` runs the transitive dependencies first (`--no-deps` to skip them), job `if:`/`condition:` is evaluated against the dependency results, and a job whose dependency failed (GitHub: or was skipped) is skipped.
 - Job outputs flow into `needs.X.outputs` / `dependencies.X.outputs`; `$GITHUB_OUTPUT`, `$GITHUB_ENV`, `$GITHUB_PATH`, `$GITHUB_STEP_SUMMARY`, `::set-output`, `::set-env`, `::add-path`, `::add-mask`, `##vso[task.setvariable ...]` (including `isOutput` / `isSecret`) and `##vso[task.prependpath]` are honoured.
@@ -37,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Secrets are encrypted with AES-256-GCM using a random key stored in `~/.pdk/secret.key` (mode 0600; additionally DPAPI-protected on Windows) instead of a machine-derived key; `secrets.json` uses format version 2.0 and legacy entries are migrated on first read; entries that cannot be decrypted are listed as `(unreadable)` by `pdk secret list`; missing secrets raise an error instead of returning null.
 - Masking covers multi-line secrets, URL-, base64- and JSON-encoded variants, and `Authorization` / `Bearer` headers in logs.
 - Docker mode uses the job's `container:` image when present and mounts the Docker socket only for jobs with Docker steps; `--no-cache` forces image pulls.
-- `--parallel`, `--max-parallel` and `--no-reuse` never changed behaviour; they are now hidden, still accepted, and print a warning.
+- `--no-reuse` never changed behaviour; it is now hidden, still accepted, and prints a warning.
 - `pdk version` no longer prints a build date; `--full` shows the Docker endpoint, and `pdk doctor` names the endpoint it probed and where it came from (`DOCKER_HOST`, Docker context, socket search or default).
 - The `logging` configuration section now supplies the defaults for the log level, file paths, rotation and redaction; command-line flags override it.
 - Azure `Build.Reason` follows `--event` (`IndividualCI`, `PullRequest`, `Schedule`, `Manual`).

@@ -93,6 +93,7 @@ public class HostJobRunner : IJobRunner
         }
 
         var token = jobCts.Token;
+        var reporter = runContext.ProgressReporter ?? _progressReporter;
 
         try
         {
@@ -100,7 +101,7 @@ public class HostJobRunner : IJobRunner
             if (_showSecurityWarning)
             {
                 _logger.LogWarning(SecurityWarning);
-                await _progressReporter.ReportOutputAsync(SecurityWarning, token);
+                await reporter.ReportOutputAsync(SecurityWarning, token);
             }
 
             _logger.LogInformation("Starting host job: {JobName}", job.Name);
@@ -124,13 +125,8 @@ public class HostJobRunner : IJobRunner
             var runId = runContext.RunId;
             _logger.LogDebug("Run ID for artifacts: {RunId}", runId);
 
-            // 6. Update variable context with job info
-            _variableResolver.UpdateContext(new VariableContext
-            {
-                Workspace = tempWorkspace,
-                Runner = "host",
-                JobName = job.Name
-            });
+            // Per-job view of the variables: PDK_JOB/PDK_STEP are answered here, not from shared state
+            var scopedResolver = new JobScopedVariableResolver(_variableResolver, tempWorkspace, "host", job.Name);
 
             // 7. Execute each step in order
             for (int i = 0; i < job.Steps.Count; i++)
@@ -139,13 +135,7 @@ public class HostJobRunner : IJobRunner
 
                 var step = job.Steps[i];
 
-                _variableResolver.UpdateContext(new VariableContext
-                {
-                    Workspace = tempWorkspace,
-                    Runner = "host",
-                    JobName = job.Name,
-                    StepName = step.Name
-                });
+                scopedResolver.StepName = step.Name;
 
                 var plan = session.PrepareStep(step, i);
                 var displayName = plan.Step.Name;
@@ -157,20 +147,20 @@ public class HostJobRunner : IJobRunner
                     job.Steps.Count,
                     displayName);
 
-                await _progressReporter.ReportStepStartAsync(displayName, i + 1, job.Steps.Count, token);
+                await reporter.ReportStepStartAsync(displayName, i + 1, job.Steps.Count, token);
 
                 StepExecutionResult stepResult;
                 if (plan.Skip)
                 {
                     stepResult = JobExecutionSession.SkippedResult(displayName, plan.SkipReason!);
                     _logger.LogInformation("[{JobName}] Step skipped: {StepName} - {Reason}", job.Name, displayName, plan.SkipReason);
-                    await _progressReporter.ReportStepSkippedAsync(displayName, i + 1, job.Steps.Count, plan.SkipReason, token);
+                    await reporter.ReportStepSkippedAsync(displayName, i + 1, job.Steps.Count, plan.SkipReason, token);
                 }
                 else if (plan.Failed)
                 {
                     stepResult = JobExecutionSession.FailedResult(displayName, plan.FailureMessage!, step.ContinueOnError);
                     _logger.LogError("[{JobName}] Step could not run: {StepName} - {Message}", job.Name, displayName, plan.FailureMessage);
-                    await _progressReporter.ReportStepCompleteAsync(displayName, false, TimeSpan.Zero, token);
+                    await reporter.ReportStepCompleteAsync(displayName, false, TimeSpan.Zero, token);
                 }
                 else
                 {
@@ -197,13 +187,13 @@ public class HostJobRunner : IJobRunner
                         Timeout = plan.Timeout
                     };
 
-                    stepResult = await ExecuteStepAsync(ExpandPdkVariables(plan.Step), context, plan.Timeout, job.Name, token);
+                    stepResult = await ExecuteStepAsync(ExpandPdkVariables(plan.Step, scopedResolver), context, plan.Timeout, job.Name, token);
                     stepResult = JobRunnerSupport.MaskResult(stepResult, _secretMasker, session) with
                     {
                         AllowedFailure = !stepResult.Success && step.ContinueOnError
                     };
 
-                    await _progressReporter.ReportStepCompleteAsync(
+                    await reporter.ReportStepCompleteAsync(
                         displayName,
                         stepResult.Success || stepResult.AllowedFailure,
                         stepResult.Duration,
@@ -387,13 +377,13 @@ public class HostJobRunner : IJobRunner
     /// Expands PDK <c>${VAR}</c> references in step inputs, environment and working directory.
     /// Scripts are not rewritten: variables are exported to the shell instead.
     /// </summary>
-    private Step ExpandPdkVariables(Step step)
+    private Step ExpandPdkVariables(Step step, IVariableResolver resolver)
     {
         var expanded = step.Clone();
-        expanded.With = ExpandDictionary(step.With);
-        expanded.Environment = ExpandDictionary(step.Environment);
+        expanded.With = ExpandDictionary(step.With, resolver);
+        expanded.Environment = ExpandDictionary(step.Environment, resolver);
         expanded.WorkingDirectory = step.WorkingDirectory != null
-            ? _variableExpander.Expand(step.WorkingDirectory, _variableResolver)
+            ? _variableExpander.Expand(step.WorkingDirectory, resolver)
             : null;
         return expanded;
     }
@@ -401,12 +391,12 @@ public class HostJobRunner : IJobRunner
     /// <summary>
     /// Expands variables in all dictionary values.
     /// </summary>
-    private Dictionary<string, string> ExpandDictionary(Dictionary<string, string> dict)
+    private Dictionary<string, string> ExpandDictionary(Dictionary<string, string> dict, IVariableResolver resolver)
     {
         var result = new Dictionary<string, string>();
         foreach (var (key, value) in dict)
         {
-            result[key] = _variableExpander.Expand(value, _variableResolver);
+            result[key] = _variableExpander.Expand(value, resolver);
         }
         return result;
     }

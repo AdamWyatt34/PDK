@@ -267,85 +267,32 @@ public class PipelineExecutor
                 _progressReporter)
             : baseRunner;
 
-        // Execute jobs in dependency order and collect results for summary
-        var allJobsSucceeded = true;
+        // Execute jobs in dependency order (independent jobs concurrently with --parallel) and collect results
         var totalJobs = jobsToRun.Count;
-        var jobResults = new List<JobExecutionResult>();
-        var jobStatuses = new Dictionary<string, string>(StringComparer.Ordinal);
-        var jobOutputs = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal);
         var runId = PDK.Core.Artifacts.ArtifactContext.GenerateRunId();
-        var outputHandler = CreateOutputHandler(cancellationToken);
+        var maxParallel = options.ParallelSteps ? Math.Max(1, options.MaxParallelism) : 1;
+        var jobResults = new List<JobExecutionResult>();
+
+        if (maxParallel > 1 && totalJobs > 1)
+        {
+            _output.WriteInfo($"Running up to {maxParallel} independent jobs at a time; output lines are prefixed with the job name.");
+        }
 
         try
         {
-            for (int i = 0; i < jobsToRun.Count; i++)
+            var completed = await JobScheduler.RunAsync(
+                jobsToRun,
+                (_, job) => JobGraph.DependencyIds(pipeline, job),
+                (jobId, job, number, finished, ct) => ExecuteJobAsync(
+                    pipeline, jobRunner, jobId, job, number, totalJobs, finished, options, config, workspacePath, runId, maxParallel > 1, ct),
+                maxParallel,
+                cancellationToken);
+
+            foreach (var (jobId, _) in jobsToRun)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var (jobId, job) = jobsToRun[i];
-                var jobNumber = i + 1;
-
-                var runContext = BuildJobRunContext(pipeline, job, options, config, workspacePath, runId, jobStatuses, jobOutputs, outputHandler);
-
-                // Evaluate the job condition against its dependencies' results
-                var decision = JobConditionEvaluator.Evaluate(job, runContext);
-                if (!decision.Run)
+                if (completed.TryGetValue(jobId, out var jobResult))
                 {
-                    var now = DateTimeOffset.Now;
-                    var earlyResult = new JobExecutionResult
-                    {
-                        JobName = job.Name,
-                        Success = !decision.Failed,
-                        Skipped = !decision.Failed,
-                        SkipReason = decision.Failed ? null : decision.Reason,
-                        ErrorMessage = decision.Failed ? decision.Reason : null,
-                        StepResults = [],
-                        Duration = TimeSpan.Zero,
-                        StartTime = now,
-                        EndTime = now
-                    };
-
-                    jobResults.Add(earlyResult);
-                    jobStatuses[jobId] = decision.Failed ? "failure" : "skipped";
-
-                    if (decision.Failed)
-                    {
-                        allJobsSucceeded = false;
-                        _output.WriteError($"Job '{job.Name}' failed: {decision.Reason}");
-                    }
-                    else
-                    {
-                        _output.WriteWarning($"Skipping job '{job.Name}': {decision.Reason}");
-                    }
-
-                    continue;
-                }
-
-                // Report job start
-                await _progressReporter.ReportJobStartAsync(job.Name, jobNumber, totalJobs, cancellationToken);
-
-                var stopwatch = Stopwatch.StartNew();
-
-                // Execute the job
-                var result = await jobRunner.RunJobAsync(job, runContext, cancellationToken);
-                jobResults.Add(result);
-                jobStatuses[jobId] = result.Success ? "success" : "failure";
-                jobOutputs[jobId] = result.Outputs;
-
-                stopwatch.Stop();
-
-                // Report job completion
-                await _progressReporter.ReportJobCompleteAsync(job.Name, result.Success, stopwatch.Elapsed, cancellationToken);
-
-                if (!result.Success)
-                {
-                    allJobsSucceeded = false;
-
-                    // Display job error message if available
-                    if (!string.IsNullOrEmpty(result.ErrorMessage))
-                    {
-                        _output.WriteError($"  {result.ErrorMessage}");
-                    }
+                    jobResults.Add(jobResult);
                 }
             }
         }
@@ -353,6 +300,8 @@ public class PipelineExecutor
         {
             CleanupRuntimeDirectory(workspacePath, runId);
         }
+
+        var allJobsSucceeded = jobResults.All(r => r.Success);
 
         pipelineStartTime.Stop();
 
@@ -400,6 +349,74 @@ public class PipelineExecutor
     }
 
     /// <summary>
+    /// Runs one job: evaluates its condition against the results of the jobs it depends on, then hands it
+    /// to the job runner. Never throws for job failures; cancellation propagates.
+    /// </summary>
+    private async Task<JobExecutionResult> ExecuteJobAsync(
+        Pipeline pipeline,
+        PDK.Runners.IJobRunner jobRunner,
+        string jobId,
+        Job job,
+        int jobNumber,
+        int totalJobs,
+        IReadOnlyDictionary<string, JobExecutionResult> finished,
+        ExecutionOptions options,
+        PdkConfig? config,
+        string workspacePath,
+        string runId,
+        bool concurrent,
+        CancellationToken cancellationToken)
+    {
+        var reporter = concurrent ? new PrefixedProgressReporter(_progressReporter, job.Name) : _progressReporter;
+        var runContext = BuildJobRunContext(pipeline, job, options, config, workspacePath, runId, finished, reporter, cancellationToken);
+
+        // Evaluate the job condition against its dependencies' results
+        var decision = JobConditionEvaluator.Evaluate(job, runContext);
+        if (!decision.Run)
+        {
+            var now = DateTimeOffset.Now;
+            var earlyResult = new JobExecutionResult
+            {
+                JobName = job.Name,
+                Success = !decision.Failed,
+                Skipped = !decision.Failed,
+                SkipReason = decision.Failed ? null : decision.Reason,
+                ErrorMessage = decision.Failed ? decision.Reason : null,
+                StepResults = [],
+                Duration = TimeSpan.Zero,
+                StartTime = now,
+                EndTime = now
+            };
+
+            if (decision.Failed)
+            {
+                _output.WriteError($"Job '{job.Name}' failed: {decision.Reason}");
+            }
+            else
+            {
+                _output.WriteWarning($"Skipping job '{job.Name}': {decision.Reason}");
+            }
+
+            return earlyResult;
+        }
+
+        await reporter.ReportJobStartAsync(job.Name, jobNumber, totalJobs, cancellationToken);
+
+        var stopwatch = Stopwatch.StartNew();
+        var result = await jobRunner.RunJobAsync(job, runContext, cancellationToken);
+        stopwatch.Stop();
+
+        await reporter.ReportJobCompleteAsync(job.Name, result.Success, stopwatch.Elapsed, cancellationToken);
+
+        if (!result.Success && !string.IsNullOrEmpty(result.ErrorMessage))
+        {
+            _output.WriteError($"  {(concurrent ? $"[{job.Name}] " : string.Empty)}{result.ErrorMessage}");
+        }
+
+        return result;
+    }
+
+    /// <summary>
     /// Builds the run context for one job: pipeline, event, policies, dependency results and outputs,
     /// resolver variables/secrets, and Docker resource settings from configuration.
     /// </summary>
@@ -410,9 +427,9 @@ public class PipelineExecutor
         PdkConfig? config,
         string workspacePath,
         string runId,
-        IReadOnlyDictionary<string, string> jobStatuses,
-        IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> jobOutputs,
-        Action<string>? outputHandler)
+        IReadOnlyDictionary<string, JobExecutionResult> finished,
+        IProgressReporter reporter,
+        CancellationToken cancellationToken)
     {
         var dependencyIds = JobGraph.DependencyIds(pipeline, job);
         var needsResults = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -421,10 +438,14 @@ public class PipelineExecutor
         foreach (var id in dependencyIds)
         {
             // A dependency that was not part of this run (--no-deps) is assumed to have succeeded
-            needsResults[id] = jobStatuses.TryGetValue(id, out var status) ? status : "success";
-            if (jobOutputs.TryGetValue(id, out var outputs))
+            if (finished.TryGetValue(id, out var dependency))
             {
-                needsOutputs[id] = outputs;
+                needsResults[id] = dependency.Skipped ? "skipped" : dependency.Success ? "success" : "failure";
+                needsOutputs[id] = dependency.Outputs;
+            }
+            else
+            {
+                needsResults[id] = "success";
             }
         }
 
@@ -438,7 +459,8 @@ public class PipelineExecutor
             Inputs = options.Parameters,
             RunId = runId,
             StrictUnsupportedSteps = options.StrictUnsupportedSteps,
-            OutputLineHandler = outputHandler,
+            OutputLineHandler = CreateOutputHandler(reporter, cancellationToken),
+            ProgressReporter = ReferenceEquals(reporter, _progressReporter) ? null : reporter,
             ContainerMemoryLimit = ParseMemoryLimit(config?.Docker?.MemoryLimit),
             ContainerCpuLimit = config?.Docker?.CpuLimit,
             KeepContainers = options.KeepContainers,
@@ -516,9 +538,9 @@ public class PipelineExecutor
     /// <summary>
     /// Creates the callback that streams step output lines to the progress reporter.
     /// </summary>
-    private Action<string>? CreateOutputHandler(CancellationToken cancellationToken)
+    private static Action<string>? CreateOutputHandler(IProgressReporter reporter, CancellationToken cancellationToken)
     {
-        if (_progressReporter is NullProgressReporter)
+        if (reporter is NullProgressReporter)
         {
             return null;
         }
@@ -527,7 +549,7 @@ public class PipelineExecutor
         {
             try
             {
-                _progressReporter.ReportOutputAsync(line, cancellationToken).GetAwaiter().GetResult();
+                reporter.ReportOutputAsync(line, cancellationToken).GetAwaiter().GetResult();
             }
             catch (OperationCanceledException)
             {

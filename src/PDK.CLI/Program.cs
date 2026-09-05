@@ -170,22 +170,15 @@ var noCacheOption = new Option<bool>(
     description: "Disable Docker image caching (always pull images)",
     getDefaultValue: () => false);
 
-// Accepted for compatibility only: steps run sequentially and jobs run in dependency order.
 var parallelOption = new Option<bool>(
     aliases: ["--parallel"],
-    description: "No effect: steps run sequentially and jobs run in dependency order",
-    getDefaultValue: () => false)
-{
-    IsHidden = true
-};
+    description: "Run independent jobs concurrently (dependencies still run first); output lines are prefixed with the job name",
+    getDefaultValue: () => false);
 
 var maxParallelOption = new Option<int>(
     aliases: ["--max-parallel"],
-    description: "No effect (see --parallel)",
-    getDefaultValue: () => 4)
-{
-    IsHidden = true
-};
+    description: "Maximum number of jobs to run at the same time with --parallel (default: 4)",
+    getDefaultValue: () => 4);
 maxParallelOption.AddValidator(result =>
 {
     var value = result.GetValueForOption(maxParallelOption);
@@ -499,9 +492,9 @@ runCommand.SetHandler(async context =>
         var cliParameters = new Dictionary<string, string>(ParseKeyValuePairs(paramValues), StringComparer.OrdinalIgnoreCase);
 
         // Options kept for compatibility that no longer change behaviour
-        if (parallel || noReuse)
+        if (noReuse)
         {
-            AnsiConsole.MarkupLine("[yellow]Warning:[/] --parallel, --max-parallel and --no-reuse have no effect: steps run sequentially, jobs run in dependency order and every job gets a fresh container.");
+            AnsiConsole.MarkupLine("[yellow]Warning:[/] --no-reuse has no effect: every job already gets a fresh container.");
         }
 
         // Warn if secrets passed via CLI

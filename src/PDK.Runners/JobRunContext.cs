@@ -47,6 +47,12 @@ public sealed record JobRunContext
     /// <summary>Gets an optional callback that receives step output lines as they are produced.</summary>
     public Action<string>? OutputLineHandler { get; init; }
 
+    /// <summary>
+    /// Gets an optional progress reporter for this job. When set, the runner reports to it instead of its
+    /// default reporter (used to prefix output when jobs run concurrently).
+    /// </summary>
+    public PDK.Core.Progress.IProgressReporter? ProgressReporter { get; init; }
+
     /// <summary>Gets the memory limit for job containers in bytes (Docker mode), or null for no limit.</summary>
     public long? ContainerMemoryLimit { get; init; }
 

@@ -442,27 +442,42 @@ public class HostJobRunnerTests
     }
 
     [Fact]
-    public async Task RunJobAsync_UpdatesVariableContext()
+    public async Task RunJobAsync_ExposesJobBuiltInsWithoutMutatingTheSharedResolver()
     {
         // Arrange
         var job = CreateTestJob(1);
+        job.Steps[0].With["job"] = "${PDK_JOB}/${PDK_STEP}";
         var workspacePath = CreateTempWorkspace();
 
+        // A real expander shows that ${PDK_JOB}/${PDK_STEP} resolve from the job-scoped view
+        var runner = new HostJobRunner(
+            _mockProcessExecutor.Object,
+            _executorFactory,
+            _mockLogger.Object,
+            _mockVariableResolver.Object,
+            new VariableExpander(),
+            _mockSecretMasker.Object,
+            _mockProgressReporter.Object,
+            showSecurityWarning: false);
+
+        Step? capturedStep = null;
+        HostExecutionContext? capturedContext = null;
         _mockScriptExecutor
             .Setup(x => x.ExecuteAsync(
                 It.IsAny<Step>(),
                 It.IsAny<HostExecutionContext>(),
                 It.IsAny<CancellationToken>()))
+            .Callback<Step, HostExecutionContext, CancellationToken>((s, c, _) => { capturedStep = s; capturedContext = c; })
             .ReturnsAsync(CreateSuccessStepResult("Step 1"));
 
         // Act
-        await _runner.RunJobAsync(job, workspacePath);
+        await runner.RunJobAsync(job, workspacePath);
 
         // Assert
-        _mockVariableResolver.Verify(
-            x => x.UpdateContext(It.Is<VariableContext>(c =>
-                c.JobName == "TestJob" && c.Runner == "host")),
-            Times.AtLeastOnce);
+        capturedStep!.With["job"].Should().Be("TestJob/Step 1");
+        capturedContext!.Environment.Should().Contain("PDK_JOB", "TestJob");
+        _mockVariableResolver.Verify(x => x.UpdateContext(It.IsAny<VariableContext>()), Times.Never,
+            "jobs may run concurrently, so the shared resolver must not be mutated");
     }
 
     #endregion

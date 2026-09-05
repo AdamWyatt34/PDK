@@ -66,20 +66,33 @@ public class PerformanceTracker : IPerformanceTracker
         Interlocked.Increment(ref _imagesCached);
     }
 
+    private readonly object _trackingLock = new();
+    private int _activeTrackers;
+
     /// <inheritdoc/>
+    /// <remarks>Re-entrant: jobs running concurrently share one tracking window that opens with the first start and closes with the last stop.</remarks>
     public void StartTracking()
     {
-        _startTime = DateTimeOffset.UtcNow;
-        _isTracking = true;
+        lock (_trackingLock)
+        {
+            if (_activeTrackers++ == 0)
+            {
+                _startTime = DateTimeOffset.UtcNow;
+                _isTracking = true;
+            }
+        }
     }
 
     /// <inheritdoc/>
     public void StopTracking()
     {
-        if (_isTracking)
+        lock (_trackingLock)
         {
-            _endTime = DateTimeOffset.UtcNow;
-            _isTracking = false;
+            if (_activeTrackers > 0 && --_activeTrackers == 0 && _isTracking)
+            {
+                _endTime = DateTimeOffset.UtcNow;
+                _isTracking = false;
+            }
         }
     }
 

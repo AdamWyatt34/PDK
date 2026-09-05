@@ -78,6 +78,7 @@ public class FilteringJobRunner : IJobRunner
         ArgumentNullException.ThrowIfNull(job);
         ArgumentNullException.ThrowIfNull(runContext);
 
+        var reporter = runContext.ProgressReporter ?? _progressReporter;
         var startTime = DateTimeOffset.Now;
         var jobName = job.Name ?? job.Id ?? "Unknown";
 
@@ -111,7 +112,7 @@ public class FilteringJobRunner : IJobRunner
                     jobName, stepIndex, job.Steps.Count, stepName, filterResult.Reason);
 
                 // Report skip to progress reporter
-                await _progressReporter.ReportStepSkippedAsync(stepName, stepIndex, job.Steps.Count, filterResult.Reason, cancellationToken);
+                await reporter.ReportStepSkippedAsync(stepName, stepIndex, job.Steps.Count, filterResult.Reason, cancellationToken);
             }
         }
 
