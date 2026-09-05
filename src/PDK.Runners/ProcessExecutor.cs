@@ -1,5 +1,6 @@
 namespace PDK.Runners;
 
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -8,12 +9,23 @@ using PDK.Runners.Models;
 
 /// <summary>
 /// Executes processes on the host machine using System.Diagnostics.Process.
-/// Handles cross-platform shell selection, output capture, cancellation, and timeout.
+/// Handles cross-platform shell selection, output capture, live output streaming, cancellation and timeout.
 /// </summary>
+/// <remarks>
+/// Shell commands are passed as a single argument (<c>bash -c &lt;command&gt;</c> via
+/// <see cref="ProcessStartInfo.ArgumentList"/>, or <c>cmd.exe /d /s /c "&lt;command&gt;"</c> on Windows) so the
+/// command text needs no escaping. Executables with an explicit argument list bypass the shell entirely.
+/// A timeout kills the whole process tree and yields exit code <see cref="ExecutionResult.TimeoutExitCode"/>;
+/// cancellation kills the process tree and throws <see cref="OperationCanceledException"/>.
+/// </remarks>
 public class ProcessExecutor : IProcessExecutor
 {
-    private readonly ILogger<ProcessExecutor> _logger;
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan ToolProbeTimeout = TimeSpan.FromSeconds(10);
+    private static readonly Lazy<string> UnixShell = new(() =>
+        File.Exists("/bin/bash") || File.Exists("/usr/bin/bash") || File.Exists("/usr/local/bin/bash") ? "bash" : "sh");
+
+    private readonly ILogger<ProcessExecutor> _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ProcessExecutor"/> class.
@@ -28,7 +40,7 @@ public class ProcessExecutor : IProcessExecutor
     public OperatingSystemPlatform Platform => GetCurrentPlatform();
 
     /// <inheritdoc/>
-    public async Task<ExecutionResult> ExecuteAsync(
+    public Task<ExecutionResult> ExecuteAsync(
         string command,
         string workingDirectory,
         IDictionary<string, string>? environment = null,
@@ -45,139 +57,178 @@ public class ProcessExecutor : IProcessExecutor
             throw new ArgumentException("Working directory cannot be null or empty.", nameof(workingDirectory));
         }
 
-        var startTime = Stopwatch.StartNew();
-        var effectiveTimeout = timeout ?? DefaultTimeout;
-
-        // Get shell and arguments based on platform
-        var (shell, shellArgs) = GetShellCommand(command);
-
-        _logger.LogDebug(
-            "Executing command via {Shell} in {WorkingDirectory}: {Command}",
-            shell, workingDirectory, command);
-
-        var processStartInfo = new ProcessStartInfo
-        {
-            FileName = shell,
-            Arguments = shellArgs,
-            WorkingDirectory = workingDirectory,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            RedirectStandardInput = true,
-            CreateNoWindow = true
-        };
-
-        // Add environment variables
-        if (environment != null)
-        {
-            foreach (var kvp in environment)
+        return ExecuteAsync(
+            new ProcessExecutionRequest
             {
-                processStartInfo.Environment[kvp.Key] = kvp.Value;
-            }
+                Command = command,
+                WorkingDirectory = workingDirectory,
+                Environment = environment,
+                Timeout = timeout
+            },
+            cancellationToken);
+    }
+
+    /// <inheritdoc/>
+    public async Task<ExecutionResult> ExecuteAsync(
+        ProcessExecutionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (string.IsNullOrEmpty(request.FileName) && string.IsNullOrWhiteSpace(request.Command))
+        {
+            throw new ArgumentException("Either FileName or Command must be specified.", nameof(request));
         }
 
-        using var process = new Process { StartInfo = processStartInfo };
+        if (string.IsNullOrWhiteSpace(request.WorkingDirectory))
+        {
+            throw new ArgumentException("Working directory cannot be null or empty.", nameof(request));
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var stopwatch = Stopwatch.StartNew();
+        var effectiveTimeout = request.Timeout is { } t && t > TimeSpan.Zero ? t : DefaultTimeout;
+        var startInfo = CreateStartInfo(request, Platform);
+
+        // Debug only: the full command line may contain secrets; callers mask what they log.
+        _logger.LogDebug(
+            "Starting {FileName} in {WorkingDirectory}: {Command}",
+            startInfo.FileName, request.WorkingDirectory, request.DisplayCommand);
+
+        using var process = new Process { StartInfo = startInfo };
         var stdout = new StringBuilder();
         var stderr = new StringBuilder();
         var outputLock = new object();
 
-        process.OutputDataReceived += (sender, e) =>
+        process.OutputDataReceived += (_, e) =>
         {
-            if (e.Data != null)
+            if (e.Data == null)
             {
-                lock (outputLock)
-                {
-                    stdout.AppendLine(e.Data);
-                }
-                _logger.LogDebug("[stdout] {Line}", e.Data);
+                return;
             }
+
+            lock (outputLock)
+            {
+                stdout.AppendLine(e.Data);
+            }
+
+            InvokeLineHandler(request.OnOutputLine, e.Data);
         };
 
-        process.ErrorDataReceived += (sender, e) =>
+        process.ErrorDataReceived += (_, e) =>
         {
-            if (e.Data != null)
+            if (e.Data == null)
             {
-                lock (outputLock)
-                {
-                    stderr.AppendLine(e.Data);
-                }
-                _logger.LogDebug("[stderr] {Line}", e.Data);
+                return;
             }
+
+            lock (outputLock)
+            {
+                stderr.AppendLine(e.Data);
+            }
+
+            InvokeLineHandler(request.OnErrorLine, e.Data);
         };
 
         try
         {
             process.Start();
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
+        }
+        catch (Win32Exception ex)
+        {
+            stopwatch.Stop();
+            _logger.LogDebug(ex, "Failed to start {FileName}: {Message}", startInfo.FileName, ex.Message);
 
-            // Close stdin so process doesn't wait for input
+            return new ExecutionResult
+            {
+                ExitCode = ex.NativeErrorCode == 2 ? 127 : -1,
+                StandardOutput = string.Empty,
+                StandardError = $"Failed to start '{startInfo.FileName}': {ex.Message}",
+                Duration = stopwatch.Elapsed
+            };
+        }
+
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+
+        try
+        {
+            // Close stdin so the process does not wait for input.
             process.StandardInput.Close();
+        }
+        catch (IOException)
+        {
+            // Process may already have exited.
+        }
 
-            // Create a linked cancellation token for timeout
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            cts.CancelAfter(effectiveTimeout);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(effectiveTimeout);
 
-            await WaitForExitAsync(process, cts.Token);
-
-            startTime.Stop();
+        try
+        {
+            await process.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
+            stopwatch.Stop();
 
             _logger.LogDebug(
                 "Process exited with code {ExitCode} in {Duration:F2}s",
-                process.ExitCode, startTime.Elapsed.TotalSeconds);
+                process.ExitCode, stopwatch.Elapsed.TotalSeconds);
 
             return new ExecutionResult
             {
                 ExitCode = process.ExitCode,
-                StandardOutput = stdout.ToString(),
-                StandardError = stderr.ToString(),
-                Duration = startTime.Elapsed
+                StandardOutput = Snapshot(stdout, outputLock),
+                StandardError = Snapshot(stderr, outputLock),
+                Duration = stopwatch.Elapsed
             };
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // Kill process tree on cancellation or timeout
             KillProcessTree(process);
+            stopwatch.Stop();
+            _logger.LogDebug("Process cancelled after {Duration:F2}s", stopwatch.Elapsed.TotalSeconds);
+            cancellationToken.ThrowIfCancellationRequested();
+            throw;
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+        {
+            KillProcessTree(process);
+            stopwatch.Stop();
 
-            startTime.Stop();
+            var message = $"Process timed out after {effectiveTimeout.TotalSeconds:F0} seconds";
+            _logger.LogWarning("{Message}: {FileName}", message, startInfo.FileName);
 
-            var isCancelled = cancellationToken.IsCancellationRequested;
-            var message = isCancelled
-                ? "Process was cancelled by user"
-                : $"Process timed out after {effectiveTimeout.TotalSeconds:F0} seconds";
-
-            _logger.LogWarning("{Message}", message);
-
-            // Append the timeout/cancellation message to stderr
             lock (outputLock)
             {
                 if (stderr.Length > 0)
                 {
                     stderr.AppendLine();
                 }
+
                 stderr.AppendLine(message);
             }
 
             return new ExecutionResult
             {
-                ExitCode = isCancelled ? -2 : -1,
-                StandardOutput = stdout.ToString(),
-                StandardError = stderr.ToString(),
-                Duration = startTime.Elapsed
+                ExitCode = ExecutionResult.TimeoutExitCode,
+                TimedOut = true,
+                StandardOutput = Snapshot(stdout, outputLock),
+                StandardError = Snapshot(stderr, outputLock),
+                Duration = stopwatch.Elapsed
             };
         }
         catch (Exception ex)
         {
-            startTime.Stop();
-
-            _logger.LogError(ex, "Failed to execute command: {Command}", command);
+            KillProcessTree(process);
+            stopwatch.Stop();
+            _logger.LogDebug(ex, "Process execution failed: {Message}", ex.Message);
 
             return new ExecutionResult
             {
                 ExitCode = -1,
-                StandardOutput = stdout.ToString(),
-                StandardError = $"{stderr}{Environment.NewLine}Error: {ex.Message}",
-                Duration = startTime.Elapsed
+                StandardOutput = Snapshot(stdout, outputLock),
+                StandardError = $"{Snapshot(stderr, outputLock)}{Environment.NewLine}Error: {ex.Message}",
+                Duration = stopwatch.Elapsed
             };
         }
     }
@@ -192,104 +243,135 @@ public class ProcessExecutor : IProcessExecutor
             throw new ArgumentException("Tool name cannot be null or empty.", nameof(toolName));
         }
 
-        var command = Platform == OperatingSystemPlatform.Windows
-            ? $"where {toolName}"
-            : $"command -v {toolName}";
+        var request = Platform == OperatingSystemPlatform.Windows
+            ? new ProcessExecutionRequest
+            {
+                FileName = "where.exe",
+                Arguments = new[] { toolName },
+                WorkingDirectory = Environment.CurrentDirectory,
+                Timeout = ToolProbeTimeout
+            }
+            : new ProcessExecutionRequest
+            {
+                FileName = "sh",
+                Arguments = new[] { "-c", "command -v \"$1\"", "sh", toolName },
+                WorkingDirectory = Environment.CurrentDirectory,
+                Timeout = ToolProbeTimeout
+            };
 
         try
         {
-            var result = await ExecuteAsync(
-                command,
-                Environment.CurrentDirectory,
-                timeout: TimeSpan.FromSeconds(10),
-                cancellationToken: cancellationToken);
-
+            var result = await ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
             return result.ExitCode == 0 && !string.IsNullOrWhiteSpace(result.StandardOutput);
         }
-        catch
+        catch (OperationCanceledException)
         {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Tool probe for {Tool} failed: {Message}", toolName, ex.Message);
             return false;
         }
     }
 
     /// <summary>
-    /// Gets the shell executable and arguments for the current platform.
+    /// Builds the <see cref="ProcessStartInfo"/> for a request: an explicit executable with its argument
+    /// list, or the platform shell with the command passed as a single argument.
     /// </summary>
-    /// <param name="command">The command to execute.</param>
-    /// <returns>A tuple containing the shell executable and its arguments.</returns>
-    private (string shell, string args) GetShellCommand(string command)
+    /// <param name="request">The request.</param>
+    /// <param name="platform">The platform to build for.</param>
+    /// <returns>The start info.</returns>
+    internal static ProcessStartInfo CreateStartInfo(ProcessExecutionRequest request, OperatingSystemPlatform platform)
     {
-        return Platform switch
+        var startInfo = new ProcessStartInfo
         {
-            OperatingSystemPlatform.Windows => GetWindowsShellCommand(command),
-            OperatingSystemPlatform.Linux => ("bash", $"-c \"{EscapeForBash(command)}\""),
-            OperatingSystemPlatform.MacOS => ("bash", $"-c \"{EscapeForBash(command)}\""),
-            _ => ("sh", $"-c \"{EscapeForBash(command)}\"")
+            WorkingDirectory = request.WorkingDirectory,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            RedirectStandardInput = true,
+            CreateNoWindow = true
         };
+
+        if (!string.IsNullOrEmpty(request.FileName))
+        {
+            startInfo.FileName = request.FileName;
+            foreach (var argument in request.Arguments)
+            {
+                startInfo.ArgumentList.Add(argument);
+            }
+        }
+        else if (platform == OperatingSystemPlatform.Windows)
+        {
+            // /s strips the outer quotes and treats everything in between literally, so the command
+            // text (which may itself contain quotes) is passed through unchanged.
+            startInfo.FileName = "cmd.exe";
+            startInfo.Arguments = $"/d /s /c \"{request.Command}\"";
+        }
+        else
+        {
+            startInfo.FileName = platform == OperatingSystemPlatform.Unknown ? "sh" : UnixShell.Value;
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add(request.Command!);
+        }
+
+        if (request.Environment != null)
+        {
+            foreach (var kvp in request.Environment)
+            {
+                startInfo.Environment[kvp.Key] = kvp.Value;
+            }
+        }
+
+        return startInfo;
     }
 
-    /// <summary>
-    /// Gets the Windows shell command, handling both cmd.exe and PowerShell scenarios.
-    /// </summary>
-    private (string shell, string args) GetWindowsShellCommand(string command)
-    {
-        // Use cmd.exe as the default shell on Windows
-        // Escape special characters for cmd.exe
-        var escapedCommand = command
-            .Replace("\"", "\\\"");
-
-        return ("cmd.exe", $"/c \"{escapedCommand}\"");
-    }
-
-    /// <summary>
-    /// Escapes a command string for safe use in bash -c.
-    /// </summary>
-    /// <param name="command">The command to escape.</param>
-    /// <returns>The escaped command string.</returns>
-    private static string EscapeForBash(string command)
-    {
-        // Escape backslashes first, then double quotes
-        return command
-            .Replace("\\", "\\\\")
-            .Replace("\"", "\\\"")
-            .Replace("$", "\\$")
-            .Replace("`", "\\`");
-    }
-
-    /// <summary>
-    /// Gets the current operating system platform.
-    /// </summary>
-    /// <returns>The current platform.</returns>
     private static OperatingSystemPlatform GetCurrentPlatform()
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
             return OperatingSystemPlatform.Windows;
+        }
+
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
             return OperatingSystemPlatform.Linux;
+        }
+
         if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        {
             return OperatingSystemPlatform.MacOS;
+        }
+
         return OperatingSystemPlatform.Unknown;
     }
 
-    /// <summary>
-    /// Waits for a process to exit asynchronously with cancellation support.
-    /// </summary>
-    /// <param name="process">The process to wait for.</param>
-    /// <param name="cancellationToken">The cancellation token.</param>
-    private static async Task WaitForExitAsync(Process process, CancellationToken cancellationToken)
+    private static string Snapshot(StringBuilder builder, object outputLock)
     {
-        // Use WaitForExitAsync if available (.NET 5+), otherwise fallback
-        await process.WaitForExitAsync(cancellationToken);
-
-        // Ensure all output is flushed
-        // Small delay to allow async output handlers to complete
-        await Task.Delay(50, CancellationToken.None);
+        lock (outputLock)
+        {
+            return builder.ToString();
+        }
     }
 
-    /// <summary>
-    /// Kills a process and its entire process tree.
-    /// </summary>
-    /// <param name="process">The process to kill.</param>
+    private void InvokeLineHandler(Action<string>? handler, string line)
+    {
+        if (handler == null)
+        {
+            return;
+        }
+
+        try
+        {
+            handler(line);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Output line handler threw: {Message}", ex.Message);
+        }
+    }
+
     private void KillProcessTree(Process process)
     {
         try
@@ -298,15 +380,16 @@ public class ProcessExecutor : IProcessExecutor
             {
                 _logger.LogDebug("Killing process tree for PID {ProcessId}", process.Id);
                 process.Kill(entireProcessTree: true);
+                process.WaitForExit(5000);
             }
         }
         catch (InvalidOperationException)
         {
-            // Process already exited
+            // Process already exited.
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to kill process tree for PID {ProcessId}", process.Id);
+            _logger.LogWarning(ex, "Failed to kill process tree: {Message}", ex.Message);
         }
     }
 }

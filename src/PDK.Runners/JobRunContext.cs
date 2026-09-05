@@ -59,6 +59,9 @@ public sealed record JobRunContext
     /// <summary>Gets whether images are pulled even when a local copy exists (<c>--no-cache</c>, Docker mode).</summary>
     public bool ForcePullImages { get; init; }
 
+    /// <summary>Gets the Docker network job containers are attached to (<c>docker.network</c>), or null for the default.</summary>
+    public string? ContainerNetwork { get; init; }
+
     /// <summary>Creates a minimal context for a workspace (used by the legacy <see cref="IJobRunner.RunJobAsync(Job, string, CancellationToken)"/> overload).</summary>
     public static JobRunContext ForWorkspace(string workspacePath) => new() { WorkspacePath = workspacePath };
 }

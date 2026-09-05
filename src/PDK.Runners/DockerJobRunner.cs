@@ -114,6 +114,11 @@ public class DockerJobRunner : IJobRunner
             var effectiveRun = JobRunnerSupport.WithResolverVariables(runContext, _variableResolver);
 
             // 1. Resolve the image: an explicit job container wins over the runner label mapping
+            if (_containerManager is DockerContainerManager { DaemonOSType: { Length: > 0 } daemonOs } && _imageMapper is ImageMapper mapper)
+            {
+                mapper.DaemonOSType = daemonOs;
+            }
+
             var image = string.IsNullOrWhiteSpace(job.Container)
                 ? _imageMapper.MapRunnerToImage(job.RunsOn)
                 : job.Container.Trim();
@@ -123,7 +128,7 @@ public class DockerJobRunner : IJobRunner
             session = new JobExecutionSession(job, effectiveRun, ContainerWorkspace, image, _logger);
             var outputHandler = JobRunnerSupport.MaskingOutputHandler(runContext.OutputLineHandler, _secretMasker, session);
 
-            // 3. Pull image if needed (with progress logging and performance tracking)
+            // 3. Pull image if needed (with progress logging and performance tracking); --no-cache always pulls
             _logger.LogDebug("Pulling image if needed: {Image}", image);
             var imagePullStopwatch = Stopwatch.StartNew();
             var wasPulled = false;
@@ -132,7 +137,15 @@ public class DockerJobRunner : IJobRunner
                 wasPulled = true;
                 _logger.LogDebug("[Image Pull] {Message}", message);
             });
-            await _containerManager.PullImageIfNeededAsync(image, progress, token);
+            if (runContext.ForcePullImages)
+            {
+                await _containerManager.PullImageAsync(image, progress, token);
+            }
+            else
+            {
+                await _containerManager.PullImageIfNeededAsync(image, progress, token);
+            }
+
             imagePullStopwatch.Stop();
 
             if (wasPulled)
@@ -144,18 +157,33 @@ public class DockerJobRunner : IJobRunner
                 _performanceTracker.TrackImageCache(image);
             }
 
-            // 4. Create container with workspace mounted (with performance tracking)
+            // 4. Remove containers left behind by interrupted runs, then create this job's container
+            try
+            {
+                var removed = await _containerManager.RemoveOrphanedContainersAsync(token);
+                if (removed > 0)
+                {
+                    _logger.LogInformation("Removed {Count} orphaned PDK container(s)", removed);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "Orphaned container cleanup failed");
+            }
+
             var containerStopwatch = Stopwatch.StartNew();
             var containerEnvironment = BuildContainerEnvironment(session.BaseEnvironment, job.Environment);
 
             var containerOptions = new ContainerOptions
             {
                 Name = $"pdk-job-{SanitizeContainerName(job.Id.Length > 0 ? job.Id : job.Name)}-{Guid.NewGuid():N}",
+                JobName = job.Name,
                 WorkspacePath = workspacePath,
                 WorkingDirectory = ContainerWorkspace,
                 Environment = containerEnvironment,
                 MemoryLimit = runContext.ContainerMemoryLimit,
                 CpuLimit = runContext.ContainerCpuLimit,
+                Network = runContext.ContainerNetwork,
                 KeepContainer = keepContainer,
                 MountDockerSocket = job.Steps.Any(s => s.Type == StepType.Docker)
             };

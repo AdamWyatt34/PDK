@@ -3,7 +3,6 @@ namespace PDK.Tests.Unit.Runners.Executors;
 using FluentAssertions;
 using Moq;
 using PDK.Core.Models;
-using PDK.Runners;
 using PDK.Runners.Models;
 using PDK.Runners.StepExecutors;
 
@@ -17,70 +16,48 @@ public class PathResolverTests : RunnerTestBase
     [Fact]
     public void ResolvePath_AbsolutePath_ReturnsAsIs()
     {
-        // Arrange
-        var absolutePath = "/usr/local/bin/app";
-        var workspaceRoot = "/workspace";
+        var result = PathResolver.ResolvePath("/usr/local/bin/app", "/workspace");
 
-        // Act
-        var result = PathResolver.ResolvePath(absolutePath, workspaceRoot);
-
-        // Assert
         result.Should().Be("/usr/local/bin/app");
     }
 
     [Fact]
     public void ResolvePath_RelativePath_CombinesWithWorkspace()
     {
-        // Arrange
-        var relativePath = "src/MyApp";
-        var workspaceRoot = "/workspace";
+        var result = PathResolver.ResolvePath("src/MyApp", "/workspace");
 
-        // Act
-        var result = PathResolver.ResolvePath(relativePath, workspaceRoot);
-
-        // Assert
         result.Should().Be("/workspace/src/MyApp");
     }
 
     [Fact]
     public void ResolvePath_PathWithDotSlash_RemovesDotSlash()
     {
-        // Arrange
-        var relativePath = "./src/MyApp";
-        var workspaceRoot = "/workspace";
+        var result = PathResolver.ResolvePath("./src/MyApp", "/workspace");
 
-        // Act
-        var result = PathResolver.ResolvePath(relativePath, workspaceRoot);
-
-        // Assert
         result.Should().Be("/workspace/src/MyApp");
     }
 
     [Fact]
     public void ResolvePath_PathWithDotDot_Normalizes()
     {
-        // Arrange
-        var relativePath = "src/../lib/MyLib";
-        var workspaceRoot = "/workspace";
+        var result = PathResolver.ResolvePath("src/../lib/MyLib", "/workspace");
 
-        // Act
-        var result = PathResolver.ResolvePath(relativePath, workspaceRoot);
-
-        // Assert
         result.Should().Be("/workspace/lib/MyLib");
+    }
+
+    [Fact]
+    public void ResolvePath_BackslashSeparators_AreNormalized()
+    {
+        var result = PathResolver.ResolvePath("src\\MyApp", "/workspace");
+
+        result.Should().Be("/workspace/src/MyApp");
     }
 
     [Fact]
     public void ResolvePath_EmptyPath_ReturnsWorkspaceRoot()
     {
-        // Arrange
-        var emptyPath = "";
-        var workspaceRoot = "/workspace";
+        var result = PathResolver.ResolvePath("", "/workspace");
 
-        // Act
-        var result = PathResolver.ResolvePath(emptyPath, workspaceRoot);
-
-        // Assert
         result.Should().Be("/workspace");
     }
 
@@ -91,64 +68,44 @@ public class PathResolverTests : RunnerTestBase
     [Fact]
     public void ResolveWorkingDirectory_StepHasWorkingDir_UsesStepValue()
     {
-        // Arrange
         var step = CreateTestStep(StepType.Script, "Test step");
         step.WorkingDirectory = "src/MyApp";
 
-        var context = CreateTestContext();
+        var result = PathResolver.ResolveWorkingDirectory(step, CreateTestContext());
 
-        // Act
-        var result = PathResolver.ResolveWorkingDirectory(step, context);
-
-        // Assert
         result.Should().Be("/workspace/src/MyApp");
     }
 
     [Fact]
     public void ResolveWorkingDirectory_StepNoWorkingDir_UsesContextValue()
     {
-        // Arrange
         var step = CreateTestStep(StepType.Script, "Test step");
         step.WorkingDirectory = null;
 
-        var context = CreateTestContext();
+        var result = PathResolver.ResolveWorkingDirectory(step, CreateTestContext());
 
-        // Act
-        var result = PathResolver.ResolveWorkingDirectory(step, context);
-
-        // Assert
         result.Should().Be("/workspace");
     }
 
     [Fact]
     public void ResolveWorkingDirectory_AbsolutePath_ReturnsAsIs()
     {
-        // Arrange
         var step = CreateTestStep(StepType.Script, "Test step");
         step.WorkingDirectory = "/custom/path";
 
-        var context = CreateTestContext();
+        var result = PathResolver.ResolveWorkingDirectory(step, CreateTestContext());
 
-        // Act
-        var result = PathResolver.ResolveWorkingDirectory(step, context);
-
-        // Assert
         result.Should().Be("/custom/path");
     }
 
     [Fact]
     public void ResolveWorkingDirectory_PathWithDotSlash_RemovesDotSlash()
     {
-        // Arrange
         var step = CreateTestStep(StepType.Script, "Test step");
         step.WorkingDirectory = "./src";
 
-        var context = CreateTestContext();
+        var result = PathResolver.ResolveWorkingDirectory(step, CreateTestContext());
 
-        // Act
-        var result = PathResolver.ResolveWorkingDirectory(step, context);
-
-        // Assert
         result.Should().Be("/workspace/src");
     }
 
@@ -156,166 +113,209 @@ public class PathResolverTests : RunnerTestBase
 
     #region ExpandWildcardAsync Tests
 
-    [Fact]
-    public async Task ExpandWildcardAsync_MatchingFiles_ReturnsFiles()
+    private void SetupFind(string standardOutput, int exitCode = 0)
     {
-        // Arrange
         MockContainerManager
-            .Setup(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("find") && cmd.Contains("*.csproj")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
+            .SetupClassicExec(cmd => cmd.StartsWith("find ", StringComparison.Ordinal))
             .ReturnsAsync(new ExecutionResult
             {
-                ExitCode = 0,
-                StandardOutput = "./Project1.csproj\n./Project2.csproj\n",
+                ExitCode = exitCode,
+                StandardOutput = standardOutput,
                 StandardError = string.Empty,
-                Duration = TimeSpan.FromMilliseconds(100)
+                Duration = TimeSpan.FromMilliseconds(10)
             });
-
-        // Act
-        var result = await PathResolver.ExpandWildcardAsync(
-            MockContainerManager.Object,
-            "test-container",
-            "**/*.csproj",
-            "/workspace");
-
-        // Assert
-        result.Should().NotBeNull();
-        result.Should().HaveCount(2);
-        result.Should().Contain("./Project1.csproj");
-        result.Should().Contain("./Project2.csproj");
     }
 
     [Fact]
-    public async Task ExpandWildcardAsync_NoMatches_ReturnsEmptyList()
+    public async Task ExpandWildcardAsync_MatchingFiles_ReturnsRelativePathsWithoutDotSlash()
     {
-        // Arrange
-        MockContainerManager
-            .Setup(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("find")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ExecutionResult
-            {
-                ExitCode = 0,
-                StandardOutput = string.Empty,
-                StandardError = string.Empty,
-                Duration = TimeSpan.FromMilliseconds(50)
-            });
+        SetupFind("./Project1.csproj\n./src/Project2.csproj\n");
 
-        // Act
         var result = await PathResolver.ExpandWildcardAsync(
-            MockContainerManager.Object,
-            "test-container",
-            "**/*.nonexistent",
-            "/workspace");
+            MockContainerManager.Object, "test-container", "**/*.csproj", "/workspace");
 
-        // Assert
-        result.Should().NotBeNull();
-        result.Should().BeEmpty();
+        result.Should().Equal("Project1.csproj", "src/Project2.csproj");
+    }
+
+    [Fact]
+    public async Task ExpandWildcardAsync_RunsFindWithNameFilterInWorkingDirectory()
+    {
+        string? command = null;
+        MockContainerManager
+            .SetupClassicExec()
+            .Callback<string, string, string?, IDictionary<string, string>?, CancellationToken>(
+                (_, cmd, _, _, _) => command = cmd)
+            .ReturnsAsync(RunnerMockExtensions.Ok());
+
+        await PathResolver.ExpandWildcardAsync(
+            MockContainerManager.Object, "test-container", "**/*.csproj", "/workspace/src");
+
+        command.Should().Be("find . -path ./.git -prune -o -type f -name '*.csproj' -print");
+        MockContainerManager.Verify(m => m.ExecuteCommandAsync(
+            "test-container",
+            It.IsAny<string>(),
+            "/workspace/src",
+            null,
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExpandWildcardAsync_SingleStar_DoesNotCrossDirectories()
+    {
+        SetupFind("./A.cs\n./src/B.cs\n");
+
+        var result = await PathResolver.ExpandWildcardAsync(
+            MockContainerManager.Object, "test-container", "*.cs", "/workspace");
+
+        result.Should().Equal("A.cs");
+    }
+
+    [Fact]
+    public async Task ExpandWildcardAsync_DoubleStar_MatchesDirectChildrenAndDeeperFiles()
+    {
+        SetupFind("./src/x.txt\n./src/a/b/x.txt\n./other/x.txt\n");
+
+        var result = await PathResolver.ExpandWildcardAsync(
+            MockContainerManager.Object, "test-container", "src/**/x.txt", "/workspace");
+
+        result.Should().Equal("src/a/b/x.txt", "src/x.txt");
     }
 
     [Fact]
     public async Task ExpandWildcardAsync_RecursivePattern_FindsAllFiles()
     {
-        // Arrange
-        MockContainerManager
-            .Setup(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("find") && cmd.Contains("**/*.cs")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ExecutionResult
-            {
-                ExitCode = 0,
-                StandardOutput = "./src/File1.cs\n./src/sub/File2.cs\n./tests/Test1.cs\n",
-                StandardError = string.Empty,
-                Duration = TimeSpan.FromMilliseconds(150)
-            });
+        SetupFind("./src/File1.cs\n./src/sub/File2.cs\n./tests/Test1.cs\n");
 
-        // Act
         var result = await PathResolver.ExpandWildcardAsync(
+            MockContainerManager.Object, "test-container", "**/*.cs", "/workspace");
+
+        result.Should().Equal("src/File1.cs", "src/sub/File2.cs", "tests/Test1.cs");
+    }
+
+    [Fact]
+    public async Task ExpandWildcardsAsync_ExcludePatterns_RemoveMatches()
+    {
+        SetupFind("./src/App/App.csproj\n./tests/App.Tests/App.Tests.csproj\n");
+
+        var result = await PathResolver.ExpandWildcardsAsync(
             MockContainerManager.Object,
             "test-container",
-            "**/*.cs",
+            new[] { "**/*.csproj", "!**/*.Tests.csproj" },
             "/workspace");
 
-        // Assert
-        result.Should().HaveCount(3);
-        result.Should().Contain("./src/File1.cs");
-        result.Should().Contain("./src/sub/File2.cs");
-        result.Should().Contain("./tests/Test1.cs");
+        result.Should().Equal("src/App/App.csproj");
+    }
+
+    [Fact]
+    public async Task ExpandWildcardsAsync_OnlyExcludePatterns_ReturnsEmptyWithoutRunningFind()
+    {
+        var result = await PathResolver.ExpandWildcardsAsync(
+            MockContainerManager.Object, "test-container", new[] { "!**/*.csproj" }, "/workspace");
+
+        result.Should().BeEmpty();
+        MockContainerManager.Verify(m => m.ExecuteCommandAsync(
+            It.IsAny<string>(),
+            It.IsAny<string>(),
+            It.IsAny<string?>(),
+            It.IsAny<IDictionary<string, string>?>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ExpandWildcardAsync_NoMatches_ReturnsEmptyList()
+    {
+        SetupFind(string.Empty);
+
+        var result = await PathResolver.ExpandWildcardAsync(
+            MockContainerManager.Object, "test-container", "**/*.nonexistent", "/workspace");
+
+        result.Should().BeEmpty();
     }
 
     [Fact]
     public async Task ExpandWildcardAsync_FindCommandFails_ReturnsEmptyList()
     {
-        // Arrange
-        MockContainerManager
-            .Setup(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("find")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateFailureResult());
+        SetupFind("./Project1.csproj\n", exitCode: 1);
 
-        // Act
         var result = await PathResolver.ExpandWildcardAsync(
-            MockContainerManager.Object,
-            "test-container",
-            "**/*.csproj",
-            "/workspace");
+            MockContainerManager.Object, "test-container", "**/*.csproj", "/workspace");
 
-        // Assert
-        result.Should().NotBeNull();
         result.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task ExpandWildcardAsync_EmptyPattern_ReturnsEmptyList()
+    public async Task ExpandWildcardAsync_EmptyPattern_ReturnsEmptyListWithoutRunningFind()
     {
-        // Arrange & Act
         var result = await PathResolver.ExpandWildcardAsync(
-            MockContainerManager.Object,
-            "test-container",
-            "",
-            "/workspace");
+            MockContainerManager.Object, "test-container", "", "/workspace");
 
-        // Assert
-        result.Should().NotBeNull();
         result.Should().BeEmpty();
+        MockContainerManager.Verify(m => m.ExecuteCommandAsync(
+            It.IsAny<string>(),
+            It.IsAny<string>(),
+            It.IsAny<string?>(),
+            It.IsAny<IDictionary<string, string>?>(),
+            It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
     public async Task ExpandWildcardAsync_CommandThrows_ReturnsEmptyList()
     {
-        // Arrange
         MockContainerManager
-            .Setup(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("find")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new Exception("Container error"));
+            .SetupClassicExec()
+            .ThrowsAsync(new InvalidOperationException("Container error"));
 
-        // Act
         var result = await PathResolver.ExpandWildcardAsync(
-            MockContainerManager.Object,
-            "test-container",
-            "**/*.csproj",
-            "/workspace");
+            MockContainerManager.Object, "test-container", "**/*.csproj", "/workspace");
 
-        // Assert
-        result.Should().NotBeNull();
         result.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ExpandWildcardAsync_Cancelled_PropagatesOperationCanceledException()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        MockContainerManager
+            .SetupClassicExec()
+            .ThrowsAsync(new OperationCanceledException(cts.Token));
+
+        Func<Task> act = () => PathResolver.ExpandWildcardAsync(
+            MockContainerManager.Object, "test-container", "**/*.csproj", "/workspace", cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    #endregion
+
+    #region BuildFindCommand Tests
+
+    [Theory]
+    [InlineData("**/*.csproj", "find . -path ./.git -prune -o -type f -name '*.csproj' -print")]
+    [InlineData("dir/**/x", "find . -path ./.git -prune -o -type f -name x -print")]
+    [InlineData("./src/*.sln", "find . -path ./.git -prune -o -type f -name '*.sln' -print")]
+    [InlineData("src/**", "find . -path ./.git -prune -o -type f -print")]
+    public void BuildFindCommand_SingleLeaf_AddsNameFilterWhenPossible(string pattern, string expected)
+    {
+        var command = PathResolver.BuildFindCommand(new[] { pattern });
+
+        command.Should().Be(expected);
+    }
+
+    [Fact]
+    public void BuildFindCommand_DifferentLeaves_OmitsNameFilter()
+    {
+        var command = PathResolver.BuildFindCommand(new[] { "**/*.csproj", "**/*.fsproj" });
+
+        command.Should().Be("find . -path ./.git -prune -o -type f -print");
+    }
+
+    [Fact]
+    public void BuildFindCommand_ExcludePatterns_DoNotAffectNameFilter()
+    {
+        var command = PathResolver.BuildFindCommand(new[] { "**/*.csproj", "!**/*.Tests.csproj" });
+
+        command.Should().Be("find . -path ./.git -prune -o -type f -name '*.csproj' -print");
     }
 
     #endregion

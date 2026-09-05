@@ -3,7 +3,6 @@ namespace PDK.Tests.Unit.Runners;
 using FluentAssertions;
 using Moq;
 using PDK.Core.Models;
-using PDK.Runners;
 using PDK.Runners.StepExecutors;
 
 /// <summary>
@@ -11,25 +10,34 @@ using PDK.Runners.StepExecutors;
 /// </summary>
 public class StepExecutorFactoryTests
 {
+    private static Mock<IStepExecutor> CreateMockExecutor(string stepType)
+    {
+        var mock = new Mock<IStepExecutor>();
+        mock.Setup(x => x.StepType).Returns(stepType);
+        return mock;
+    }
+
+    private static StepExecutorFactory CreateFactory(params string[] stepTypes)
+    {
+        return new StepExecutorFactory(stepTypes.Select(t => CreateMockExecutor(t).Object).ToList());
+    }
+
     #region Constructor Tests
 
     [Fact]
     public void Constructor_WithExecutors_RegistersAll()
     {
-        // Arrange
-        var mockExecutor1 = new Mock<IStepExecutor>();
-        mockExecutor1.Setup(x => x.StepType).Returns("checkout");
+        var factory = CreateFactory("checkout", "script");
 
-        var mockExecutor2 = new Mock<IStepExecutor>();
-        mockExecutor2.Setup(x => x.StepType).Returns("script");
+        factory.GetRegisteredStepTypes().Should().Equal("checkout", "script");
+    }
 
-        var executors = new[] { mockExecutor1.Object, mockExecutor2.Object };
+    [Fact]
+    public void Constructor_WithNullExecutors_ThrowsArgumentNullException()
+    {
+        var act = () => new StepExecutorFactory(null!);
 
-        // Act
-        var factory = new StepExecutorFactory(executors);
-
-        // Assert
-        factory.Should().NotBeNull();
+        act.Should().Throw<ArgumentNullException>().WithParameterName("executors");
     }
 
     #endregion
@@ -39,125 +47,195 @@ public class StepExecutorFactoryTests
     [Fact]
     public void GetExecutor_RegisteredType_ReturnsCorrectExecutor()
     {
-        // Arrange
-        var mockExecutor = new Mock<IStepExecutor>();
-        mockExecutor.Setup(x => x.StepType).Returns("checkout");
-
+        var mockExecutor = CreateMockExecutor("checkout");
         var factory = new StepExecutorFactory(new[] { mockExecutor.Object });
 
-        // Act
         var result = factory.GetExecutor("checkout");
 
-        // Assert
-        result.Should().NotBeNull();
-        result.Should().Be(mockExecutor.Object);
-        result.StepType.Should().Be("checkout");
+        result.Should().BeSameAs(mockExecutor.Object);
     }
 
     [Fact]
     public void GetExecutor_CaseInsensitive_ReturnsExecutor()
     {
-        // Arrange
-        var mockExecutor = new Mock<IStepExecutor>();
-        mockExecutor.Setup(x => x.StepType).Returns("checkout");
-
+        var mockExecutor = CreateMockExecutor("checkout");
         var factory = new StepExecutorFactory(new[] { mockExecutor.Object });
 
-        // Act
         var result = factory.GetExecutor("CHECKOUT");
 
-        // Assert
-        result.Should().NotBeNull();
-        result.Should().Be(mockExecutor.Object);
+        result.Should().BeSameAs(mockExecutor.Object);
     }
 
     [Fact]
-    public void GetExecutor_UnknownType_ThrowsNotSupportedException()
+    public void GetExecutor_NullName_ThrowsArgumentNullException()
     {
-        // Arrange
-        var mockExecutor = new Mock<IStepExecutor>();
-        mockExecutor.Setup(x => x.StepType).Returns("checkout");
+        var factory = CreateFactory("checkout");
 
-        var factory = new StepExecutorFactory(new[] { mockExecutor.Object });
+        var act = () => factory.GetExecutor((string)null!);
 
-        // Act
-        Action act = () => factory.GetExecutor("unknown");
+        act.Should().Throw<ArgumentNullException>().WithParameterName("stepTypeName");
+    }
 
-        // Assert
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void GetExecutor_WhitespaceName_ThrowsArgumentException(string name)
+    {
+        var factory = CreateFactory("checkout");
+
+        var act = () => factory.GetExecutor(name);
+
+        act.Should().Throw<ArgumentException>().WithParameterName("stepTypeName");
+    }
+
+    [Fact]
+    public void GetExecutor_UnknownType_ThrowsNotSupportedExceptionListingAvailableExecutors()
+    {
+        var factory = CreateFactory("checkout", "script");
+
+        var act = () => factory.GetExecutor("unknown");
+
         act.Should().Throw<NotSupportedException>()
-            .WithMessage("*unknown*");
+            .WithMessage("*No executor found for step type 'unknown'*")
+            .WithMessage("*Available executors: checkout, script*");
+    }
+
+    [Fact]
+    public void GetExecutor_NoExecutorsRegistered_ShowsNoneRegistered()
+    {
+        var factory = CreateFactory();
+
+        var act = () => factory.GetExecutor("script");
+
+        act.Should().Throw<NotSupportedException>().WithMessage("*(none registered)*");
     }
 
     #endregion
 
     #region GetExecutor by Enum Tests
 
-    [Fact]
-    public void GetExecutor_CheckoutEnum_ReturnsCheckoutExecutor()
+    [Theory]
+    [InlineData(StepType.Checkout, "checkout")]
+    [InlineData(StepType.Script, "script")]
+    [InlineData(StepType.Bash, "script")]
+    [InlineData(StepType.PowerShell, "pwsh")]
+    [InlineData(StepType.Docker, "docker")]
+    [InlineData(StepType.Npm, "npm")]
+    [InlineData(StepType.Dotnet, "dotnet")]
+    [InlineData(StepType.UploadArtifact, "uploadartifact")]
+    [InlineData(StepType.DownloadArtifact, "downloadartifact")]
+    public void GetExecutor_MappedStepType_ReturnsRegisteredExecutor(StepType stepType, string executorName)
     {
-        // Arrange
-        var mockExecutor = new Mock<IStepExecutor>();
-        mockExecutor.Setup(x => x.StepType).Returns("checkout");
-
+        var mockExecutor = CreateMockExecutor(executorName);
         var factory = new StepExecutorFactory(new[] { mockExecutor.Object });
 
-        // Act
-        var result = factory.GetExecutor(StepType.Checkout);
+        var result = factory.GetExecutor(stepType);
 
-        // Assert
-        result.Should().NotBeNull();
-        result.StepType.Should().Be("checkout");
+        result.Should().BeSameAs(mockExecutor.Object);
+    }
+
+    [Theory]
+    [InlineData(StepType.Unknown)]
+    [InlineData(StepType.Setup)]
+    public void GetExecutor_StepTypeWithoutExecutor_ThrowsNotSupportedException(StepType stepType)
+    {
+        var factory = CreateFactory("checkout", "script");
+
+        var act = () => factory.GetExecutor(stepType);
+
+        act.Should().Throw<NotSupportedException>()
+            .WithMessage($"*{stepType}*")
+            .WithMessage("*job runner*");
     }
 
     [Fact]
-    public void GetExecutor_ScriptEnum_ReturnsScriptExecutor()
+    public void GetExecutor_MappedButUnregisteredStepType_ThrowsNotSupportedException()
     {
-        // Arrange
-        var mockExecutor = new Mock<IStepExecutor>();
-        mockExecutor.Setup(x => x.StepType).Returns("script");
+        var factory = CreateFactory("checkout");
 
-        var factory = new StepExecutorFactory(new[] { mockExecutor.Object });
+        var act = () => factory.GetExecutor(StepType.Dotnet);
 
-        // Act
-        var result = factory.GetExecutor(StepType.Script);
+        act.Should().Throw<NotSupportedException>().WithMessage("*'dotnet'*");
+    }
 
-        // Assert
-        result.Should().NotBeNull();
-        result.StepType.Should().Be("script");
+    #endregion
+
+    #region TryGetExecutor / HasExecutor Tests
+
+    [Theory]
+    [InlineData(StepType.Unknown)]
+    [InlineData(StepType.Setup)]
+    public void TryGetExecutor_StepTypeWithoutExecutor_ReturnsFalse(StepType stepType)
+    {
+        var factory = CreateFactory("checkout", "script", "pwsh");
+
+        var found = factory.TryGetExecutor(stepType, out var executor);
+
+        found.Should().BeFalse();
+        executor.Should().BeNull();
     }
 
     [Fact]
-    public void GetExecutor_PowerShellEnum_ReturnsPowerShellExecutor()
+    public void TryGetExecutor_RegisteredStepType_ReturnsExecutor()
     {
-        // Arrange
-        var mockExecutor = new Mock<IStepExecutor>();
-        mockExecutor.Setup(x => x.StepType).Returns("pwsh");
-
+        var mockExecutor = CreateMockExecutor("script");
         var factory = new StepExecutorFactory(new[] { mockExecutor.Object });
 
-        // Act
-        var result = factory.GetExecutor(StepType.PowerShell);
+        var found = factory.TryGetExecutor(StepType.Bash, out var executor);
 
-        // Assert
-        result.Should().NotBeNull();
-        result.StepType.Should().Be("pwsh");
+        found.Should().BeTrue();
+        executor.Should().BeSameAs(mockExecutor.Object);
     }
 
     [Fact]
-    public void GetExecutor_UnknownEnum_ThrowsArgumentException()
+    public void TryGetExecutor_UnregisteredStepType_ReturnsFalse()
     {
-        // Arrange
-        var mockExecutor = new Mock<IStepExecutor>();
-        mockExecutor.Setup(x => x.StepType).Returns("checkout");
+        var factory = CreateFactory("script");
 
-        var factory = new StepExecutorFactory(new[] { mockExecutor.Object });
+        var found = factory.TryGetExecutor(StepType.PowerShell, out var executor);
 
-        // Act
-        Action act = () => factory.GetExecutor(StepType.Unknown);
+        found.Should().BeFalse();
+        executor.Should().BeNull();
+    }
 
-        // Assert
-        act.Should().Throw<ArgumentException>()
-            .WithMessage("*Unknown*");
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("  ")]
+    public void HasExecutor_NullOrWhitespaceName_ReturnsFalse(string? name)
+    {
+        var factory = CreateFactory("script");
+
+        factory.HasExecutor(name!).Should().BeFalse();
+    }
+
+    [Fact]
+    public void HasExecutor_Name_IsCaseInsensitive()
+    {
+        var factory = CreateFactory("script");
+
+        factory.HasExecutor("SCRIPT").Should().BeTrue();
+        factory.HasExecutor("dotnet").Should().BeFalse();
+    }
+
+    [Fact]
+    public void HasExecutor_StepType_ReflectsRegistrations()
+    {
+        var factory = CreateFactory("script");
+
+        factory.HasExecutor(StepType.Script).Should().BeTrue();
+        factory.HasExecutor(StepType.Bash).Should().BeTrue();
+        factory.HasExecutor(StepType.PowerShell).Should().BeFalse();
+        factory.HasExecutor(StepType.Unknown).Should().BeFalse();
+        factory.HasExecutor(StepType.Setup).Should().BeFalse();
+    }
+
+    [Fact]
+    public void GetRegisteredStepTypes_PreservesRegistrationOrder()
+    {
+        var factory = CreateFactory("zebra", "alpha", "middle");
+
+        factory.GetRegisteredStepTypes().Should().Equal("zebra", "alpha", "middle");
     }
 
     #endregion

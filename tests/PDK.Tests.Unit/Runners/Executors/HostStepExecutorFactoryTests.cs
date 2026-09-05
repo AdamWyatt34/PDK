@@ -186,19 +186,35 @@ public class HostStepExecutorFactoryTests
 
     #region GetExecutor(StepType) Tests
 
-    [Fact]
-    public void GetExecutor_WithUnknownStepTypeEnum_ThrowsArgumentException()
+    [Theory]
+    [InlineData(StepType.Unknown)]
+    [InlineData(StepType.Setup)]
+    public void GetExecutor_WithStepTypeWithoutExecutor_ThrowsNotSupportedException(StepType stepType)
     {
         // Arrange
-        var factory = new HostStepExecutorFactory(Enumerable.Empty<IHostStepExecutor>());
+        var factory = new HostStepExecutorFactory(new[] { CreateMockExecutor("script").Object });
 
         // Act
-        var act = () => factory.GetExecutor(StepType.Unknown);
+        var act = () => factory.GetExecutor(stepType);
 
         // Assert
-        act.Should().Throw<ArgumentException>()
-            .WithParameterName("stepType")
-            .WithMessage("*unknown step type*");
+        act.Should().Throw<NotSupportedException>()
+            .WithMessage($"*{stepType}*")
+            .WithMessage("*job runner*");
+    }
+
+    [Fact]
+    public void GetExecutor_WithMappedButUnregisteredStepType_ThrowsNotSupportedException()
+    {
+        // Arrange
+        var factory = new HostStepExecutorFactory(new[] { CreateMockExecutor("script").Object });
+
+        // Act
+        var act = () => factory.GetExecutor(StepType.Dotnet);
+
+        // Assert
+        act.Should().Throw<NotSupportedException>()
+            .WithMessage("*'dotnet'*");
     }
 
     [Fact]
@@ -258,31 +274,32 @@ public class HostStepExecutorFactoryTests
     }
 
     [Fact]
-    public void GetExecutor_WithPowerShellStepType_ReturnsPwshExecutor()
+    public void GetExecutor_WithPowerShellStepType_ReturnsScriptExecutor()
     {
-        // Arrange
-        var mockExecutor = CreateMockExecutor("pwsh");
-        var factory = new HostStepExecutorFactory(new[] { mockExecutor.Object });
+        // Arrange: on the host, pwsh/powershell steps are served by the script executor.
+        var scriptExecutor = CreateMockExecutor("script");
+        var pwshExecutor = CreateMockExecutor("pwsh");
+        var factory = new HostStepExecutorFactory(new[] { pwshExecutor.Object, scriptExecutor.Object });
 
         // Act
         var result = factory.GetExecutor(StepType.PowerShell);
 
         // Assert
-        result.Should().Be(mockExecutor.Object);
+        result.Should().BeSameAs(scriptExecutor.Object);
     }
 
     [Fact]
-    public void GetExecutor_WithBashStepType_ReturnsBashExecutor()
+    public void GetExecutor_WithBashStepType_ReturnsScriptExecutor()
     {
         // Arrange
-        var mockExecutor = CreateMockExecutor("bash");
+        var mockExecutor = CreateMockExecutor("script");
         var factory = new HostStepExecutorFactory(new[] { mockExecutor.Object });
 
         // Act
         var result = factory.GetExecutor(StepType.Bash);
 
         // Assert
-        result.Should().Be(mockExecutor.Object);
+        result.Should().BeSameAs(mockExecutor.Object);
     }
 
     [Fact]
@@ -463,6 +480,70 @@ public class HostStepExecutorFactoryTests
         result[0].Should().Be("zebra");
         result[1].Should().Be("alpha");
         result[2].Should().Be("middle");
+    }
+
+    #endregion
+
+    #region TryGetExecutor / HasExecutor(StepType) Tests
+
+    [Theory]
+    [InlineData(StepType.Unknown)]
+    [InlineData(StepType.Setup)]
+    public void TryGetExecutor_WithStepTypeWithoutExecutor_ReturnsFalse(StepType stepType)
+    {
+        // Arrange
+        var factory = new HostStepExecutorFactory(new[] { CreateMockExecutor("script").Object });
+
+        // Act
+        var found = factory.TryGetExecutor(stepType, out var executor);
+
+        // Assert
+        found.Should().BeFalse();
+        executor.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryGetExecutor_WithRegisteredStepType_ReturnsExecutor()
+    {
+        // Arrange
+        var mockExecutor = CreateMockExecutor("script");
+        var factory = new HostStepExecutorFactory(new[] { mockExecutor.Object });
+
+        // Act
+        var found = factory.TryGetExecutor(StepType.PowerShell, out var executor);
+
+        // Assert
+        found.Should().BeTrue();
+        executor.Should().BeSameAs(mockExecutor.Object);
+    }
+
+    [Fact]
+    public void TryGetExecutor_WithUnregisteredStepType_ReturnsFalse()
+    {
+        // Arrange
+        var factory = new HostStepExecutorFactory(new[] { CreateMockExecutor("script").Object });
+
+        // Act
+        var found = factory.TryGetExecutor(StepType.Npm, out var executor);
+
+        // Assert
+        found.Should().BeFalse();
+        executor.Should().BeNull();
+    }
+
+    [Fact]
+    public void HasExecutor_WithStepType_ReflectsRegistrations()
+    {
+        // Arrange
+        var factory = new HostStepExecutorFactory(new[] { CreateMockExecutor("script").Object });
+
+        // Assert
+        factory.HasExecutor(StepType.Script).Should().BeTrue();
+        factory.HasExecutor(StepType.Bash).Should().BeTrue();
+        factory.HasExecutor(StepType.PowerShell).Should().BeTrue();
+        factory.HasExecutor(StepType.Dotnet).Should().BeFalse();
+        factory.HasExecutor(StepType.Unknown).Should().BeFalse();
+        factory.HasExecutor(StepType.Setup).Should().BeFalse();
     }
 
     #endregion

@@ -21,6 +21,12 @@ public record DockerAvailabilityStatus
     public string? Platform { get; init; }
 
     /// <summary>
+    /// Gets the Docker endpoint that was probed (for example <c>unix:///var/run/docker.sock</c>)
+    /// and where it came from (DOCKER_HOST, Docker context, socket search, default).
+    /// </summary>
+    public string? Endpoint { get; init; }
+
+    /// <summary>
     /// Gets the type of error if Docker is not available.
     /// </summary>
     public DockerErrorType? ErrorType { get; init; }

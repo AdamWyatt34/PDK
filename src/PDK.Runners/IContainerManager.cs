@@ -23,7 +23,7 @@ public interface IContainerManager : IAsyncDisposable, IDockerStatusProvider
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Executes a command in a running container and returns the result.
+    /// Executes a shell command (<c>sh -c</c>) in a running container and returns the result.
     /// </summary>
     /// <param name="containerId">The ID of the container.</param>
     /// <param name="command">The command to execute.</param>
@@ -40,6 +40,34 @@ public interface IContainerManager : IAsyncDisposable, IDockerStatusProvider
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Executes a command described by <paramref name="request"/> in a running container, with support
+    /// for an explicit argument vector, live output streaming and a timeout.
+    /// The default implementation ignores the streaming/timeout options and delegates to
+    /// <see cref="ExecuteCommandAsync(string, string, string?, IDictionary{string, string}?, CancellationToken)"/>.
+    /// </summary>
+    /// <param name="request">The command to execute.</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>The execution result including exit code, output, and duration.</returns>
+    /// <exception cref="ContainerException">Thrown when command execution fails.</exception>
+    Task<ExecutionResult> ExecuteCommandAsync(
+        ContainerExecRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var command = request.Arguments is { Count: > 0 }
+            ? string.Join(' ', request.Arguments.Select(ShellQuote.Posix))
+            : request.Command ?? string.Empty;
+
+        return ExecuteCommandAsync(
+            request.ContainerId,
+            command,
+            request.WorkingDirectory,
+            request.Environment,
+            cancellationToken);
+    }
+
+    /// <summary>
     /// Stops and removes a container.
     /// </summary>
     /// <param name="containerId">The ID of the container to remove.</param>
@@ -49,8 +77,54 @@ public interface IContainerManager : IAsyncDisposable, IDockerStatusProvider
         string containerId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Removes containers left behind by earlier PDK runs: containers carrying the <c>pdk=true</c> label
+    /// that are in the <c>exited</c>, <c>created</c> or <c>dead</c> state. Running containers are never touched.
+    /// The default implementation does nothing.
+    /// </summary>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>The number of containers that were removed.</returns>
+    Task<int> RemoveOrphanedContainersAsync(CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(0);
+    }
+
+    /// <summary>
+    /// Checks whether an image is present in the local Docker image store.
+    /// The default implementation reports <c>false</c>.
+    /// </summary>
+    /// <param name="image">The image reference (e.g. "ubuntu:22.04").</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>True if the image exists locally; otherwise, false.</returns>
+    Task<bool> ImageExistsAsync(string image, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(false);
+    }
+
+    /// <summary>
+    /// Gets the CPU and memory resources available to the Docker daemon (<c>docker info</c>).
+    /// The default implementation reports <c>null</c> (unknown).
+    /// </summary>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>The daemon resources, or null when they cannot be determined.</returns>
+    Task<DaemonResources?> GetDaemonResourcesAsync(CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult<DaemonResources?>(null);
+    }
+
     // Note: IsDockerAvailableAsync, GetDockerVersionAsync, and GetDockerStatusAsync
     // are inherited from IDockerStatusProvider
+
+    /// <summary>
+    /// Pulls a Docker image even when a local copy exists (<c>--no-cache</c>).
+    /// The default implementation only pulls when the image is missing.
+    /// </summary>
+    /// <param name="image">The Docker image name to pull.</param>
+    /// <param name="progress">Optional progress reporter for pull operation updates.</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>A task that completes when the image is available.</returns>
+    Task PullImageAsync(string image, IProgress<string>? progress = null, CancellationToken cancellationToken = default)
+        => PullImageIfNeededAsync(image, progress, cancellationToken);
 
     /// <summary>
     /// Pulls a Docker image if it's not available locally.

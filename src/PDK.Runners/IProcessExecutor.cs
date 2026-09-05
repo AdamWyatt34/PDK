@@ -40,12 +40,41 @@ public interface IProcessExecutor
     /// <param name="timeout">Optional timeout for the command execution. Defaults to 30 minutes.</param>
     /// <param name="cancellationToken">Token to cancel the operation.</param>
     /// <returns>The execution result including exit code, stdout, stderr, and duration.</returns>
+    /// <exception cref="OperationCanceledException">Thrown when <paramref name="cancellationToken"/> is cancelled.</exception>
     Task<ExecutionResult> ExecuteAsync(
         string command,
         string workingDirectory,
         IDictionary<string, string>? environment = null,
         TimeSpan? timeout = null,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Executes a process described by <paramref name="request"/>: either a shell command line or an
+    /// executable with an explicit argument list, with support for live output streaming and a timeout.
+    /// The default implementation ignores the streaming options and delegates to
+    /// <see cref="ExecuteAsync(string, string, IDictionary{string, string}?, TimeSpan?, CancellationToken)"/>.
+    /// </summary>
+    /// <param name="request">The process to execute.</param>
+    /// <param name="cancellationToken">Token to cancel the operation.</param>
+    /// <returns>The execution result including exit code, stdout, stderr, and duration.</returns>
+    /// <exception cref="OperationCanceledException">Thrown when <paramref name="cancellationToken"/> is cancelled.</exception>
+    Task<ExecutionResult> ExecuteAsync(
+        ProcessExecutionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var command = !string.IsNullOrEmpty(request.FileName)
+            ? ShellQuote.Join(new[] { request.FileName }.Concat(request.Arguments), Platform)
+            : request.Command ?? string.Empty;
+
+        return ExecuteAsync(
+            command,
+            request.WorkingDirectory,
+            request.Environment,
+            request.Timeout,
+            cancellationToken);
+    }
 
     /// <summary>
     /// Checks if a command or tool is available on the host system.

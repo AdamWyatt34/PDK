@@ -11,577 +11,400 @@ using PDK.Runners.StepExecutors;
 /// <summary>
 /// Unit tests for the HostCheckoutExecutor class.
 /// </summary>
-public class HostCheckoutExecutorTests
+public class HostCheckoutExecutorTests : IDisposable
 {
     private readonly Mock<IProcessExecutor> _mockProcessExecutor;
-    private readonly Mock<ILogger<HostCheckoutExecutor>> _mockLogger;
     private readonly HostCheckoutExecutor _executor;
+    private readonly List<ProcessExecutionRequest> _requests = new();
+    private readonly List<string> _tempDirectories = new();
 
     public HostCheckoutExecutorTests()
     {
         _mockProcessExecutor = new Mock<IProcessExecutor>();
-        _mockProcessExecutor.Setup(x => x.Platform).Returns(OperatingSystemPlatform.Windows);
+        _mockProcessExecutor.Setup(x => x.Platform).Returns(OperatingSystemPlatform.Linux);
         _mockProcessExecutor
             .Setup(x => x.IsToolAvailableAsync("git", It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
+        _mockProcessExecutor.RecordProcesses(_requests, RunnerMockExtensions.Ok("", "Cloning into '.'..."));
 
-        _mockLogger = new Mock<ILogger<HostCheckoutExecutor>>();
-        _executor = new HostCheckoutExecutor(_mockLogger.Object);
+        _executor = new HostCheckoutExecutor(new Mock<ILogger<HostCheckoutExecutor>>().Object);
     }
 
-    #region Constructor Tests
-
-    [Fact]
-    public void Constructor_WithNullLogger_ThrowsArgumentNullException()
+    public void Dispose()
     {
-        // Act & Assert
-        var act = () => new HostCheckoutExecutor(null!);
-        act.Should().Throw<ArgumentNullException>()
-            .WithParameterName("logger");
-    }
-
-    #endregion
-
-    #region Property Tests
-
-    [Fact]
-    public void StepType_ReturnsCheckout()
-    {
-        // Act
-        var result = _executor.StepType;
-
-        // Assert
-        result.Should().Be("checkout");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Git Not Available
-
-    [Fact]
-    public async Task ExecuteAsync_GitNotAvailable_ReturnsFailedResult()
-    {
-        // Arrange
-        _mockProcessExecutor
-            .Setup(x => x.IsToolAvailableAsync("git", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(false);
-
-        var step = CreateCheckoutStep("Checkout");
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeFalse();
-        result.ErrorOutput.Should().Contain("Git is not installed");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Self Checkout
-
-    [Fact]
-    public async Task ExecuteAsync_SelfCheckout_NoRepository_Succeeds()
-    {
-        // Arrange
-        var step = CreateCheckoutStep("Self Checkout");
-        // No repository specified = self checkout
-
-        SetupGitRevParseSuccess(); // Repo exists
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-        result.Output.Should().Contain("self checkout");
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_SelfCheckout_WithSelfValue_Succeeds()
-    {
-        // Arrange
-        var step = CreateCheckoutStep("Self Checkout");
-        step.With["repository"] = "self";
-
-        SetupGitRevParseSuccess();
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-        result.Output.Should().Contain("self checkout");
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_SelfCheckout_EmptyRepository_Succeeds()
-    {
-        // Arrange
-        var step = CreateCheckoutStep("Self Checkout");
-        step.With["repository"] = "";
-
-        SetupGitRevParseSuccess();
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-        result.Output.Should().Contain("self checkout");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Clone Repository
-
-    [Fact]
-    public async Task ExecuteAsync_CloneRepository_Succeeds()
-    {
-        // Arrange
-        var step = CreateCheckoutStep("Clone Repo");
-        step.With["repository"] = "https://github.com/user/repo.git";
-
-        SetupGitRevParseFailure(); // Repo doesn't exist
-        SetupGitCloneSuccess();
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-        result.Output.Should().Contain("Successfully cloned");
-
-        _mockProcessExecutor.Verify(
-            x => x.ExecuteAsync(
-                It.Is<string>(cmd => cmd.Contains("git clone")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_CloneFails_ReturnsFailedResult()
-    {
-        // Arrange
-        var step = CreateCheckoutStep("Clone Fail");
-        step.With["repository"] = "https://github.com/user/repo.git";
-
-        SetupGitRevParseFailure();
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.Is<string>(cmd => cmd.Contains("git clone")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ExecutionResult
+        foreach (var directory in _tempDirectories)
+        {
+            try
             {
-                ExitCode = 128,
-                StandardOutput = "",
-                StandardError = "fatal: repository not found",
-                Duration = TimeSpan.FromSeconds(1)
-            });
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeFalse();
-        result.ErrorOutput.Should().Contain("Failed to clone");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Pull Repository
-
-    [Fact]
-    public async Task ExecuteAsync_PullExistingRepo_Succeeds()
-    {
-        // Arrange
-        var step = CreateCheckoutStep("Pull Repo");
-        step.With["repository"] = "https://github.com/user/repo.git";
-
-        SetupGitRevParseSuccess(); // Repo already exists
-        SetupGitPullSuccess();
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-
-        _mockProcessExecutor.Verify(
-            x => x.ExecuteAsync(
-                It.Is<string>(cmd => cmd.Contains("git pull")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_PullFails_ReturnsFailedResult()
-    {
-        // Arrange
-        var step = CreateCheckoutStep("Pull Fail");
-        step.With["repository"] = "https://github.com/user/repo.git";
-
-        SetupGitRevParseSuccess();
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.Is<string>(cmd => cmd.Contains("git pull")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ExecutionResult
+                Directory.Delete(directory, true);
+            }
+            catch (IOException)
             {
-                ExitCode = 1,
-                StandardOutput = "",
-                StandardError = "error: Your local changes would be overwritten",
-                Duration = TimeSpan.FromSeconds(1)
-            });
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeFalse();
-        result.ErrorOutput.Should().Contain("Failed to pull");
+            }
+        }
     }
 
-    #endregion
-
-    #region ExecuteAsync - Checkout Ref
-
-    [Fact]
-    public async Task ExecuteAsync_CheckoutRef_Succeeds()
-    {
-        // Arrange
-        var step = CreateCheckoutStep("Checkout Ref");
-        step.With["repository"] = "https://github.com/user/repo.git";
-        step.With["ref"] = "feature-branch";
-
-        SetupGitRevParseFailure();
-        SetupGitCloneSuccess();
-        SetupGitCheckoutSuccess();
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-        result.Output.Should().Contain("Checked out feature-branch");
-
-        _mockProcessExecutor.Verify(
-            x => x.ExecuteAsync(
-                It.Is<string>(cmd => cmd.Contains("git checkout feature-branch")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_CheckoutBranch_Succeeds()
-    {
-        // Arrange
-        var step = CreateCheckoutStep("Checkout Branch");
-        step.With["repository"] = "https://github.com/user/repo.git";
-        step.With["branch"] = "main";
-
-        SetupGitRevParseFailure();
-        SetupGitCloneSuccess();
-        SetupGitCheckoutSuccess();
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-
-        _mockProcessExecutor.Verify(
-            x => x.ExecuteAsync(
-                It.Is<string>(cmd => cmd.Contains("git checkout main")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_CheckoutTag_Succeeds()
-    {
-        // Arrange
-        var step = CreateCheckoutStep("Checkout Tag");
-        step.With["repository"] = "https://github.com/user/repo.git";
-        step.With["tag"] = "v1.0.0";
-
-        SetupGitRevParseFailure();
-        SetupGitCloneSuccess();
-        SetupGitCheckoutSuccess();
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-
-        _mockProcessExecutor.Verify(
-            x => x.ExecuteAsync(
-                It.Is<string>(cmd => cmd.Contains("git checkout v1.0.0")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_SelfCheckout_IgnoresRef()
-    {
-        // Arrange
-        var step = CreateCheckoutStep("Self With Ref");
-        step.With["ref"] = "some-branch"; // Should be ignored for self checkout
-
-        SetupGitRevParseSuccess();
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-
-        // Should NOT call git checkout for self checkout
-        _mockProcessExecutor.Verify(
-            x => x.ExecuteAsync(
-                It.Is<string>(cmd => cmd.Contains("git checkout")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()),
-            Times.Never);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_CheckoutRefFails_ReturnsFailedResult()
-    {
-        // Arrange
-        var step = CreateCheckoutStep("Checkout Fail");
-        step.With["repository"] = "https://github.com/user/repo.git";
-        step.With["ref"] = "nonexistent-branch";
-
-        SetupGitRevParseFailure();
-        SetupGitCloneSuccess();
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.Is<string>(cmd => cmd.Contains("git checkout")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ExecutionResult
-            {
-                ExitCode = 1,
-                StandardOutput = "",
-                StandardError = "error: pathspec 'nonexistent-branch' did not match any file(s)",
-                Duration = TimeSpan.FromSeconds(1)
-            });
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeFalse();
-        result.ErrorOutput.Should().Contain("Failed to checkout ref");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Timing
-
-    [Fact]
-    public async Task ExecuteAsync_RecordsDuration()
-    {
-        // Arrange
-        var step = CreateCheckoutStep("Duration Test");
-        SetupGitRevParseSuccess();
-
-        var context = CreateTestContext();
-
-        // Act
-        var beforeExecute = DateTimeOffset.Now;
-        var result = await _executor.ExecuteAsync(step, context);
-        var afterExecute = DateTimeOffset.Now;
-
-        // Assert
-        result.StartTime.Should().BeOnOrAfter(beforeExecute);
-        result.EndTime.Should().BeOnOrBefore(afterExecute);
-        result.Duration.Should().BeGreaterOrEqualTo(TimeSpan.Zero);
-    }
-
-    #endregion
-
-    #region Helper Methods
-
-    private Step CreateCheckoutStep(string name)
+    private static Step CreateCheckoutStep()
     {
         return new Step
         {
             Id = Guid.NewGuid().ToString(),
-            Name = name,
+            Name = "Checkout",
             Type = StepType.Checkout,
-            Script = null,
-            Shell = null,
             With = new Dictionary<string, string>(),
-            Environment = new Dictionary<string, string>(),
-            ContinueOnError = false
+            Environment = new Dictionary<string, string>()
         };
     }
 
-    private HostExecutionContext CreateTestContext()
+    private HostExecutionContext CreateTestContext(string? workspace = null)
     {
-        var tempPath = Path.Combine(Path.GetTempPath(), $"pdk-test-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(tempPath);
+        var tempPath = workspace ?? CreateTempDirectory();
 
         return new HostExecutionContext
         {
             ProcessExecutor = _mockProcessExecutor.Object,
             WorkspacePath = tempPath,
-            Environment = new Dictionary<string, string>
-            {
-                ["WORKSPACE"] = tempPath
-            },
+            Environment = new Dictionary<string, string> { ["WORKSPACE"] = tempPath },
             WorkingDirectory = tempPath,
-            Platform = OperatingSystemPlatform.Windows,
-            JobInfo = new JobMetadata
-            {
-                JobName = "TestJob",
-                JobId = "job-123",
-                Runner = "host"
-            }
+            Platform = OperatingSystemPlatform.Linux,
+            JobInfo = new JobMetadata { JobName = "TestJob", JobId = "job-123", Runner = "host" }
         };
     }
 
-    private void SetupGitRevParseSuccess()
+    private string CreateTempDirectory()
     {
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.Is<string>(cmd => cmd.Contains("git rev-parse")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ExecutionResult
-            {
-                ExitCode = 0,
-                StandardOutput = ".git",
-                StandardError = "",
-                Duration = TimeSpan.FromMilliseconds(100)
-            });
+        var tempPath = Path.Combine(Path.GetTempPath(), $"pdk-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempPath);
+        _tempDirectories.Add(tempPath);
+        return tempPath;
     }
 
-    private void SetupGitRevParseFailure()
+    private ProcessExecutionRequest Git(string verb) => _requests.Single(r => r.FileName == "git" && r.Arguments[0] == verb);
+
+    [Fact]
+    public void Constructor_WithNullLogger_ThrowsArgumentNullException()
     {
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.Is<string>(cmd => cmd.Contains("git rev-parse")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ExecutionResult
-            {
-                ExitCode = 128,
-                StandardOutput = "",
-                StandardError = "fatal: not a git repository",
-                Duration = TimeSpan.FromMilliseconds(100)
-            });
+        var act = () => new HostCheckoutExecutor(null!);
+        act.Should().Throw<ArgumentNullException>().WithParameterName("logger");
     }
 
-    private void SetupGitCloneSuccess()
+    [Fact]
+    public void StepType_ReturnsCheckout()
     {
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.Is<string>(cmd => cmd.Contains("git clone")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ExecutionResult
-            {
-                ExitCode = 0,
-                StandardOutput = "",
-                StandardError = "Cloning into '.'...",
-                Duration = TimeSpan.FromSeconds(2)
-            });
+        _executor.StepType.Should().Be("checkout");
     }
 
-    private void SetupGitPullSuccess()
+    [Fact]
+    public async Task ExecuteAsync_GitNotAvailable_ReturnsFailedResult()
     {
         _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.Is<string>(cmd => cmd.Contains("git pull")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ExecutionResult
-            {
-                ExitCode = 0,
-                StandardOutput = "Already up to date.",
-                StandardError = "",
-                Duration = TimeSpan.FromSeconds(1)
-            });
+            .Setup(x => x.IsToolAvailableAsync("git", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        var result = await _executor.ExecuteAsync(CreateCheckoutStep(), CreateTestContext());
+
+        result.Success.Should().BeFalse();
+        result.ErrorOutput.Should().Contain("Git is not installed");
     }
 
-    private void SetupGitCheckoutSuccess()
+    #region Self checkout
+
+    [Fact]
+    public async Task ExecuteAsync_SelfCheckout_WithGitDirectory_Succeeds()
     {
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.Is<string>(cmd => cmd.Contains("git checkout")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ExecutionResult
+        var context = CreateTestContext();
+        Directory.CreateDirectory(Path.Combine(context.WorkspacePath, ".git"));
+
+        var result = await _executor.ExecuteAsync(CreateCheckoutStep(), context);
+
+        result.Success.Should().BeTrue();
+        result.Output.Should().Contain("self checkout").And.Contain("using as-is");
+        _requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SelfCheckout_WithGitFile_IsTreatedAsRepository()
+    {
+        var context = CreateTestContext();
+        File.WriteAllText(Path.Combine(context.WorkspacePath, ".git"), "gitdir: ../.git/worktrees/x");
+
+        var result = await _executor.ExecuteAsync(CreateCheckoutStep(), context);
+
+        result.Output.Should().Contain("using as-is");
+    }
+
+    [Theory]
+    [InlineData("self")]
+    [InlineData("")]
+    public async Task ExecuteAsync_SelfValues_MeanSelfCheckout(string repository)
+    {
+        var context = CreateTestContext();
+        Directory.CreateDirectory(Path.Combine(context.WorkspacePath, ".git"));
+        var step = CreateCheckoutStep();
+        step.With["repository"] = repository;
+
+        var result = await _executor.ExecuteAsync(step, context);
+
+        result.Success.Should().BeTrue();
+        result.Output.Should().Contain("self checkout");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SelfCheckout_NoGit_ReportsWorkspaceReady()
+    {
+        var context = CreateTestContext();
+        File.WriteAllText(Path.Combine(context.WorkspacePath, "file.txt"), "x");
+
+        var result = await _executor.ExecuteAsync(CreateCheckoutStep(), context);
+
+        result.Success.Should().BeTrue();
+        result.Output.Should().Contain("Workspace ready (no git repository detected)");
+        _requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SelfCheckout_ParentRepositoryIsNotConsulted()
+    {
+        var parent = CreateTempDirectory();
+        Directory.CreateDirectory(Path.Combine(parent, ".git"));
+        var workspace = Path.Combine(parent, "nested");
+        Directory.CreateDirectory(workspace);
+        File.WriteAllText(Path.Combine(workspace, "a.txt"), "x");
+
+        var result = await _executor.ExecuteAsync(CreateCheckoutStep(), CreateTestContext(workspace));
+
+        result.Output.Should().Contain("no git repository detected");
+        _requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SelfCheckout_WithRef_RunsGitCheckout()
+    {
+        var context = CreateTestContext();
+        Directory.CreateDirectory(Path.Combine(context.WorkspacePath, ".git"));
+        var step = CreateCheckoutStep();
+        step.With["ref"] = "some-branch";
+
+        var result = await _executor.ExecuteAsync(step, context);
+
+        result.Success.Should().BeTrue();
+        Git("checkout").Arguments.Should().Equal("checkout", "some-branch");
+        Git("checkout").WorkingDirectory.Should().Be(context.WorkspacePath);
+        result.Output.Should().Contain("Checked out some-branch");
+    }
+
+    #endregion
+
+    #region Clone
+
+    [Fact]
+    public async Task ExecuteAsync_CloneRepository_Succeeds()
+    {
+        var context = CreateTestContext();
+        var step = CreateCheckoutStep();
+        step.With["repository"] = "https://github.com/user/repo.git";
+
+        var result = await _executor.ExecuteAsync(step, context);
+
+        result.Success.Should().BeTrue();
+        result.Output.Should().Contain("Successfully cloned");
+        result.Output.Should().Contain("Cloning into");
+        Git("clone").Arguments.Should().Equal("clone", "--", "https://github.com/user/repo.git", context.WorkspacePath);
+        Git("clone").Environment.Should().Contain(new KeyValuePair<string, string>("GIT_TERMINAL_PROMPT", "0"));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_GitHubShorthand_IsExpanded()
+    {
+        var step = CreateCheckoutStep();
+        step.With["repository"] = "user/repo";
+
+        await _executor.ExecuteAsync(step, CreateTestContext());
+
+        Git("clone").Arguments.Should().Contain("https://github.com/user/repo");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithPath_ClonesIntoSubdirectory()
+    {
+        var context = CreateTestContext();
+        var step = CreateCheckoutStep();
+        step.With["repository"] = "https://github.com/user/repo.git";
+        step.With["path"] = "deps/repo";
+
+        await _executor.ExecuteAsync(step, context);
+
+        var target = Path.Combine(context.WorkspacePath, "deps", "repo");
+        Git("clone").Arguments[^1].Should().Be(target);
+        Directory.Exists(target).Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("ref", "feature-branch")]
+    [InlineData("branch", "main")]
+    [InlineData("tag", "v1.0.0")]
+    public async Task ExecuteAsync_RefInputs_UseCloneBranch(string input, string value)
+    {
+        var step = CreateCheckoutStep();
+        step.With["repository"] = "https://github.com/user/repo.git";
+        step.With[input] = value;
+
+        var result = await _executor.ExecuteAsync(step, CreateTestContext());
+
+        result.Success.Should().BeTrue();
+        Git("clone").Arguments.Should().ContainInOrder("--branch", value);
+        _requests.Should().NotContain(r => r.Arguments[0] == "checkout");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ShaRef_FetchesAndChecksOut()
+    {
+        var sha = new string('b', 40);
+        var step = CreateCheckoutStep();
+        step.With["repository"] = "https://github.com/user/repo.git";
+        step.With["ref"] = sha;
+        step.With["fetch-depth"] = "1";
+
+        await _executor.ExecuteAsync(step, CreateTestContext());
+
+        Git("clone").Arguments.Should().ContainInOrder("--depth", "1");
+        Git("fetch").Arguments.Should().Equal("fetch", "--depth", "1", "origin", sha);
+        Git("checkout").Arguments.Should().Equal("checkout", sha);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_Submodules_AddsRecurseFlag()
+    {
+        var step = CreateCheckoutStep();
+        step.With["repository"] = "https://github.com/user/repo.git";
+        step.With["submodules"] = "true";
+
+        await _executor.ExecuteAsync(step, CreateTestContext());
+
+        Git("clone").Arguments.Should().Contain("--recurse-submodules");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WorkspaceWithFilesAndNoGit_SkipsClone()
+    {
+        var context = CreateTestContext();
+        File.WriteAllText(Path.Combine(context.WorkspacePath, "existing.txt"), "x");
+        var step = CreateCheckoutStep();
+        step.With["repository"] = "https://github.com/user/repo.git";
+
+        var result = await _executor.ExecuteAsync(step, context);
+
+        result.Success.Should().BeTrue();
+        result.Output.Should().Contain("workspace already contains sources (no .git) - skipping clone");
+        _requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ExistingRepository_PullsLatest()
+    {
+        var context = CreateTestContext();
+        Directory.CreateDirectory(Path.Combine(context.WorkspacePath, ".git"));
+        var step = CreateCheckoutStep();
+        step.With["repository"] = "https://github.com/user/repo.git";
+
+        var result = await _executor.ExecuteAsync(step, context);
+
+        result.Success.Should().BeTrue();
+        Git("pull").Arguments.Should().Equal("pull", "--ff-only");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_PullFails_ReturnsFailedResult()
+    {
+        var context = CreateTestContext();
+        Directory.CreateDirectory(Path.Combine(context.WorkspacePath, ".git"));
+        _mockProcessExecutor.SetupProcess(r => r.Arguments[0] == "pull")
+            .ReturnsAsync(RunnerMockExtensions.Fail(1, "error: Your local changes would be overwritten"));
+        var step = CreateCheckoutStep();
+        step.With["repository"] = "https://github.com/user/repo.git";
+
+        var result = await _executor.ExecuteAsync(step, context);
+
+        result.Success.Should().BeFalse();
+        result.ErrorOutput.Should().Contain("Failed to pull").And.Contain("overwritten");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_CloneFails_ReturnsFailedResult()
+    {
+        _mockProcessExecutor.SetupProcess(r => r.Arguments[0] == "clone")
+            .ReturnsAsync(RunnerMockExtensions.Fail(128, "fatal: repository not found"));
+        var step = CreateCheckoutStep();
+        step.With["repository"] = "https://github.com/user/repo.git";
+
+        var result = await _executor.ExecuteAsync(step, CreateTestContext());
+
+        result.Success.Should().BeFalse();
+        result.ExitCode.Should().Be(128);
+        result.ErrorOutput.Should().Contain("Failed to clone").And.Contain("repository not found");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_CheckoutRefFails_ReturnsFailedResult()
+    {
+        var context = CreateTestContext();
+        Directory.CreateDirectory(Path.Combine(context.WorkspacePath, ".git"));
+        _mockProcessExecutor.SetupProcess(r => r.Arguments[0] == "checkout")
+            .ReturnsAsync(RunnerMockExtensions.Fail(1, "error: pathspec 'nonexistent-branch' did not match any file(s)"));
+        var step = CreateCheckoutStep();
+        step.With["repository"] = "https://github.com/user/repo.git";
+        step.With["ref"] = "nonexistent-branch";
+
+        var result = await _executor.ExecuteAsync(step, context);
+
+        result.Success.Should().BeFalse();
+        result.ErrorOutput.Should().Contain("Failed to checkout ref");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ProcessExecutorThrows_ReturnsFailedResult()
+    {
+        _mockProcessExecutor.SetupProcess().ThrowsAsync(new InvalidOperationException("boom"));
+        var step = CreateCheckoutStep();
+        step.With["repository"] = "https://github.com/user/repo.git";
+
+        var result = await _executor.ExecuteAsync(step, CreateTestContext());
+
+        result.Success.Should().BeFalse();
+        result.ErrorOutput.Should().Contain("Checkout failed").And.Contain("boom");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_Cancellation_Propagates()
+    {
+        using var cts = new CancellationTokenSource();
+        _mockProcessExecutor.SetupProcess()
+            .Returns<ProcessExecutionRequest, CancellationToken>((_, _) =>
             {
-                ExitCode = 0,
-                StandardOutput = "",
-                StandardError = "Switched to branch 'feature-branch'",
-                Duration = TimeSpan.FromMilliseconds(500)
+                cts.Cancel();
+                return Task.FromCanceled<ExecutionResult>(cts.Token);
             });
+        var step = CreateCheckoutStep();
+        step.With["repository"] = "https://github.com/user/repo.git";
+
+        Func<Task> act = () => _executor.ExecuteAsync(step, CreateTestContext(), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RecordsDuration()
+    {
+        var context = CreateTestContext();
+        Directory.CreateDirectory(Path.Combine(context.WorkspacePath, ".git"));
+
+        var before = DateTimeOffset.Now;
+        var result = await _executor.ExecuteAsync(CreateCheckoutStep(), context);
+        var after = DateTimeOffset.Now;
+
+        result.StartTime.Should().BeOnOrAfter(before);
+        result.EndTime.Should().BeOnOrBefore(after);
+        result.Duration.Should().BeGreaterOrEqualTo(TimeSpan.Zero);
     }
 
     #endregion

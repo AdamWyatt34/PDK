@@ -2,7 +2,6 @@ namespace PDK.Runners.StepExecutors;
 
 using PDK.Core.Models;
 using IContainerManager = PDK.Runners.IContainerManager;
-using PDK.Runners.Models;
 
 /// <summary>
 /// Resolves file paths and expands wildcard patterns in container environments.
@@ -26,21 +25,18 @@ public static class PathResolver
             return workspaceRoot;
         }
 
-        var normalizedPath = path.Trim();
+        var normalizedPath = path.Trim().Replace('\\', '/');
 
-        // If absolute path (starts with /), use as-is
         if (normalizedPath.StartsWith('/'))
         {
             return NormalizePath(normalizedPath);
         }
 
-        // Remove leading ./ if present
-        if (normalizedPath.StartsWith("./"))
+        if (normalizedPath.StartsWith("./", StringComparison.Ordinal))
         {
-            normalizedPath = normalizedPath.Substring(2);
+            normalizedPath = normalizedPath[2..];
         }
 
-        // Combine with workspace root
         var combined = $"{workspaceRoot.TrimEnd('/')}/{normalizedPath}";
         return NormalizePath(combined);
     }
@@ -52,55 +48,24 @@ public static class PathResolver
     /// <param name="step">The step containing an optional working directory.</param>
     /// <param name="context">The execution context containing the container workspace path.</param>
     /// <returns>The resolved absolute working directory path in the container.</returns>
-    /// <remarks>
-    /// If the step specifies a working directory, it is resolved relative to the container workspace path.
-    /// Otherwise, the context's container workspace path is used.
-    /// </remarks>
     public static string ResolveWorkingDirectory(Step step, ExecutionContext context)
     {
-        if (string.IsNullOrWhiteSpace(step.WorkingDirectory))
-        {
-            return context.ContainerWorkspacePath;
-        }
+        ArgumentNullException.ThrowIfNull(step);
+        ArgumentNullException.ThrowIfNull(context);
 
-        var workingDir = step.WorkingDirectory.Trim();
-
-        // If absolute path, use as-is
-        if (workingDir.StartsWith('/'))
-        {
-            return NormalizePath(workingDir);
-        }
-
-        // Remove leading ./ if present
-        if (workingDir.StartsWith("./"))
-        {
-            workingDir = workingDir.Substring(2);
-        }
-
-        // Combine with workspace path
-        var combined = $"{context.ContainerWorkspacePath.TrimEnd('/')}/{workingDir}";
-        return NormalizePath(combined);
+        return ResolvePath(step.WorkingDirectory ?? string.Empty, context.ContainerWorkspacePath);
     }
 
     /// <summary>
-    /// Expands wildcard patterns to matching file paths in the container.
+    /// Expands a wildcard pattern to matching file paths in the container.
     /// </summary>
     /// <param name="containerManager">The container manager to use for command execution.</param>
     /// <param name="containerId">The ID of the container.</param>
     /// <param name="pattern">The wildcard pattern to expand (e.g., "**/*.csproj", "*.sln").</param>
     /// <param name="workingDirectory">The working directory to search from (defaults to current directory).</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>A list of matching file paths, or an empty list if no matches found.</returns>
-    /// <remarks>
-    /// <para>Uses the container's 'find' command to expand wildcards accurately.</para>
-    /// <para>Supported patterns:</para>
-    /// <list type="bullet">
-    /// <item><description>**/*.csproj - All .csproj files recursively</description></item>
-    /// <item><description>*.sln - Solution files in current directory</description></item>
-    /// <item><description>src/**/*.cs - All .cs files under src/ recursively</description></item>
-    /// </list>
-    /// </remarks>
-    public static async Task<IReadOnlyList<string>> ExpandWildcardAsync(
+    /// <returns>Matching file paths relative to the working directory (forward slashes, sorted), or an empty list.</returns>
+    public static Task<IReadOnlyList<string>> ExpandWildcardAsync(
         IContainerManager containerManager,
         string containerId,
         string pattern,
@@ -109,57 +74,106 @@ public static class PathResolver
     {
         if (string.IsNullOrWhiteSpace(pattern))
         {
+            return Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
+        }
+
+        return ExpandWildcardsAsync(containerManager, containerId, new[] { pattern }, workingDirectory, cancellationToken);
+    }
+
+    /// <summary>
+    /// Expands several wildcard patterns (with optional <c>!</c> exclusions) to matching file paths in the container.
+    /// </summary>
+    /// <param name="containerManager">The container manager to use for command execution.</param>
+    /// <param name="containerId">The ID of the container.</param>
+    /// <param name="patterns">The include patterns and <c>!</c>-prefixed exclude patterns.</param>
+    /// <param name="workingDirectory">The working directory to search from.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Matching file paths relative to the working directory (forward slashes, sorted), or an empty list.</returns>
+    /// <remarks>
+    /// Files are listed with <c>find</c> (skipping <c>.git</c>) and matched here with proper glob semantics:
+    /// <c>**</c> spans directories (including zero directories, so <c>dir/**/x</c> matches <c>dir/x</c>) while
+    /// <c>*</c> and <c>?</c> stay within one path segment.
+    /// </remarks>
+    public static async Task<IReadOnlyList<string>> ExpandWildcardsAsync(
+        IContainerManager containerManager,
+        string containerId,
+        IReadOnlyList<string> patterns,
+        string workingDirectory = ".",
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(containerManager);
+        ArgumentNullException.ThrowIfNull(patterns);
+
+        var cleaned = patterns.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p.Trim()).ToList();
+        if (cleaned.Count == 0 || cleaned.All(p => p.StartsWith('!')))
+        {
             return Array.Empty<string>();
         }
 
         try
         {
-            // Convert glob pattern to find-compatible pattern
-            var findPattern = ConvertGlobToFindPattern(pattern);
+            var findCommand = BuildFindCommand(cleaned);
 
-            // Execute find command in the container
             var result = await containerManager.ExecuteCommandAsync(
                 containerId,
-                $"find . -path '{findPattern}' -type f",
+                findCommand,
                 workingDirectory,
                 null,
-                cancellationToken);
+                cancellationToken).ConfigureAwait(false);
 
             if (result.ExitCode != 0 || string.IsNullOrWhiteSpace(result.StandardOutput))
             {
                 return Array.Empty<string>();
             }
 
-            // Parse output into list of paths
             var paths = result.StandardOutput
                 .Split('\n', StringSplitOptions.RemoveEmptyEntries)
                 .Select(p => p.Trim())
-                .Where(p => !string.IsNullOrWhiteSpace(p))
-                .ToList();
+                .Where(p => p.Length > 0);
 
-            return paths.AsReadOnly();
+            return GlobPattern.Filter(paths, cleaned, ignoreCase: false);
         }
-        catch
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // Return empty list on any error
+            throw;
+        }
+        catch (Exception)
+        {
             return Array.Empty<string>();
         }
     }
 
     /// <summary>
-    /// Normalizes a path by removing redundant slashes and resolving relative components.
+    /// Builds the <c>find</c> command that lists candidate files for the patterns. When every include pattern
+    /// ends with the same file-name glob, a <c>-name</c> filter keeps the listing small.
     /// </summary>
-    /// <param name="path">The path to normalize.</param>
-    /// <returns>The normalized path.</returns>
-    private static string NormalizePath(string path)
+    internal static string BuildFindCommand(IReadOnlyList<string> patterns)
     {
-        // Remove double slashes
-        while (path.Contains("//"))
+        var includes = patterns.Where(p => !p.StartsWith('!')).Select(GlobPattern.Normalize).ToList();
+        var leaves = includes
+            .Select(p => p.Contains('/') ? p[(p.LastIndexOf('/') + 1)..] : p)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        var nameFilter = string.Empty;
+        if (leaves.Count == 1 && leaves[0].Length > 0 && !leaves[0].Contains("**", StringComparison.Ordinal))
         {
-            path = path.Replace("//", "/");
+            nameFilter = $" -name {ShellQuote.Posix(leaves[0])}";
         }
 
-        // Split path into components
+        return $"find . -path ./.git -prune -o -type f{nameFilter} -print";
+    }
+
+    /// <summary>
+    /// Normalizes a path by removing redundant slashes and resolving relative components.
+    /// </summary>
+    private static string NormalizePath(string path)
+    {
+        while (path.Contains("//", StringComparison.Ordinal))
+        {
+            path = path.Replace("//", "/", StringComparison.Ordinal);
+        }
+
         var components = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
         var normalized = new List<string>();
 
@@ -167,12 +181,11 @@ public static class PathResolver
         {
             if (component == ".")
             {
-                // Skip current directory references
                 continue;
             }
-            else if (component == "..")
+
+            if (component == "..")
             {
-                // Go up one directory (remove last component if exists)
                 if (normalized.Count > 0)
                 {
                     normalized.RemoveAt(normalized.Count - 1);
@@ -184,30 +197,7 @@ public static class PathResolver
             }
         }
 
-        // Reconstruct path (preserve leading slash for absolute paths)
         var result = string.Join("/", normalized);
         return path.StartsWith('/') ? "/" + result : result;
-    }
-
-    /// <summary>
-    /// Converts a glob pattern to a find-compatible pattern.
-    /// </summary>
-    /// <param name="pattern">The glob pattern (e.g., "**/*.csproj").</param>
-    /// <returns>A find-compatible pattern (e.g., "*/*.csproj").</returns>
-    private static string ConvertGlobToFindPattern(string pattern)
-    {
-        // Remove leading ./ if present
-        if (pattern.StartsWith("./"))
-        {
-            pattern = pattern.Substring(2);
-        }
-
-        // If pattern doesn't start with *, add ./ prefix for find
-        if (!pattern.StartsWith('*') && !pattern.StartsWith("./"))
-        {
-            pattern = "./" + pattern;
-        }
-
-        return pattern;
     }
 }
