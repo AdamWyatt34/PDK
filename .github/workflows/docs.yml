@@ -8,8 +8,15 @@ on:
       - 'docs/**'
       - 'docfx.json'
       - '.github/workflows/docs.yml'
-  release:
-    types: [published]
+      # docfx publishes the root markdown as well (docfx.json content includes "*.md"), and the
+      # release commit changes CHANGELOG.md on main - without this the site's changelog page
+      # would still show the previous release. "*" does not cross directories, so this is root only.
+      - '*.md'
+  # No "release: [published]" trigger. That event runs on the tag ref (refs/tags/v2.0.0), and the
+  # github-pages environment only allows deployments from the default branch, so the deploy job is
+  # rejected before a runner is assigned. The release commit is pushed to main with the PAT, so the
+  # push trigger above rebuilds the site anyway. To deploy from tags instead, allow them under
+  # Settings > Environments > github-pages > Deployment branches and tags, then add the trigger back.
   workflow_dispatch:
 
 permissions:

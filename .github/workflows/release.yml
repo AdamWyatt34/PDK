@@ -183,8 +183,8 @@ jobs:
           fi
 
       # The release is created with the PAT on purpose: events raised with the default GITHUB_TOKEN never
-      # trigger other workflows, so the docs workflow's "release: [published]" trigger would not fire and
-      # the documentation site would not be rebuilt for the new version.
+      # trigger other workflows. The same applies to the push above, which is what rebuilds the
+      # documentation site for the new version - the docs workflow watches CHANGELOG.md on main.
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

@@ -76,7 +76,7 @@ To output a literal `${...}`:
 
 | Variable | Description |
 |----------|-------------|
-| `PDK_VERSION` | PDK version (e.g., "1.0.0") |
+| `PDK_VERSION` | PDK version (e.g., "2.0.0") |
 | `PDK_WORKSPACE` | Workspace directory path |
 | `PDK_RUNNER` | Selected runner: `host` or `docker` |
 | `PDK_JOB` | Current job name |
