@@ -4,8 +4,11 @@ using PDK.Core.Models;
 using PDK.Runners.Models;
 
 /// <summary>
-/// Executes checkout steps to clone or pull git repositories.
-/// Handles git operations including clone, pull, and branch/tag checkout.
+/// Executes checkout steps inside the job container.
+/// Supports self checkout (the mounted workspace), cloning a repository (GitHub <c>owner/repo</c> shorthand
+/// or any git URL) into the workspace or a <c>path:</c> subdirectory, <c>ref</c>/<c>branch</c>/<c>tag</c>,
+/// <c>fetch-depth</c>, <c>submodules</c> and <c>token</c>. A workspace that already contains files but no
+/// <c>.git</c> is never overwritten (the clone is skipped with a note).
 /// </summary>
 public class CheckoutStepExecutor : IStepExecutor
 {
@@ -13,266 +16,121 @@ public class CheckoutStepExecutor : IStepExecutor
     public string StepType => "checkout";
 
     /// <inheritdoc/>
-    public async Task<StepExecutionResult> ExecuteAsync(
+    public Task<StepExecutionResult> ExecuteAsync(
         Step step,
         ExecutionContext context,
         CancellationToken cancellationToken = default)
     {
-        // Resolve repository URL (null means "self" checkout - use current workspace)
-        var repositoryUrl = GetRepositoryUrl(step);
+        return ExecuteAsync(step, context, StepExecutionOptions.None, cancellationToken);
+    }
 
-        // Resolve optional ref/branch/tag
-        var checkoutRef = GetCheckoutRef(step);
+    /// <inheritdoc/>
+    public async Task<StepExecutionResult> ExecuteAsync(
+        Step step,
+        ExecutionContext context,
+        StepExecutionOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(step);
+        ArgumentNullException.ThrowIfNull(context);
 
         var startTime = DateTimeOffset.Now;
-        var outputBuilder = new System.Text.StringBuilder();
-        var errorBuilder = new System.Text.StringBuilder();
-        var lastExitCode = 0;
+        var effectiveOptions = StepExecutionHelpers.ResolveOptions(context, options);
 
         try
         {
-            // Check if repository already exists in workspace
-            var repoExists = await CheckRepositoryExistsAsync(context, cancellationToken);
-
-            if (repositoryUrl == null)
-            {
-                // Self checkout - workspace should already have the code mounted
-                // This is the common case for local development
-                outputBuilder.AppendLine("Using local workspace (self checkout)");
-
-                if (repoExists)
-                {
-                    // Optionally pull latest if we're in a git repo
-                    // Skip pull for local development - user's workspace is authoritative
-                    outputBuilder.AppendLine("Workspace contains git repository - using as-is");
-                }
-                else
-                {
-                    // No git repo, but that's OK for self checkout
-                    // The workspace files are mounted and ready to use
-                    outputBuilder.AppendLine("Workspace ready (no git repository detected)");
-                }
-            }
-            else if (repoExists)
-            {
-                // Repository exists - pull latest changes
-                var pullResult = await ExecuteGitCommandAsync(
-                    "git pull",
-                    context,
-                    cancellationToken);
-
-                outputBuilder.AppendLine(pullResult.StandardOutput);
-                errorBuilder.AppendLine(pullResult.StandardError);
-                lastExitCode = pullResult.ExitCode;
-
-                if (!pullResult.Success)
-                {
-                    throw new ContainerException(
-                        $"Failed to pull latest changes for step '{step.Name}'. Exit code: {pullResult.ExitCode}")
-                    {
-                        ContainerId = context.ContainerId,
-                        Command = "git pull"
-                    };
-                }
-            }
-            else
-            {
-                // Repository doesn't exist - clone it
-                var cloneCommand = $"git clone {repositoryUrl} {context.ContainerWorkspacePath}";
-                var cloneResult = await ExecuteGitCommandAsync(
-                    cloneCommand,
-                    context,
-                    cancellationToken);
-
-                outputBuilder.AppendLine(cloneResult.StandardOutput);
-                errorBuilder.AppendLine(cloneResult.StandardError);
-                lastExitCode = cloneResult.ExitCode;
-
-                if (!cloneResult.Success)
-                {
-                    var errorMessage = $"Failed to clone repository for step '{step.Name}'. Exit code: {cloneResult.ExitCode}";
-                    if (!string.IsNullOrWhiteSpace(cloneResult.StandardError))
-                    {
-                        errorMessage += $"\nGit error: {cloneResult.StandardError}";
-                    }
-
-                    throw new ContainerException(errorMessage)
-                    {
-                        ContainerId = context.ContainerId,
-                        Command = cloneCommand
-                    };
-                }
-            }
-
-            // Checkout specific ref/branch/tag if specified (only for explicit repos)
-            if (!string.IsNullOrWhiteSpace(checkoutRef) && repositoryUrl != null)
-            {
-                var checkoutCommand = $"git checkout {checkoutRef}";
-                var checkoutResult = await ExecuteGitCommandAsync(
-                    checkoutCommand,
-                    context,
-                    cancellationToken);
-
-                outputBuilder.AppendLine(checkoutResult.StandardOutput);
-                errorBuilder.AppendLine(checkoutResult.StandardError);
-                lastExitCode = checkoutResult.ExitCode;
-
-                if (!checkoutResult.Success)
-                {
-                    var errorMessage = $"Failed to checkout ref '{checkoutRef}' for step '{step.Name}'. Exit code: {checkoutResult.ExitCode}";
-                    if (!string.IsNullOrWhiteSpace(checkoutResult.StandardError))
-                    {
-                        errorMessage += $"\nGit error: {checkoutResult.StandardError}";
-                    }
-
-                    throw new ContainerException(errorMessage)
-                    {
-                        ContainerId = context.ContainerId,
-                        Command = checkoutCommand
-                    };
-                }
-            }
-
-            var endTime = DateTimeOffset.Now;
-
-            return new StepExecutionResult
-            {
-                StepName = step.Name,
-                Success = true,
-                ExitCode = lastExitCode,
-                Output = outputBuilder.ToString(),
-                ErrorOutput = string.Empty,
-                Duration = endTime - startTime,
-                StartTime = startTime,
-                EndTime = endTime
-            };
+            var shell = new ContainerCheckoutShell(step, context, effectiveOptions);
+            return await CheckoutFlow.RunAsync(step, shell, startTime, cancellationToken).ConfigureAwait(false);
         }
-        catch (ContainerException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // Re-throw container exceptions as-is
             throw;
         }
         catch (Exception ex)
         {
-            var endTime = DateTimeOffset.Now;
-
-            // Return failed result for other exceptions
-            return new StepExecutionResult
-            {
-                StepName = step.Name,
-                Success = false,
-                ExitCode = lastExitCode,
-                Output = outputBuilder.ToString(),
-                ErrorOutput = ex.Message,
-                Duration = endTime - startTime,
-                StartTime = startTime,
-                EndTime = endTime
-            };
+            return StepExecutionHelpers.Failed(step.Name, StepExecutionHelpers.FormatException(ex, "Checkout failed"), startTime);
         }
     }
 
-    /// <summary>
-    /// Extracts the repository URL from the step configuration.
-    /// Returns null for "self" checkout (use current workspace).
-    /// </summary>
-    /// <param name="step">The step containing checkout configuration.</param>
-    /// <returns>The repository URL to clone, or null for self/local checkout.</returns>
-    private static string? GetRepositoryUrl(Step step)
+    private sealed class ContainerCheckoutShell : ICheckoutShell
     {
-        // Try to get repository from With dictionary
-        if (step.With.TryGetValue("repository", out var repository))
+        private readonly Step _step;
+        private readonly ExecutionContext _context;
+        private readonly StepExecutionOptions _options;
+
+        public ContainerCheckoutShell(Step step, ExecutionContext context, StepExecutionOptions options)
         {
-            if (string.IsNullOrWhiteSpace(repository))
+            _step = step;
+            _context = context;
+            _options = options;
+        }
+
+        public string ResolveDirectory(string? relativePath)
+        {
+            return PathResolver.ResolvePath(relativePath ?? string.Empty, _context.ContainerWorkspacePath);
+        }
+
+        public async Task<WorkspaceState> ProbeAsync(string directory, CancellationToken cancellationToken)
+        {
+            var quoted = ShellQuote.Posix(directory);
+            var probe =
+                $"if [ -e {quoted}/.git ]; then echo git; " +
+                $"elif [ -d {quoted} ] && [ -n \"$(ls -A {quoted} 2>/dev/null)\" ]; then echo files; " +
+                "else echo empty; fi";
+
+            var result = await _context.ContainerManager.ExecuteCommandAsync(
+                new ContainerExecRequest
+                {
+                    ContainerId = _context.ContainerId,
+                    Command = probe,
+                    WorkingDirectory = _context.ContainerWorkspacePath
+                },
+                cancellationToken).ConfigureAwait(false);
+
+            var answer = result.StandardOutput.Trim();
+            if (string.Equals(answer, "git", StringComparison.Ordinal))
             {
-                // Empty repository means use current workspace (self)
-                return null;
+                return WorkspaceState.Git;
             }
 
-            // Handle special value "self" (Azure DevOps style)
-            if (string.Equals(repository, "self", StringComparison.OrdinalIgnoreCase))
-            {
-                return null; // Use current workspace
-            }
-
-            return repository;
+            return string.Equals(answer, "files", StringComparison.Ordinal) ? WorkspaceState.Files : WorkspaceState.Empty;
         }
 
-        // No repository specified = checkout self (current workspace)
-        // This is the default behavior for actions/checkout@v4
-        return null;
-    }
-
-    /// <summary>
-    /// Extracts the optional ref/branch/tag to checkout from the step configuration.
-    /// </summary>
-    /// <param name="step">The step containing checkout configuration.</param>
-    /// <returns>The ref/branch/tag to checkout, or null if not specified.</returns>
-    private static string? GetCheckoutRef(Step step)
-    {
-        // Priority: ref > branch > tag
-        if (step.With.TryGetValue("ref", out var refValue) && !string.IsNullOrWhiteSpace(refValue))
+        public Task EnsureDirectoryAsync(string directory, CancellationToken cancellationToken)
         {
-            return refValue;
-        }
-
-        if (step.With.TryGetValue("branch", out var branch) && !string.IsNullOrWhiteSpace(branch))
-        {
-            return branch;
-        }
-
-        if (step.With.TryGetValue("tag", out var tag) && !string.IsNullOrWhiteSpace(tag))
-        {
-            return tag;
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    /// Checks if a git repository exists in the workspace.
-    /// </summary>
-    /// <param name="context">The execution context.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>True if a git repository exists, false otherwise.</returns>
-    private async Task<bool> CheckRepositoryExistsAsync(
-        ExecutionContext context,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var result = await context.ContainerManager.ExecuteCommandAsync(
-                context.ContainerId,
-                $"git -C {context.ContainerWorkspacePath} rev-parse --git-dir",
-                context.ContainerWorkspacePath,
-                null,
+            return _context.ContainerManager.ExecuteCommandAsync(
+                new ContainerExecRequest
+                {
+                    ContainerId = _context.ContainerId,
+                    Command = $"mkdir -p {ShellQuote.Posix(directory)}",
+                    WorkingDirectory = _context.ContainerWorkspacePath
+                },
                 cancellationToken);
-
-            return result.Success;
         }
-        catch
+
+        public Task<ExecutionResult> RunGitAsync(IReadOnlyList<string> arguments, string workingDirectory, CancellationToken cancellationToken)
         {
-            // If command fails or throws, repository doesn't exist
-            return false;
-        }
-    }
+            var environment = StepExecutionHelpers.MergeEnvironment(_context.Environment, _step.Environment);
+            foreach (var (key, value) in CheckoutFlow.GitEnvironment)
+            {
+                environment.TryAdd(key, value);
+            }
 
-    /// <summary>
-    /// Executes a git command in the container.
-    /// </summary>
-    /// <param name="command">The git command to execute.</param>
-    /// <param name="context">The execution context.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The execution result containing output and exit code.</returns>
-    private async Task<ExecutionResult> ExecuteGitCommandAsync(
-        string command,
-        ExecutionContext context,
-        CancellationToken cancellationToken)
-    {
-        return await context.ContainerManager.ExecuteCommandAsync(
-            context.ContainerId,
-            command,
-            context.ContainerWorkspacePath,
-            context.Environment as IDictionary<string, string>,
-            cancellationToken);
+            var argv = new List<string> { "git" };
+            argv.AddRange(arguments);
+
+            return _context.ContainerManager.ExecuteCommandAsync(
+                new ContainerExecRequest
+                {
+                    ContainerId = _context.ContainerId,
+                    Arguments = argv,
+                    WorkingDirectory = workingDirectory,
+                    Environment = environment,
+                    Timeout = StepExecutionHelpers.GetTimeout(_step, _options),
+                    OnOutputLine = _options.OnOutputLine,
+                    OnErrorLine = StepExecutionHelpers.GetErrorLineHandler(_options)
+                },
+                cancellationToken);
+        }
     }
 }

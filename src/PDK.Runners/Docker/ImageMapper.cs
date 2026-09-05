@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+using PDK.Core.ErrorHandling;
 
 namespace PDK.Runners.Docker;
 
@@ -9,29 +9,37 @@ namespace PDK.Runners.Docker;
 public class ImageMapper : IImageMapper
 {
     /// <summary>
-    /// Standard runner name to Docker image mappings.
-    /// Case-insensitive to handle variations like "Ubuntu-Latest" or "UBUNTU-LATEST".
-    /// Uses buildpack-deps images for Ubuntu as they include bash and common CI/CD tools.
+    /// Linux runner name to Docker image mappings (case-insensitive).
+    /// Uses buildpack-deps images for Ubuntu as they include bash, git, curl and common build tools.
     /// </summary>
-    private static readonly Dictionary<string, string> RunnerMappings = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly Dictionary<string, string> LinuxRunnerMappings = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["ubuntu-latest"] = "buildpack-deps:jammy",     // Ubuntu 22.04 with bash and build tools
-        ["ubuntu-22.04"] = "buildpack-deps:jammy",      // Ubuntu 22.04 with bash and build tools
-        ["ubuntu-20.04"] = "buildpack-deps:focal",      // Ubuntu 20.04 with bash and build tools
+        ["ubuntu-latest"] = "buildpack-deps:noble",     // GitHub's ubuntu-latest is Ubuntu 24.04
+        ["ubuntu-24.04"] = "buildpack-deps:noble",
+        ["ubuntu-24.04-arm"] = "buildpack-deps:noble",
+        ["ubuntu-22.04"] = "buildpack-deps:jammy",
+        ["ubuntu-22.04-arm"] = "buildpack-deps:jammy",
+        ["ubuntu-20.04"] = "buildpack-deps:focal"
+    };
+
+    /// <summary>
+    /// Windows runner name to Docker image mappings. Only usable when the daemon runs Windows containers.
+    /// </summary>
+    private static readonly Dictionary<string, string> WindowsRunnerMappings = new(StringComparer.OrdinalIgnoreCase)
+    {
         ["windows-latest"] = "mcr.microsoft.com/windows/servercore:ltsc2022",
+        ["windows-2025"] = "mcr.microsoft.com/windows/servercore:ltsc2025",
         ["windows-2022"] = "mcr.microsoft.com/windows/servercore:ltsc2022",
         ["windows-2019"] = "mcr.microsoft.com/windows/servercore:ltsc2019"
     };
 
     /// <summary>
-    /// Regular expression pattern for validating Docker image names.
-    /// Supports formats: repository, repository:tag, registry/repository:tag, registry:port/repository:tag
+    /// Gets or sets the operating system of the Docker daemon (<c>linux</c> or <c>windows</c>, as reported by
+    /// <c>docker info</c> / <c>DockerAvailabilityStatus.Platform</c>). Windows runner images are only mapped when
+    /// the daemon runs Windows containers; otherwise <c>windows-*</c> runners are rejected with a clear error.
+    /// Defaults to <c>linux</c>.
     /// </summary>
-    private static readonly Regex ImageNamePattern = new(
-        @"^[a-z0-9]+(([._-][a-z0-9]+)|([./][a-z0-9]+([._-][a-z0-9]+)*))*" +
-        @"(:[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127})?(@sha256:[a-f0-9]{64})?$",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase,
-        TimeSpan.FromMilliseconds(100));
+    public string DaemonOSType { get; set; } = "linux";
 
     /// <summary>
     /// Maps a runner name or custom image to a Docker image.
@@ -41,81 +49,101 @@ public class ImageMapper : IImageMapper
     /// <param name="runnerName">The runner name (e.g., "ubuntu-latest") or custom Docker image (e.g., "node:18").</param>
     /// <returns>The Docker image name to use.</returns>
     /// <exception cref="ArgumentException">Thrown when the runner name is null, empty, or not recognized, or when a custom image is invalid.</exception>
+    /// <exception cref="ContainerException">Thrown when the runner (macOS, or Windows on a Linux daemon) cannot run in Docker mode.</exception>
     public string MapRunnerToImage(string runnerName)
     {
-        // Validate input
+        return MapRunnerToImage(runnerName, DaemonOSType);
+    }
+
+    /// <summary>
+    /// Maps a runner name or custom image to a Docker image for a daemon of the given operating system.
+    /// </summary>
+    /// <param name="runnerName">The runner name or custom Docker image.</param>
+    /// <param name="daemonOSType">The daemon operating system (<c>linux</c> or <c>windows</c>); null means linux.</param>
+    /// <returns>The Docker image name to use.</returns>
+    /// <exception cref="ArgumentException">Thrown when the runner name is null, empty, or not recognized, or when a custom image is invalid.</exception>
+    /// <exception cref="ContainerException">Thrown when the runner (macOS, or Windows on a Linux daemon) cannot run in Docker mode.</exception>
+    public string MapRunnerToImage(string runnerName, string? daemonOSType)
+    {
         if (string.IsNullOrWhiteSpace(runnerName))
         {
             throw new ArgumentException("Runner name cannot be null or empty.", nameof(runnerName));
         }
 
-        // Check if this is a custom Docker image (contains ':' for tag or '/' for registry/namespace)
-        if (runnerName.Contains(':') || runnerName.Contains('/'))
+        var trimmed = runnerName.Trim();
+
+        // Custom Docker image (contains ':' for a tag/registry port, '/' for a namespace, or '@' for a digest)
+        if (trimmed.Contains(':') || trimmed.Contains('/') || trimmed.Contains('@'))
         {
-            // Validate the custom image name
-            if (!IsValidImage(runnerName))
+            if (!IsValidImage(trimmed))
             {
-                throw new ArgumentException(
-                    $"Image name '{runnerName}' is not valid.",
-                    nameof(runnerName));
+                throw new ArgumentException($"Image name '{runnerName}' is not valid.", nameof(runnerName));
             }
 
-            // Return custom image as-is
-            return runnerName;
+            return trimmed;
         }
 
-        // Try to find standard runner mapping
-        if (RunnerMappings.TryGetValue(runnerName, out var imageName))
+        if (LinuxRunnerMappings.TryGetValue(trimmed, out var linuxImage))
         {
-            return imageName;
+            return linuxImage;
         }
 
-        // Handle unexpanded GitHub Actions expressions (e.g., ${{ matrix.os }})
-        // Default to ubuntu-latest since matrix builds aren't fully supported yet
-        if (runnerName.Contains("${{") || runnerName.Contains("}}"))
+        if (WindowsRunnerMappings.TryGetValue(trimmed, out var windowsImage))
         {
-            return RunnerMappings["ubuntu-latest"];
+            if (IsWindowsDaemon(daemonOSType))
+            {
+                return windowsImage;
+            }
+
+            throw UnsupportedRunner(trimmed, "the Docker daemon runs Linux containers");
         }
 
-        // Runner not recognized
+        if (trimmed.StartsWith("macos-", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.StartsWith("windows-", StringComparison.OrdinalIgnoreCase))
+        {
+            throw UnsupportedRunner(trimmed, null);
+        }
+
+        // Handle unexpanded GitHub Actions expressions (e.g. ${{ matrix.os }}) - default to ubuntu-latest
+        if (trimmed.Contains("${{", StringComparison.Ordinal) || trimmed.Contains("}}", StringComparison.Ordinal))
+        {
+            return LinuxRunnerMappings["ubuntu-latest"];
+        }
+
         throw new ArgumentException(
             $"Runner '{runnerName}' is not recognized. " +
-            $"Use a standard runner (ubuntu-latest, windows-latest) or a custom Docker image (node:18).",
+            "Use a standard runner (ubuntu-latest, ubuntu-24.04, ubuntu-22.04, windows-latest) or a custom Docker image (node:18).",
             nameof(runnerName));
     }
 
     /// <summary>
-    /// Validates if an image name follows Docker image naming conventions.
-    /// Valid formats include: repository, repository:tag, registry/repository:tag, repository@digest
+    /// Validates if an image name follows Docker image naming conventions:
+    /// <c>[registry[:port]/]repository[:tag][@digest]</c>.
     /// </summary>
     /// <param name="imageName">The Docker image name to validate.</param>
     /// <returns>True if the image name is valid according to Docker naming conventions, false otherwise.</returns>
     public bool IsValidImage(string imageName)
     {
-        // Null or empty/whitespace is invalid
-        if (string.IsNullOrWhiteSpace(imageName))
-        {
-            return false;
-        }
+        return ImageReference.TryParse(imageName, out _);
+    }
 
-        // Trim whitespace
-        imageName = imageName.Trim();
+    private static bool IsWindowsDaemon(string? daemonOSType)
+    {
+        return string.Equals(daemonOSType?.Trim(), "windows", StringComparison.OrdinalIgnoreCase);
+    }
 
-        // Check length constraints (Docker image names should not exceed 255 characters typically)
-        if (imageName.Length > 255)
-        {
-            return false;
-        }
-
-        // Validate against Docker image name pattern
-        try
-        {
-            return ImageNamePattern.IsMatch(imageName);
-        }
-        catch (RegexMatchTimeoutException)
-        {
-            // If regex times out, consider it invalid
-            return false;
-        }
+    private static ContainerException UnsupportedRunner(string runnerName, string? reason)
+    {
+        var detail = reason != null ? $" ({reason})" : string.Empty;
+        return new ContainerException(
+            ErrorCodes.RunnerCapabilityMismatch,
+            $"Runner '{runnerName}' is not supported in Docker mode{detail}; use --host to run the job directly on this machine.",
+            null,
+            new[]
+            {
+                "Run with --host to execute the job on the local machine",
+                "Use a Linux runner (ubuntu-latest) or a custom Linux image for Docker mode",
+                "Windows containers require a Docker daemon switched to Windows containers"
+            });
     }
 }

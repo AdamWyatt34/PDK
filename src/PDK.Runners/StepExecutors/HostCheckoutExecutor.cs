@@ -1,13 +1,16 @@
 namespace PDK.Runners.StepExecutors;
 
-using System.Text;
 using Microsoft.Extensions.Logging;
 using PDK.Core.Models;
 using PDK.Runners.Models;
 
 /// <summary>
 /// Executes checkout steps on the host machine using native git commands.
-/// Handles git operations including clone, pull, and branch/tag checkout.
+/// Supports self checkout (the workspace), cloning a repository (GitHub <c>owner/repo</c> shorthand or any git
+/// URL) into the workspace or a <c>path:</c> subdirectory, <c>ref</c>/<c>branch</c>/<c>tag</c>, <c>fetch-depth</c>,
+/// <c>submodules</c> and <c>token</c>. A workspace that already contains files but no <c>.git</c> is never
+/// overwritten (the clone is skipped with a note). Only <c>&lt;workspace&gt;/.git</c> is consulted, never a parent
+/// repository.
 /// </summary>
 public class HostCheckoutExecutor : IHostStepExecutor
 {
@@ -26,311 +29,120 @@ public class HostCheckoutExecutor : IHostStepExecutor
     public string StepType => "checkout";
 
     /// <inheritdoc/>
-    public async Task<StepExecutionResult> ExecuteAsync(
+    public Task<StepExecutionResult> ExecuteAsync(
         Step step,
         HostExecutionContext context,
         CancellationToken cancellationToken = default)
     {
+        return ExecuteAsync(step, context, StepExecutionOptions.None, cancellationToken);
+    }
+
+    /// <inheritdoc/>
+    public async Task<StepExecutionResult> ExecuteAsync(
+        Step step,
+        HostExecutionContext context,
+        StepExecutionOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(step);
+        ArgumentNullException.ThrowIfNull(context);
+
         var startTime = DateTimeOffset.Now;
-        var outputBuilder = new StringBuilder();
-        var errorBuilder = new StringBuilder();
-        var lastExitCode = 0;
+        var effectiveOptions = StepExecutionHelpers.ResolveOptions(context, options);
 
         try
         {
-            // Validate git is available on the host
-            if (!await context.ProcessExecutor.IsToolAvailableAsync("git", cancellationToken))
+            if (!await context.ProcessExecutor.IsToolAvailableAsync("git", cancellationToken).ConfigureAwait(false))
             {
-                _logger.LogError("Git is not available on the host system");
-                return CreateFailedResult(
+                _logger.LogDebug("Git is not available on the host system");
+                return StepExecutionHelpers.Failed(
                     step.Name,
                     "Git is not installed or not in PATH. Please install git: https://git-scm.com/",
                     startTime);
             }
 
-            // Resolve repository URL (null means "self" checkout - use current workspace)
-            var repositoryUrl = GetRepositoryUrl(step);
+            var shell = new HostCheckoutShell(step, context, effectiveOptions, _logger);
+            var result = await CheckoutFlow.RunAsync(step, shell, startTime, cancellationToken).ConfigureAwait(false);
 
-            // Resolve optional ref/branch/tag
-            var checkoutRef = GetCheckoutRef(step);
-
-            _logger.LogDebug(
-                "Checkout step '{StepName}': repository={Repository}, ref={Ref}",
-                step.Name, repositoryUrl ?? "(self)", checkoutRef ?? "(default)");
-
-            // Check if repository already exists in workspace
-            var repoExists = await CheckRepositoryExistsAsync(context, cancellationToken);
-
-            if (repositoryUrl == null)
-            {
-                // Self checkout - workspace should already have the code
-                outputBuilder.AppendLine("Using local workspace (self checkout)");
-
-                if (repoExists)
-                {
-                    outputBuilder.AppendLine("Workspace contains git repository - using as-is");
-                    _logger.LogDebug("Self checkout: existing git repository found");
-                }
-                else
-                {
-                    outputBuilder.AppendLine("Workspace ready (no git repository detected)");
-                    _logger.LogDebug("Self checkout: no git repository, using workspace as-is");
-                }
-            }
-            else if (repoExists)
-            {
-                // Repository exists - pull latest changes
-                _logger.LogInformation("Pulling latest changes for {Repository}", repositoryUrl);
-
-                var pullResult = await ExecuteGitCommandAsync(
-                    "git pull",
-                    context,
-                    cancellationToken);
-
-                outputBuilder.AppendLine(pullResult.StandardOutput);
-                if (!string.IsNullOrWhiteSpace(pullResult.StandardError))
-                {
-                    errorBuilder.AppendLine(pullResult.StandardError);
-                }
-                lastExitCode = pullResult.ExitCode;
-
-                if (!pullResult.Success)
-                {
-                    return CreateFailedResult(
-                        step.Name,
-                        $"Failed to pull latest changes. Exit code: {pullResult.ExitCode}\n{pullResult.StandardError}",
-                        startTime,
-                        lastExitCode);
-                }
-            }
-            else
-            {
-                // Repository doesn't exist - clone it
-                _logger.LogInformation("Cloning repository {Repository} to {Workspace}",
-                    repositoryUrl, context.WorkspacePath);
-
-                // Ensure workspace directory exists
-                if (!Directory.Exists(context.WorkspacePath))
-                {
-                    Directory.CreateDirectory(context.WorkspacePath);
-                }
-
-                var cloneCommand = $"git clone {repositoryUrl} .";
-                var cloneResult = await ExecuteGitCommandAsync(
-                    cloneCommand,
-                    context,
-                    cancellationToken);
-
-                outputBuilder.AppendLine(cloneResult.StandardOutput);
-                if (!string.IsNullOrWhiteSpace(cloneResult.StandardError))
-                {
-                    // Git clone often outputs to stderr even on success
-                    if (cloneResult.Success)
-                    {
-                        outputBuilder.AppendLine(cloneResult.StandardError);
-                    }
-                    else
-                    {
-                        errorBuilder.AppendLine(cloneResult.StandardError);
-                    }
-                }
-                lastExitCode = cloneResult.ExitCode;
-
-                if (!cloneResult.Success)
-                {
-                    var errorMessage = $"Failed to clone repository. Exit code: {cloneResult.ExitCode}";
-                    if (!string.IsNullOrWhiteSpace(cloneResult.StandardError))
-                    {
-                        errorMessage += $"\nGit error: {cloneResult.StandardError}";
-                    }
-
-                    return CreateFailedResult(step.Name, errorMessage, startTime, lastExitCode);
-                }
-
-                outputBuilder.AppendLine($"Successfully cloned {repositoryUrl}");
-            }
-
-            // Checkout specific ref/branch/tag if specified (only for explicit repos)
-            if (!string.IsNullOrWhiteSpace(checkoutRef) && repositoryUrl != null)
-            {
-                _logger.LogInformation("Checking out ref: {Ref}", checkoutRef);
-
-                var checkoutCommand = $"git checkout {checkoutRef}";
-                var checkoutResult = await ExecuteGitCommandAsync(
-                    checkoutCommand,
-                    context,
-                    cancellationToken);
-
-                outputBuilder.AppendLine(checkoutResult.StandardOutput);
-                if (!string.IsNullOrWhiteSpace(checkoutResult.StandardError))
-                {
-                    if (checkoutResult.Success)
-                    {
-                        outputBuilder.AppendLine(checkoutResult.StandardError);
-                    }
-                    else
-                    {
-                        errorBuilder.AppendLine(checkoutResult.StandardError);
-                    }
-                }
-                lastExitCode = checkoutResult.ExitCode;
-
-                if (!checkoutResult.Success)
-                {
-                    var errorMessage = $"Failed to checkout ref '{checkoutRef}'. Exit code: {checkoutResult.ExitCode}";
-                    if (!string.IsNullOrWhiteSpace(checkoutResult.StandardError))
-                    {
-                        errorMessage += $"\nGit error: {checkoutResult.StandardError}";
-                    }
-
-                    return CreateFailedResult(step.Name, errorMessage, startTime, lastExitCode);
-                }
-
-                outputBuilder.AppendLine($"Checked out {checkoutRef}");
-            }
-
-            var endTime = DateTimeOffset.Now;
-
-            _logger.LogDebug("Checkout step '{StepName}' completed successfully", step.Name);
-
-            return new StepExecutionResult
-            {
-                StepName = step.Name,
-                Success = true,
-                ExitCode = lastExitCode,
-                Output = outputBuilder.ToString(),
-                ErrorOutput = string.Empty,
-                Duration = endTime - startTime,
-                StartTime = startTime,
-                EndTime = endTime
-            };
+            _logger.LogDebug("Checkout step '{StepName}' completed with success={Success}", step.Name, result.Success);
+            return result;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Checkout step '{StepName}' failed with exception", step.Name);
-
-            return CreateFailedResult(
-                step.Name,
-                $"Checkout failed: {ex.Message}",
-                startTime,
-                lastExitCode);
+            _logger.LogDebug(ex, "Checkout step '{StepName}' failed: {Message}", step.Name, ex.Message);
+            return StepExecutionHelpers.Failed(step.Name, StepExecutionHelpers.FormatException(ex, "Checkout failed"), startTime);
         }
     }
 
-    /// <summary>
-    /// Extracts the repository URL from the step configuration.
-    /// Returns null for "self" checkout (use current workspace).
-    /// </summary>
-    private static string? GetRepositoryUrl(Step step)
+    private sealed class HostCheckoutShell : ICheckoutShell
     {
-        if (step.With.TryGetValue("repository", out var repository))
+        private readonly Step _step;
+        private readonly HostExecutionContext _context;
+        private readonly StepExecutionOptions _options;
+        private readonly ILogger _logger;
+
+        public HostCheckoutShell(Step step, HostExecutionContext context, StepExecutionOptions options, ILogger logger)
         {
-            if (string.IsNullOrWhiteSpace(repository))
+            _step = step;
+            _context = context;
+            _options = options;
+            _logger = logger;
+        }
+
+        public string ResolveDirectory(string? relativePath)
+        {
+            return _context.ResolvePath(relativePath);
+        }
+
+        public Task<WorkspaceState> ProbeAsync(string directory, CancellationToken cancellationToken)
+        {
+            var gitPath = Path.Combine(directory, ".git");
+            if (Directory.Exists(gitPath) || File.Exists(gitPath))
             {
-                return null;
+                return Task.FromResult(WorkspaceState.Git);
             }
 
-            if (string.Equals(repository, "self", StringComparison.OrdinalIgnoreCase))
+            if (Directory.Exists(directory) && Directory.EnumerateFileSystemEntries(directory).Any())
             {
-                return null;
+                return Task.FromResult(WorkspaceState.Files);
             }
 
-            return repository;
+            return Task.FromResult(WorkspaceState.Empty);
         }
 
-        return null;
-    }
-
-    /// <summary>
-    /// Extracts the optional ref/branch/tag to checkout from the step configuration.
-    /// </summary>
-    private static string? GetCheckoutRef(Step step)
-    {
-        if (step.With.TryGetValue("ref", out var refValue) && !string.IsNullOrWhiteSpace(refValue))
+        public Task EnsureDirectoryAsync(string directory, CancellationToken cancellationToken)
         {
-            return refValue;
+            Directory.CreateDirectory(directory);
+            return Task.CompletedTask;
         }
 
-        if (step.With.TryGetValue("branch", out var branch) && !string.IsNullOrWhiteSpace(branch))
+        public Task<ExecutionResult> RunGitAsync(IReadOnlyList<string> arguments, string workingDirectory, CancellationToken cancellationToken)
         {
-            return branch;
-        }
-
-        if (step.With.TryGetValue("tag", out var tag) && !string.IsNullOrWhiteSpace(tag))
-        {
-            return tag;
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    /// Checks if a git repository exists in the workspace.
-    /// </summary>
-    private async Task<bool> CheckRepositoryExistsAsync(
-        HostExecutionContext context,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            // Check if .git directory exists (fast check)
-            var gitDir = Path.Combine(context.WorkspacePath, ".git");
-            if (Directory.Exists(gitDir))
+            var environment = StepExecutionHelpers.MergeEnvironment(_context.Environment, _step.Environment);
+            foreach (var (key, value) in CheckoutFlow.GitEnvironment)
             {
-                return true;
+                environment.TryAdd(key, value);
             }
 
-            // Also try git command for bare repos or worktrees
-            var result = await context.ProcessExecutor.ExecuteAsync(
-                "git rev-parse --git-dir",
-                context.WorkspacePath,
-                timeout: TimeSpan.FromSeconds(10),
-                cancellationToken: cancellationToken);
+            // Only the git verb is logged: clone arguments may carry credentials.
+            _logger.LogDebug("Running git {Verb} in {Directory}", arguments.Count > 0 ? arguments[0] : string.Empty, workingDirectory);
 
-            return result.Success;
+            return _context.ProcessExecutor.ExecuteAsync(
+                new ProcessExecutionRequest
+                {
+                    FileName = "git",
+                    Arguments = arguments,
+                    WorkingDirectory = workingDirectory,
+                    Environment = environment,
+                    Timeout = StepExecutionHelpers.GetTimeout(_step, _options),
+                    OnOutputLine = _options.OnOutputLine,
+                    OnErrorLine = StepExecutionHelpers.GetErrorLineHandler(_options)
+                },
+                cancellationToken);
         }
-        catch
-        {
-            return false;
-        }
-    }
-
-    /// <summary>
-    /// Executes a git command on the host.
-    /// </summary>
-    private async Task<ExecutionResult> ExecuteGitCommandAsync(
-        string command,
-        HostExecutionContext context,
-        CancellationToken cancellationToken)
-    {
-        return await context.ProcessExecutor.ExecuteAsync(
-            command,
-            context.WorkspacePath,
-            context.Environment as IDictionary<string, string>,
-            cancellationToken: cancellationToken);
-    }
-
-    /// <summary>
-    /// Creates a failed step execution result.
-    /// </summary>
-    private static StepExecutionResult CreateFailedResult(
-        string stepName,
-        string errorMessage,
-        DateTimeOffset startTime,
-        int exitCode = -1)
-    {
-        var endTime = DateTimeOffset.Now;
-
-        return new StepExecutionResult
-        {
-            StepName = stepName,
-            Success = false,
-            ExitCode = exitCode,
-            Output = string.Empty,
-            ErrorOutput = errorMessage,
-            Duration = endTime - startTime,
-            StartTime = startTime,
-            EndTime = endTime
-        };
     }
 }

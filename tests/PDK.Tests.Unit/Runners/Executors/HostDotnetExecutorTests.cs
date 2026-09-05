@@ -11,423 +11,113 @@ using PDK.Runners.StepExecutors;
 /// <summary>
 /// Unit tests for the HostDotnetExecutor class.
 /// </summary>
-public class HostDotnetExecutorTests
+public class HostDotnetExecutorTests : IDisposable
 {
     private readonly Mock<IProcessExecutor> _mockProcessExecutor;
-    private readonly Mock<ILogger<HostDotnetExecutor>> _mockLogger;
     private readonly HostDotnetExecutor _executor;
+    private readonly List<ProcessExecutionRequest> _requests = new();
+    private readonly List<string> _tempDirectories = new();
 
     public HostDotnetExecutorTests()
     {
         _mockProcessExecutor = new Mock<IProcessExecutor>();
-        _mockProcessExecutor.Setup(x => x.Platform).Returns(OperatingSystemPlatform.Windows);
+        _mockProcessExecutor.Setup(x => x.Platform).Returns(OperatingSystemPlatform.Linux);
         _mockProcessExecutor
             .Setup(x => x.IsToolAvailableAsync("dotnet", It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
+        _mockProcessExecutor.RecordProcesses(_requests, RunnerMockExtensions.Ok("Build succeeded."));
 
-        _mockLogger = new Mock<ILogger<HostDotnetExecutor>>();
-        _executor = new HostDotnetExecutor(_mockLogger.Object);
+        _executor = new HostDotnetExecutor(new Mock<ILogger<HostDotnetExecutor>>().Object);
     }
 
-    #region Constructor Tests
+    public void Dispose()
+    {
+        foreach (var directory in _tempDirectories)
+        {
+            try
+            {
+                Directory.Delete(directory, true);
+            }
+            catch (IOException)
+            {
+            }
+        }
+    }
+
+    private static Step CreateDotnetStep(string? command = null, Action<Step>? configure = null)
+    {
+        var step = new Step
+        {
+            Id = Guid.NewGuid().ToString(),
+            Name = "dotnet step",
+            Type = StepType.Dotnet,
+            With = new Dictionary<string, string>(),
+            Environment = new Dictionary<string, string>()
+        };
+
+        if (command != null)
+        {
+            step.With["command"] = command;
+        }
+
+        configure?.Invoke(step);
+        return step;
+    }
+
+    private HostExecutionContext CreateTestContext(OperatingSystemPlatform platform = OperatingSystemPlatform.Linux)
+    {
+        var tempPath = Path.Combine(Path.GetTempPath(), $"pdk-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempPath);
+        _tempDirectories.Add(tempPath);
+
+        return new HostExecutionContext
+        {
+            ProcessExecutor = _mockProcessExecutor.Object,
+            WorkspacePath = tempPath,
+            Environment = new Dictionary<string, string> { ["WORKSPACE"] = tempPath },
+            WorkingDirectory = tempPath,
+            Platform = platform,
+            JobInfo = new JobMetadata { JobName = "TestJob", JobId = "job-123", Runner = "host" }
+        };
+    }
 
     [Fact]
     public void Constructor_WithNullLogger_ThrowsArgumentNullException()
     {
-        // Act & Assert
         var act = () => new HostDotnetExecutor(null!);
-        act.Should().Throw<ArgumentNullException>()
-            .WithParameterName("logger");
+        act.Should().Throw<ArgumentNullException>().WithParameterName("logger");
     }
-
-    #endregion
-
-    #region Property Tests
 
     [Fact]
     public void StepType_ReturnsDotnet()
     {
-        // Act
-        var result = _executor.StepType;
-
-        // Assert
-        result.Should().Be("dotnet");
+        _executor.StepType.Should().Be("dotnet");
     }
-
-    #endregion
-
-    #region ExecuteAsync - Dotnet Not Available
 
     [Fact]
     public async Task ExecuteAsync_DotnetNotAvailable_ReturnsFailedResult()
     {
-        // Arrange
         _mockProcessExecutor
             .Setup(x => x.IsToolAvailableAsync("dotnet", It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
 
-        var step = CreateDotnetStep("Build", "build");
-        var context = CreateTestContext();
+        var result = await _executor.ExecuteAsync(CreateDotnetStep("build"), CreateTestContext());
 
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
         result.Success.Should().BeFalse();
         result.ErrorOutput.Should().Contain("dotnet CLI is not installed");
     }
 
-    #endregion
-
-    #region ExecuteAsync - Validation
-
-    [Fact]
-    public async Task ExecuteAsync_MissingCommand_ThrowsArgumentException()
+    [Theory]
+    [InlineData(null, "required")]
+    [InlineData("invalid", "Unsupported dotnet command")]
+    public async Task ExecuteAsync_InvalidCommand_ReturnsFailedResult(string? command, string expected)
     {
-        // Arrange
-        var step = CreateDotnetStep("No Command");
-        // No command in With dictionary
+        var result = await _executor.ExecuteAsync(CreateDotnetStep(command), CreateTestContext());
 
-        var context = CreateTestContext();
-
-        // Act & Assert
-        var act = () => _executor.ExecuteAsync(step, context);
-        await act.Should().ThrowAsync<ArgumentException>()
-            .WithMessage("*command*required*");
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_UnsupportedCommand_ThrowsArgumentException()
-    {
-        // Arrange
-        var step = CreateDotnetStep("Invalid Command", "invalid");
-        var context = CreateTestContext();
-
-        // Act & Assert
-        var act = () => _executor.ExecuteAsync(step, context);
-        await act.Should().ThrowAsync<ArgumentException>()
-            .WithMessage("*Unsupported dotnet command*");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Build Command
-
-    [Fact]
-    public async Task ExecuteAsync_BuildCommand_ExecutesSuccessfully()
-    {
-        // Arrange
-        var step = CreateDotnetStep("Build", "build");
-
-        string? capturedCommand = null;
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, string, IDictionary<string, string>, TimeSpan?, CancellationToken>(
-                (cmd, _, _, _, _) => capturedCommand = cmd)
-            .ReturnsAsync(CreateSuccessResult());
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-        capturedCommand.Should().Contain("dotnet build");
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_BuildWithConfiguration_IncludesConfigFlag()
-    {
-        // Arrange
-        var step = CreateDotnetStep("Build Release", "build");
-        step.With["configuration"] = "Release";
-
-        string? capturedCommand = null;
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, string, IDictionary<string, string>, TimeSpan?, CancellationToken>(
-                (cmd, _, _, _, _) => capturedCommand = cmd)
-            .ReturnsAsync(CreateSuccessResult());
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-        capturedCommand.Should().Contain("--configuration Release");
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_BuildWithProject_IncludesProjectPath()
-    {
-        // Arrange
-        var step = CreateDotnetStep("Build Project", "build");
-        step.With["projects"] = "src/MyApp.csproj";
-
-        string? capturedCommand = null;
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, string, IDictionary<string, string>, TimeSpan?, CancellationToken>(
-                (cmd, _, _, _, _) => capturedCommand = cmd)
-            .ReturnsAsync(CreateSuccessResult());
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-        capturedCommand.Should().Contain("src/MyApp.csproj");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Test Command
-
-    [Fact]
-    public async Task ExecuteAsync_TestCommand_ExecutesSuccessfully()
-    {
-        // Arrange
-        var step = CreateDotnetStep("Test", "test");
-
-        string? capturedCommand = null;
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, string, IDictionary<string, string>, TimeSpan?, CancellationToken>(
-                (cmd, _, _, _, _) => capturedCommand = cmd)
-            .ReturnsAsync(CreateSuccessResult());
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-        capturedCommand.Should().Contain("dotnet test");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Publish Command
-
-    [Fact]
-    public async Task ExecuteAsync_PublishWithOutputPath_IncludesOutputFlag()
-    {
-        // Arrange
-        var step = CreateDotnetStep("Publish", "publish");
-        step.With["outputPath"] = "./publish";
-
-        string? capturedCommand = null;
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, string, IDictionary<string, string>, TimeSpan?, CancellationToken>(
-                (cmd, _, _, _, _) => capturedCommand = cmd)
-            .ReturnsAsync(CreateSuccessResult());
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-        capturedCommand.Should().Contain("--output");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Additional Arguments
-
-    [Fact]
-    public async Task ExecuteAsync_WithAdditionalArguments_IncludesArguments()
-    {
-        // Arrange
-        var step = CreateDotnetStep("Build with Args", "build");
-        step.With["arguments"] = "--no-restore --verbosity minimal";
-
-        string? capturedCommand = null;
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, string, IDictionary<string, string>, TimeSpan?, CancellationToken>(
-                (cmd, _, _, _, _) => capturedCommand = cmd)
-            .ReturnsAsync(CreateSuccessResult());
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-        capturedCommand.Should().Contain("--no-restore");
-        capturedCommand.Should().Contain("--verbosity minimal");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Environment Variables
-
-    [Fact]
-    public async Task ExecuteAsync_WithStepEnvironment_MergesWithContext()
-    {
-        // Arrange
-        var step = CreateDotnetStep("Build", "build");
-        step.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
-
-        IDictionary<string, string>? capturedEnv = null;
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, string, IDictionary<string, string>, TimeSpan?, CancellationToken>(
-                (_, _, env, _, _) => capturedEnv = env)
-            .ReturnsAsync(CreateSuccessResult());
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        capturedEnv.Should().ContainKey("DOTNET_CLI_TELEMETRY_OPTOUT");
-        capturedEnv!["DOTNET_CLI_TELEMETRY_OPTOUT"].Should().Be("1");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Working Directory
-
-    [Fact]
-    public async Task ExecuteAsync_WithWorkingDirectory_UsesResolvedPath()
-    {
-        // Arrange
-        var step = CreateDotnetStep("Build", "build");
-        step.WorkingDirectory = "src";
-
-        string? capturedWorkDir = null;
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, string, IDictionary<string, string>, TimeSpan?, CancellationToken>(
-                (_, workDir, _, _, _) => capturedWorkDir = workDir)
-            .ReturnsAsync(CreateSuccessResult());
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-        capturedWorkDir.Should().Contain("src");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Error Scenarios
-
-    [Fact]
-    public async Task ExecuteAsync_CommandFails_ReturnsFailedResult()
-    {
-        // Arrange
-        var step = CreateDotnetStep("Build Fail", "build");
-
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ExecutionResult
-            {
-                ExitCode = 1,
-                StandardOutput = "",
-                StandardError = "Build failed: CS1002",
-                Duration = TimeSpan.FromSeconds(5)
-            });
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
         result.Success.Should().BeFalse();
-        result.ExitCode.Should().Be(1);
-        result.ErrorOutput.Should().Contain("CS1002");
+        result.ErrorOutput.Should().Contain(expected);
+        _requests.Should().BeEmpty();
     }
-
-    [Fact]
-    public async Task ExecuteAsync_ProcessExecutorThrows_ReturnsFailedResult()
-    {
-        // Arrange
-        var step = CreateDotnetStep("Build Exception", "build");
-
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new InvalidOperationException("Process failed to start"));
-
-        var context = CreateTestContext();
-
-        // Act
-        var result = await _executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeFalse();
-        result.ErrorOutput.Should().Contain("Process failed to start");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - All Supported Commands
 
     [Theory]
     [InlineData("restore")]
@@ -439,87 +129,147 @@ public class HostDotnetExecutorTests
     [InlineData("clean")]
     public async Task ExecuteAsync_SupportedCommand_Succeeds(string command)
     {
-        // Arrange
-        var step = CreateDotnetStep($"Dotnet {command}", command);
+        var result = await _executor.ExecuteAsync(CreateDotnetStep(command), CreateTestContext());
 
-        _mockProcessExecutor
-            .Setup(x => x.ExecuteAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<TimeSpan?>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult());
+        result.Success.Should().BeTrue();
+        _requests.Single().Command.Should().Be($"dotnet {command}");
+    }
 
+    [Fact]
+    public async Task ExecuteAsync_BuildWithConfigurationAndProject_BuildsCommandLine()
+    {
+        var step = CreateDotnetStep("build", s =>
+        {
+            s.With["configuration"] = "Release";
+            s.With["projects"] = "src/MyApp.csproj";
+            s.With["arguments"] = "--no-restore --verbosity minimal";
+        });
+
+        await _executor.ExecuteAsync(step, CreateTestContext());
+
+        _requests.Single().Command.Should().Be("dotnet build src/MyApp.csproj --configuration Release --no-restore --verbosity minimal");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_OnWindows_QuotesPathsWithDoubleQuotes()
+    {
+        var step = CreateDotnetStep("publish", s =>
+        {
+            s.With["projects"] = "src/My App.csproj";
+            s.With["outputPath"] = "./publish dir";
+        });
+
+        await _executor.ExecuteAsync(step, CreateTestContext(OperatingSystemPlatform.Windows));
+
+        _requests.Single().Command.Should().Be("dotnet publish \"src/My App.csproj\" --output \"./publish dir\"");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_OnLinux_QuotesPathsWithSingleQuotes()
+    {
+        var step = CreateDotnetStep("publish", s => s.With["outputPath"] = "./publish dir");
+
+        await _executor.ExecuteAsync(step, CreateTestContext());
+
+        _requests.Single().Command.Should().Be("dotnet publish --output './publish dir'");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RecursiveGlob_ExpandsAndRunsPerProject()
+    {
         var context = CreateTestContext();
+        Directory.CreateDirectory(Path.Combine(context.WorkspacePath, "src", "A"));
+        Directory.CreateDirectory(Path.Combine(context.WorkspacePath, "src", "B", "Nested"));
+        Directory.CreateDirectory(Path.Combine(context.WorkspacePath, "tests"));
+        File.WriteAllText(Path.Combine(context.WorkspacePath, "src", "A", "A.csproj"), "");
+        File.WriteAllText(Path.Combine(context.WorkspacePath, "src", "B", "Nested", "B.csproj"), "");
+        File.WriteAllText(Path.Combine(context.WorkspacePath, "tests", "A.Tests.csproj"), "");
+        File.WriteAllText(Path.Combine(context.WorkspacePath, "Root.csproj"), "");
 
-        // Act
+        var step = CreateDotnetStep("build", s => s.With["projects"] = "**/*.csproj\n!**/*.Tests.csproj");
+
         var result = await _executor.ExecuteAsync(step, context);
 
-        // Assert
         result.Success.Should().BeTrue();
+        _requests.Select(r => r.Command).Should().Equal(
+            "dotnet build Root.csproj",
+            "dotnet build src/A/A.csproj",
+            "dotnet build src/B/Nested/B.csproj");
+        result.Output.Should().Contain("$ dotnet build src/A/A.csproj");
     }
 
-    #endregion
-
-    #region Helper Methods
-
-    private Step CreateDotnetStep(string name, string? command = null)
+    [Fact]
+    public async Task ExecuteAsync_GlobFirstFailureWins_AllProjectsStillRun()
     {
-        var step = new Step
-        {
-            Id = Guid.NewGuid().ToString(),
-            Name = name,
-            Type = StepType.Dotnet,
-            Script = null,
-            Shell = null,
-            With = new Dictionary<string, string>(),
-            Environment = new Dictionary<string, string>(),
-            ContinueOnError = false
-        };
+        var context = CreateTestContext();
+        File.WriteAllText(Path.Combine(context.WorkspacePath, "A.csproj"), "");
+        File.WriteAllText(Path.Combine(context.WorkspacePath, "B.csproj"), "");
+        _mockProcessExecutor.SetupProcess(r => r.Command!.Contains("A.csproj"))
+            .Callback<ProcessExecutionRequest, CancellationToken>((r, _) => _requests.Add(r))
+            .ReturnsAsync(RunnerMockExtensions.Fail(2, "error"));
 
-        if (command != null)
-        {
-            step.With["command"] = command;
-        }
+        var result = await _executor.ExecuteAsync(CreateDotnetStep("build", s => s.With["projects"] = "*.csproj"), context);
 
-        return step;
+        result.Success.Should().BeFalse();
+        result.ExitCode.Should().Be(2);
+        _requests.Should().HaveCount(2);
     }
 
-    private HostExecutionContext CreateTestContext()
+    [Fact]
+    public async Task ExecuteAsync_GlobNoMatches_ReturnsFailedResult()
     {
-        var tempPath = Path.Combine(Path.GetTempPath(), $"pdk-test-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(tempPath);
+        var result = await _executor.ExecuteAsync(CreateDotnetStep("build", s => s.With["projects"] = "**/*.nope"), CreateTestContext());
 
-        return new HostExecutionContext
-        {
-            ProcessExecutor = _mockProcessExecutor.Object,
-            WorkspacePath = tempPath,
-            Environment = new Dictionary<string, string>
-            {
-                ["WORKSPACE"] = tempPath
-            },
-            WorkingDirectory = tempPath,
-            Platform = OperatingSystemPlatform.Windows,
-            JobInfo = new JobMetadata
-            {
-                JobName = "TestJob",
-                JobId = "job-123",
-                Runner = "host"
-            }
-        };
+        result.Success.Should().BeFalse();
+        result.ErrorOutput.Should().Contain("No project files found");
+        _requests.Should().BeEmpty();
     }
 
-    private ExecutionResult CreateSuccessResult()
+    [Fact]
+    public async Task ExecuteAsync_ToolAndCustomCommands_AreSupported()
     {
-        return new ExecutionResult
-        {
-            ExitCode = 0,
-            StandardOutput = "Build succeeded.",
-            StandardError = "",
-            Duration = TimeSpan.FromSeconds(5)
-        };
+        await _executor.ExecuteAsync(CreateDotnetStep("tool", s => s.With["arguments"] = "restore"), CreateTestContext());
+        await _executor.ExecuteAsync(CreateDotnetStep("custom", s => s.With["custom"] = "nuget"), CreateTestContext());
+
+        _requests.Select(r => r.Command).Should().Equal("dotnet tool restore", "dotnet nuget");
     }
 
-    #endregion
+    [Fact]
+    public async Task ExecuteAsync_WithStepEnvironmentAndWorkingDirectory_AreApplied()
+    {
+        var context = CreateTestContext();
+        var step = CreateDotnetStep("build", s =>
+        {
+            s.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
+            s.WorkingDirectory = "src";
+        });
+
+        await _executor.ExecuteAsync(step, context);
+
+        _requests.Single().Environment!["DOTNET_CLI_TELEMETRY_OPTOUT"].Should().Be("1");
+        _requests.Single().WorkingDirectory.Should().Be(Path.Combine(context.WorkspacePath, "src"));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_CommandFails_ReturnsFailedResult()
+    {
+        _mockProcessExecutor.RecordProcesses(_requests, RunnerMockExtensions.Fail(1, "Build failed: CS1002"));
+
+        var result = await _executor.ExecuteAsync(CreateDotnetStep("build"), CreateTestContext());
+
+        result.Success.Should().BeFalse();
+        result.ExitCode.Should().Be(1);
+        result.ErrorOutput.Should().Contain("CS1002");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ProcessExecutorThrows_ReturnsFailedResult()
+    {
+        _mockProcessExecutor.SetupProcess().ThrowsAsync(new InvalidOperationException("Process failed to start"));
+
+        var result = await _executor.ExecuteAsync(CreateDotnetStep("build"), CreateTestContext());
+
+        result.Success.Should().BeFalse();
+        result.ErrorOutput.Should().Contain("Process failed to start");
+    }
 }

@@ -7,10 +7,16 @@ using PDK.Runners.Models;
 
 /// <summary>
 /// Executes script steps directly on the host machine.
-/// Handles cross-platform shell selection, multi-line scripts, and environment variable management.
+/// The script is always written to a private temp file (mode 0600 on Unix) and executed through the shell
+/// named by <see cref="Step.Shell"/> with GitHub Actions semantics: <c>bash --noprofile --norc -eo pipefail</c>,
+/// <c>sh -e</c>, wrapped <c>pwsh</c>/<c>powershell</c>, <c>python3</c> (falling back to <c>python</c>) and
+/// <c>cmd /d /s /c</c> on Windows. A missing shell produces a failed result with a clear message.
 /// </summary>
 public class HostScriptExecutor : IHostStepExecutor
 {
+    private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
+    private static readonly UTF8Encoding Utf8WithBom = new(encoderShouldEmitUTF8Identifier: true);
+
     private readonly ILogger<HostScriptExecutor> _logger;
 
     /// <summary>
@@ -26,294 +32,178 @@ public class HostScriptExecutor : IHostStepExecutor
     public string StepType => "script";
 
     /// <inheritdoc/>
-    public async Task<StepExecutionResult> ExecuteAsync(
+    public Task<StepExecutionResult> ExecuteAsync(
         Step step,
         HostExecutionContext context,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(step.Script))
-        {
-            throw new ArgumentException(
-                $"Script content is empty for step '{step.Name}'.",
-                nameof(step));
-        }
+        return ExecuteAsync(step, context, StepExecutionOptions.None, cancellationToken);
+    }
+
+    /// <inheritdoc/>
+    public async Task<StepExecutionResult> ExecuteAsync(
+        Step step,
+        HostExecutionContext context,
+        StepExecutionOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(step);
+        ArgumentNullException.ThrowIfNull(context);
 
         var startTime = DateTimeOffset.Now;
-        var shell = DetermineShell(step.Shell, context.Platform);
+        var effectiveOptions = StepExecutionHelpers.ResolveOptions(context, options);
 
-        _logger.LogDebug(
-            "Executing script step '{StepName}' using shell '{Shell}'",
-            step.Name, shell);
+        if (string.IsNullOrWhiteSpace(step.Script))
+        {
+            return StepExecutionHelpers.Failed(step.Name, $"Script content is empty for step '{step.Name}'.", startTime);
+        }
 
+        if (!ScriptShellSupport.TryResolve(step.Shell, context.Platform, out var shell, out var shellError))
+        {
+            return StepExecutionHelpers.Failed(step.Name, shellError!, startTime);
+        }
+
+        if (shell == ScriptShell.Cmd && context.Platform != OperatingSystemPlatform.Windows)
+        {
+            return StepExecutionHelpers.Failed(
+                step.Name,
+                "The 'cmd' shell is only available on Windows hosts; use bash, sh, pwsh or python.",
+                startTime);
+        }
+
+        _logger.LogDebug("Executing script step '{StepName}' using shell '{Shell}'", step.Name, ScriptShellSupport.GetDisplayName(shell));
+
+        string? scriptPath = null;
         try
         {
-            // Merge environment variables (step overrides context)
-            var mergedEnvironment = MergeEnvironments(context, step);
-
-            // Resolve working directory
-            var workingDirectory = ResolveWorkingDirectory(context, step);
-
-            // Ensure working directory exists
-            if (!Directory.Exists(workingDirectory))
+            var (executable, effectiveShell, failure) = await ResolveInterpreterAsync(shell, context, cancellationToken).ConfigureAwait(false);
+            if (executable == null)
             {
-                Directory.CreateDirectory(workingDirectory);
+                return StepExecutionHelpers.Failed(step.Name, failure!, startTime);
             }
 
-            ExecutionResult result;
+            var environment = StepExecutionHelpers.MergeEnvironment(context.Environment, step.Environment);
+            var workingDirectory = context.ResolvePath(step.WorkingDirectory);
+            Directory.CreateDirectory(workingDirectory);
 
-            // For multi-line scripts or scripts with special characters, use temp file
-            if (RequiresTempFile(step.Script))
-            {
-                result = await ExecuteMultilineScriptAsync(
-                    step.Script,
-                    shell,
-                    workingDirectory,
-                    mergedEnvironment,
-                    context,
-                    cancellationToken);
-            }
-            else
-            {
-                // Single-line command can be executed directly
-                result = await context.ProcessExecutor.ExecuteAsync(
-                    step.Script,
-                    workingDirectory,
-                    mergedEnvironment,
-                    cancellationToken: cancellationToken);
-            }
+            scriptPath = Path.Combine(Path.GetTempPath(), $"pdk-script-{Guid.NewGuid():N}{ScriptShellSupport.GetFileExtension(effectiveShell)}");
+            var content = ScriptShellSupport.PrepareContent(effectiveShell, step.Script);
+            await WriteScriptFileAsync(scriptPath, content, effectiveShell, cancellationToken).ConfigureAwait(false);
+            _logger.LogDebug("Wrote script to temp file: {ScriptPath}", scriptPath);
 
-            var endTime = DateTimeOffset.Now;
+            var request = effectiveShell == ScriptShell.Cmd
+                ? new ProcessExecutionRequest
+                {
+                    // cmd.exe /d /s /c "<path>" via the platform shell (quotes survive the /s handling).
+                    Command = $"\"{scriptPath}\"",
+                    WorkingDirectory = workingDirectory,
+                    Environment = environment,
+                    Timeout = StepExecutionHelpers.GetTimeout(step, effectiveOptions),
+                    OnOutputLine = effectiveOptions.OnOutputLine,
+                    OnErrorLine = StepExecutionHelpers.GetErrorLineHandler(effectiveOptions)
+                }
+                : new ProcessExecutionRequest
+                {
+                    FileName = executable,
+                    Arguments = ScriptShellSupport.BuildInterpreterArguments(effectiveShell, scriptPath),
+                    WorkingDirectory = workingDirectory,
+                    Environment = environment,
+                    Timeout = StepExecutionHelpers.GetTimeout(step, effectiveOptions),
+                    OnOutputLine = effectiveOptions.OnOutputLine,
+                    OnErrorLine = StepExecutionHelpers.GetErrorLineHandler(effectiveOptions)
+                };
 
-            _logger.LogDebug(
-                "Script step '{StepName}' completed with exit code {ExitCode}",
-                step.Name, result.ExitCode);
+            var result = await context.ProcessExecutor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
 
-            return new StepExecutionResult
-            {
-                StepName = step.Name,
-                Success = result.Success,
-                ExitCode = result.ExitCode,
-                Output = result.StandardOutput,
-                ErrorOutput = result.StandardError,
-                Duration = endTime - startTime,
-                StartTime = startTime,
-                EndTime = endTime
-            };
+            _logger.LogDebug("Script step '{StepName}' completed with exit code {ExitCode}", step.Name, result.ExitCode);
+
+            return StepExecutionHelpers.FromExecution(step.Name, result, startTime);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            var endTime = DateTimeOffset.Now;
-
-            _logger.LogError(ex, "Script step '{StepName}' failed with exception", step.Name);
-
-            return new StepExecutionResult
-            {
-                StepName = step.Name,
-                Success = false,
-                ExitCode = -1,
-                Output = string.Empty,
-                ErrorOutput = ex.Message,
-                Duration = endTime - startTime,
-                StartTime = startTime,
-                EndTime = endTime
-            };
-        }
-    }
-
-    /// <summary>
-    /// Determines the shell to use based on the requested shell and platform.
-    /// </summary>
-    /// <param name="requestedShell">The shell requested in the step configuration.</param>
-    /// <param name="platform">The current operating system platform.</param>
-    /// <returns>The shell identifier to use.</returns>
-    private static string DetermineShell(string? requestedShell, OperatingSystemPlatform platform)
-    {
-        if (!string.IsNullOrWhiteSpace(requestedShell))
-        {
-            return requestedShell.ToLowerInvariant();
-        }
-
-        // Default shell based on platform
-        return platform == OperatingSystemPlatform.Windows ? "cmd" : "bash";
-    }
-
-    /// <summary>
-    /// Determines if the script requires writing to a temp file for execution.
-    /// </summary>
-    /// <param name="script">The script content.</param>
-    /// <returns>True if a temp file is needed; otherwise, false.</returns>
-    private static bool RequiresTempFile(string script)
-    {
-        // Multi-line scripts need temp file
-        if (script.Contains('\n') || script.Contains('\r'))
-        {
-            return true;
-        }
-
-        // Scripts with certain characters that may cause shell escaping issues
-        if (script.Contains('\'') || script.Contains('\"'))
-        {
-            return true;
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// Executes a multi-line script by writing it to a temp file.
-    /// </summary>
-    private async Task<ExecutionResult> ExecuteMultilineScriptAsync(
-        string script,
-        string shell,
-        string workingDirectory,
-        IDictionary<string, string> environment,
-        HostExecutionContext context,
-        CancellationToken cancellationToken)
-    {
-        // Create temp script file with appropriate extension
-        var extension = GetScriptExtension(shell, context.Platform);
-        var scriptPath = Path.Combine(Path.GetTempPath(), $"pdk-script-{Guid.NewGuid():N}{extension}");
-
-        _logger.LogDebug("Writing script to temp file: {ScriptPath}", scriptPath);
-
-        try
-        {
-            // Prepare script content with proper line endings
-            var scriptContent = PrepareScriptContent(script, shell, context.Platform);
-
-            // Write script to temp file
-            await File.WriteAllTextAsync(scriptPath, scriptContent, cancellationToken);
-
-            // Build execution command for the script file
-            var command = BuildScriptCommand(scriptPath, shell, context.Platform);
-
-            _logger.LogDebug("Executing script via command: {Command}", command);
-
-            // Execute the script
-            return await context.ProcessExecutor.ExecuteAsync(
-                command,
-                workingDirectory,
-                environment,
-                cancellationToken: cancellationToken);
+            _logger.LogDebug(ex, "Script step '{StepName}' failed: {Message}", step.Name, ex.Message);
+            return StepExecutionHelpers.Failed(step.Name, StepExecutionHelpers.FormatException(ex), startTime);
         }
         finally
         {
-            // Cleanup temp file
-            try
-            {
-                if (File.Exists(scriptPath))
-                {
-                    File.Delete(scriptPath);
-                    _logger.LogDebug("Cleaned up temp script file: {ScriptPath}", scriptPath);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to delete temp script file: {ScriptPath}", scriptPath);
-            }
+            DeleteTempFile(scriptPath);
         }
     }
 
-    /// <summary>
-    /// Gets the appropriate script file extension for the shell and platform.
-    /// </summary>
-    private static string GetScriptExtension(string shell, OperatingSystemPlatform platform)
-    {
-        return shell.ToLowerInvariant() switch
-        {
-            "pwsh" or "powershell" => ".ps1",
-            "cmd" => ".cmd",
-            "bash" => ".sh",
-            "sh" => ".sh",
-            _ => platform == OperatingSystemPlatform.Windows ? ".cmd" : ".sh"
-        };
-    }
-
-    /// <summary>
-    /// Prepares the script content with appropriate line endings and shebang.
-    /// </summary>
-    private static string PrepareScriptContent(string script, string shell, OperatingSystemPlatform platform)
-    {
-        var content = new StringBuilder();
-
-        // Add shebang for Unix scripts
-        if (platform != OperatingSystemPlatform.Windows)
-        {
-            var shebang = shell.ToLowerInvariant() switch
-            {
-                "bash" => "#!/bin/bash",
-                "sh" => "#!/bin/sh",
-                _ => null
-            };
-
-            if (shebang != null)
-            {
-                content.AppendLine(shebang);
-                content.AppendLine("set -e"); // Exit on error
-            }
-        }
-
-        // Normalize line endings based on platform
-        var normalizedScript = platform == OperatingSystemPlatform.Windows
-            ? script.Replace("\n", Environment.NewLine).Replace("\r\r", "\r")
-            : script.Replace("\r\n", "\n").Replace("\r", "\n");
-
-        content.Append(normalizedScript);
-
-        return content.ToString();
-    }
-
-    /// <summary>
-    /// Builds the command to execute a script file.
-    /// </summary>
-    private static string BuildScriptCommand(string scriptPath, string shell, OperatingSystemPlatform platform)
-    {
-        // Escape path for the shell
-        var escapedPath = scriptPath.Contains(' ') ? $"\"{scriptPath}\"" : scriptPath;
-
-        // Note: ProcessExecutor wraps commands in cmd.exe /c "..." on Windows,
-        // so for cmd shell, we just return the script path directly.
-        // For other shells (pwsh, bash), we need the explicit shell prefix.
-        return shell.ToLowerInvariant() switch
-        {
-            "pwsh" => $"pwsh -NoProfile -ExecutionPolicy Bypass -File {escapedPath}",
-            "powershell" => $"powershell -NoProfile -ExecutionPolicy Bypass -File {escapedPath}",
-            "bash" => $"bash {escapedPath}",
-            "sh" => $"sh {escapedPath}",
-            "cmd" => escapedPath,  // ProcessExecutor will wrap in cmd.exe /c
-            _ => platform == OperatingSystemPlatform.Windows
-                ? escapedPath  // ProcessExecutor will wrap in cmd.exe /c
-                : $"bash {escapedPath}"
-        };
-    }
-
-    /// <summary>
-    /// Merges environment variables from context and step, with step values taking precedence.
-    /// </summary>
-    private static IDictionary<string, string> MergeEnvironments(
+    private static async Task<(string? Executable, ScriptShell EffectiveShell, string? Failure)> ResolveInterpreterAsync(
+        ScriptShell shell,
         HostExecutionContext context,
-        Step step)
+        CancellationToken cancellationToken)
     {
-        var merged = new Dictionary<string, string>(context.Environment);
-
-        if (step.Environment != null)
+        if (shell == ScriptShell.Cmd)
         {
-            foreach (var kvp in step.Environment)
+            return ("cmd.exe", ScriptShell.Cmd, null);
+        }
+
+        foreach (var candidate in ScriptShellSupport.GetExecutableCandidates(shell))
+        {
+            if (await context.ProcessExecutor.IsToolAvailableAsync(candidate, cancellationToken).ConfigureAwait(false))
             {
-                merged[kvp.Key] = kvp.Value;
+                return (candidate, ScriptShellSupport.ShellForExecutable(shell, candidate), null);
             }
         }
 
-        return merged;
+        var display = ScriptShellSupport.GetDisplayName(shell);
+        return (null, shell,
+            $"The '{display}' shell is not installed or not in PATH on this machine. " +
+            ScriptShellSupport.GetInstallHint(shell, inContainer: false));
     }
 
-    /// <summary>
-    /// Resolves the working directory for step execution.
-    /// </summary>
-    private static string ResolveWorkingDirectory(
-        HostExecutionContext context,
-        Step step)
+    private static async Task WriteScriptFileAsync(string path, string content, ScriptShell shell, CancellationToken cancellationToken)
     {
-        return context.ResolvePath(step.WorkingDirectory);
+        var options = new FileStreamOptions
+        {
+            Mode = FileMode.CreateNew,
+            Access = FileAccess.Write,
+            Share = FileShare.None
+        };
+
+        if (!OperatingSystem.IsWindows())
+        {
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        }
+
+        // Windows PowerShell 5 needs a BOM to read UTF-8 correctly; bash/sh/python must not see one.
+        var encoding = shell is ScriptShell.PowerShell or ScriptShell.Pwsh ? Utf8WithBom : Utf8NoBom;
+
+        var stream = new FileStream(path, options);
+        await using (stream.ConfigureAwait(false))
+        {
+            var writer = new StreamWriter(stream, encoding);
+            await using (writer.ConfigureAwait(false))
+            {
+                await writer.WriteAsync(content.AsMemory(), cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private void DeleteTempFile(string? scriptPath)
+    {
+        if (scriptPath == null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (File.Exists(scriptPath))
+            {
+                File.Delete(scriptPath);
+                _logger.LogDebug("Cleaned up temp script file: {ScriptPath}", scriptPath);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to delete temp script file: {ScriptPath}", scriptPath);
+        }
     }
 }

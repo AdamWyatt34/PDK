@@ -5,6 +5,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
 using PDK.Runners;
+using PDK.Runners.Models;
 using Xunit;
 
 /// <summary>
@@ -12,6 +13,8 @@ using Xunit;
 /// </summary>
 public class ProcessExecutorTests
 {
+    private static readonly bool IsWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+
     private readonly Mock<ILogger<ProcessExecutor>> _mockLogger;
     private readonly ProcessExecutor _executor;
 
@@ -21,29 +24,21 @@ public class ProcessExecutorTests
         _executor = new ProcessExecutor(_mockLogger.Object);
     }
 
-    #region Constructor Tests
+    #region Constructor / Platform
 
     [Fact]
     public void Constructor_WithNullLogger_ThrowsArgumentNullException()
     {
-        // Act & Assert
         var act = () => new ProcessExecutor(null!);
-        act.Should().Throw<ArgumentNullException>()
-            .WithParameterName("logger");
+        act.Should().Throw<ArgumentNullException>().WithParameterName("logger");
     }
-
-    #endregion
-
-    #region Platform Tests
 
     [Fact]
     public void Platform_ReturnsCorrectPlatform()
     {
-        // Act
         var platform = _executor.Platform;
 
-        // Assert
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        if (IsWindows)
         {
             platform.Should().Be(OperatingSystemPlatform.Windows);
         }
@@ -55,80 +50,57 @@ public class ProcessExecutorTests
         {
             platform.Should().Be(OperatingSystemPlatform.MacOS);
         }
-        else
-        {
-            platform.Should().Be(OperatingSystemPlatform.Unknown);
-        }
     }
 
     #endregion
 
-    #region ExecuteAsync - Validation Tests
+    #region Validation
 
-    [Fact]
-    public async Task ExecuteAsync_WithNullCommand_ThrowsArgumentException()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task ExecuteAsync_WithInvalidCommand_ThrowsArgumentException(string? command)
     {
-        // Act & Assert
-        var act = () => _executor.ExecuteAsync(null!, Environment.CurrentDirectory);
-        await act.Should().ThrowAsync<ArgumentException>()
-            .WithParameterName("command");
+        var act = () => _executor.ExecuteAsync(command!, Environment.CurrentDirectory);
+        await act.Should().ThrowAsync<ArgumentException>().WithParameterName(nameof(command));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public async Task ExecuteAsync_WithInvalidWorkingDirectory_ThrowsArgumentException(string? workingDirectory)
+    {
+        var act = () => _executor.ExecuteAsync("echo test", workingDirectory!);
+        await act.Should().ThrowAsync<ArgumentException>().WithParameterName(nameof(workingDirectory));
     }
 
     [Fact]
-    public async Task ExecuteAsync_WithEmptyCommand_ThrowsArgumentException()
+    public async Task ExecuteAsync_RequestWithoutCommandOrFileName_ThrowsArgumentException()
     {
-        // Act & Assert
-        var act = () => _executor.ExecuteAsync(string.Empty, Environment.CurrentDirectory);
-        await act.Should().ThrowAsync<ArgumentException>()
-            .WithParameterName("command");
+        var act = () => _executor.ExecuteAsync(new ProcessExecutionRequest { WorkingDirectory = Environment.CurrentDirectory });
+        await act.Should().ThrowAsync<ArgumentException>();
     }
 
     [Fact]
-    public async Task ExecuteAsync_WithWhitespaceCommand_ThrowsArgumentException()
+    public async Task ExecuteAsync_NullRequest_ThrowsArgumentNullException()
     {
-        // Act & Assert
-        var act = () => _executor.ExecuteAsync("   ", Environment.CurrentDirectory);
-        await act.Should().ThrowAsync<ArgumentException>()
-            .WithParameterName("command");
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_WithNullWorkingDirectory_ThrowsArgumentException()
-    {
-        // Act & Assert
-        var act = () => _executor.ExecuteAsync("echo test", null!);
-        await act.Should().ThrowAsync<ArgumentException>()
-            .WithParameterName("workingDirectory");
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_WithEmptyWorkingDirectory_ThrowsArgumentException()
-    {
-        // Act & Assert
-        var act = () => _executor.ExecuteAsync("echo test", string.Empty);
-        await act.Should().ThrowAsync<ArgumentException>()
-            .WithParameterName("workingDirectory");
+        var act = () => _executor.ExecuteAsync((ProcessExecutionRequest)null!);
+        await act.Should().ThrowAsync<ArgumentNullException>();
     }
 
     #endregion
 
-    #region ExecuteAsync - Simple Command Tests
+    #region Simple commands
 
     [Fact]
     public async Task ExecuteAsync_SimpleEchoCommand_ReturnsSuccessWithOutput()
     {
-        // Arrange
-        var command = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? "echo test"
-            : "echo test";
+        var result = await _executor.ExecuteAsync("echo test", Environment.CurrentDirectory);
 
-        // Act
-        var result = await _executor.ExecuteAsync(command, Environment.CurrentDirectory);
-
-        // Assert
-        result.Should().NotBeNull();
         result.ExitCode.Should().Be(0);
         result.Success.Should().BeTrue();
+        result.TimedOut.Should().BeFalse();
         result.StandardOutput.Should().Contain("test");
         result.Duration.Should().BeGreaterThan(TimeSpan.Zero);
     }
@@ -136,16 +108,10 @@ public class ProcessExecutorTests
     [Fact]
     public async Task ExecuteAsync_FailingCommand_ReturnsNonZeroExitCode()
     {
-        // Arrange
-        var command = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? "cmd /c exit 42"
-            : "exit 42";
+        var command = IsWindows ? "cmd /c exit 42" : "exit 42";
 
-        // Act
         var result = await _executor.ExecuteAsync(command, Environment.CurrentDirectory);
 
-        // Assert
-        result.Should().NotBeNull();
         result.ExitCode.Should().Be(42);
         result.Success.Should().BeFalse();
     }
@@ -153,46 +119,96 @@ public class ProcessExecutorTests
     [Fact]
     public async Task ExecuteAsync_CommandWithStderr_CapturesStandardError()
     {
-        // Arrange
-        var command = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? "cmd /c echo error message>&2"
-            : "echo 'error message' >&2";
+        var command = IsWindows ? "echo error message>&2" : "echo 'error message' >&2";
 
-        // Act
         var result = await _executor.ExecuteAsync(command, Environment.CurrentDirectory);
 
-        // Assert
-        result.Should().NotBeNull();
         result.StandardError.Should().Contain("error");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_CommandTextIsPassedWithoutEscaping()
+    {
+        if (IsWindows)
+        {
+            return;
+        }
+
+        var command = "printf '%s\\n' \"double \\\"quoted\\\" \\$dollar \\`backtick\\`\"";
+
+        var result = await _executor.ExecuteAsync(command, Environment.CurrentDirectory);
+
+        result.ExitCode.Should().Be(0);
+        result.StandardOutput.Trim().Should().Be("double \"quoted\" $dollar `backtick`");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ShellFeaturesWork()
+    {
+        if (IsWindows)
+        {
+            return;
+        }
+
+        var result = await _executor.ExecuteAsync("echo one | tr a-z A-Z && echo $((1+2))", Environment.CurrentDirectory);
+
+        result.StandardOutput.Should().Contain("ONE");
+        result.StandardOutput.Should().Contain("3");
     }
 
     #endregion
 
-    #region ExecuteAsync - Environment Variables Tests
+    #region Executable with argument list
+
+    [Fact]
+    public async Task ExecuteAsync_FileNameWithArguments_BypassesShellQuoting()
+    {
+        if (IsWindows)
+        {
+            return;
+        }
+
+        var request = new ProcessExecutionRequest
+        {
+            FileName = "sh",
+            Arguments = new[] { "-c", "printf '%s|%s\\n' \"$1\" \"$2\"", "sh", "a b", "it's $HOME" },
+            WorkingDirectory = Environment.CurrentDirectory
+        };
+
+        var result = await _executor.ExecuteAsync(request);
+
+        result.ExitCode.Should().Be(0);
+        result.StandardOutput.Trim().Should().Be("a b|it's $HOME");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_MissingExecutable_ReturnsExitCode127()
+    {
+        var request = new ProcessExecutionRequest
+        {
+            FileName = "pdk-this-executable-does-not-exist-12345",
+            WorkingDirectory = Environment.CurrentDirectory
+        };
+
+        var result = await _executor.ExecuteAsync(request);
+
+        result.Success.Should().BeFalse();
+        result.ExitCode.Should().Be(127);
+        result.StandardError.Should().Contain("pdk-this-executable-does-not-exist-12345");
+    }
+
+    #endregion
+
+    #region Environment and working directory
 
     [Fact]
     public async Task ExecuteAsync_WithEnvironmentVariables_PassesThemToProcess()
     {
-        // Arrange
-        var environment = new Dictionary<string, string>
-        {
-            ["TEST_VAR"] = "test_value_123"
-        };
+        var environment = new Dictionary<string, string> { ["TEST_VAR"] = "test_value_123" };
+        var command = IsWindows ? "set TEST_VAR" : "printenv TEST_VAR";
 
-        // Use printenv/set to verify environment variables are passed correctly
-        // This avoids shell variable expansion issues with escaping
-        var command = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? "set TEST_VAR"
-            : "printenv TEST_VAR";
+        var result = await _executor.ExecuteAsync(command, Environment.CurrentDirectory, environment);
 
-        // Act
-        var result = await _executor.ExecuteAsync(
-            command,
-            Environment.CurrentDirectory,
-            environment);
-
-        // Assert
-        result.Should().NotBeNull();
         result.ExitCode.Should().Be(0);
         result.StandardOutput.Should().Contain("test_value_123");
     }
@@ -200,131 +216,20 @@ public class ProcessExecutorTests
     [Fact]
     public async Task ExecuteAsync_WithNullEnvironment_Succeeds()
     {
-        // Arrange
-        var command = "echo test";
+        var result = await _executor.ExecuteAsync("echo test", Environment.CurrentDirectory, environment: null);
 
-        // Act
-        var result = await _executor.ExecuteAsync(
-            command,
-            Environment.CurrentDirectory,
-            environment: null);
-
-        // Assert
-        result.Should().NotBeNull();
         result.ExitCode.Should().Be(0);
     }
-
-    #endregion
-
-    #region ExecuteAsync - Timeout Tests
-
-    [Fact]
-    public async Task ExecuteAsync_WithTimeout_CompletesBeforeTimeout()
-    {
-        // Arrange
-        var command = "echo fast";
-
-        // Act
-        var result = await _executor.ExecuteAsync(
-            command,
-            Environment.CurrentDirectory,
-            timeout: TimeSpan.FromSeconds(30));
-
-        // Assert
-        result.Should().NotBeNull();
-        result.ExitCode.Should().Be(0);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_ExceedsTimeout_ReturnsTimeoutError()
-    {
-        // Arrange - use a command that takes a while
-        var command = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? "ping -n 10 127.0.0.1"
-            : "sleep 10";
-
-        // Act
-        var result = await _executor.ExecuteAsync(
-            command,
-            Environment.CurrentDirectory,
-            timeout: TimeSpan.FromMilliseconds(500));
-
-        // Assert
-        result.Should().NotBeNull();
-        result.ExitCode.Should().Be(-1);
-        result.Success.Should().BeFalse();
-        result.StandardError.Should().Contain("timed out");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Cancellation Tests
-
-    [Fact]
-    public async Task ExecuteAsync_WithCancellation_ReturnsCancelledResult()
-    {
-        // Arrange
-        var command = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? "ping -n 10 127.0.0.1"
-            : "sleep 10";
-
-        using var cts = new CancellationTokenSource();
-
-        // Cancel after a short delay
-        cts.CancelAfter(TimeSpan.FromMilliseconds(200));
-
-        // Act
-        var result = await _executor.ExecuteAsync(
-            command,
-            Environment.CurrentDirectory,
-            cancellationToken: cts.Token);
-
-        // Assert
-        result.Should().NotBeNull();
-        result.ExitCode.Should().Be(-2); // Cancelled exit code
-        result.Success.Should().BeFalse();
-        result.StandardError.Should().Contain("cancelled");
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_AlreadyCancelled_ReturnsCancelledResult()
-    {
-        // Arrange
-        var command = "echo test";
-        var cts = new CancellationTokenSource();
-        cts.Cancel();
-
-        // Act
-        var result = await _executor.ExecuteAsync(
-            command,
-            Environment.CurrentDirectory,
-            cancellationToken: cts.Token);
-
-        // Assert
-        result.Should().NotBeNull();
-        result.ExitCode.Should().BeNegative();
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Working Directory Tests
 
     [Fact]
     public async Task ExecuteAsync_WithWorkingDirectory_ExecutesInCorrectDirectory()
     {
-        // Arrange
         var tempDir = Path.GetTempPath();
-        var command = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? "cd"
-            : "pwd";
+        var command = IsWindows ? "cd" : "pwd";
 
-        // Act
         var result = await _executor.ExecuteAsync(command, tempDir);
 
-        // Assert
-        result.Should().NotBeNull();
         result.ExitCode.Should().Be(0);
-        // Normalize paths for comparison
         var normalizedOutput = result.StandardOutput.Trim().TrimEnd(Path.DirectorySeparatorChar);
         var normalizedTempDir = tempDir.TrimEnd(Path.DirectorySeparatorChar);
         normalizedOutput.Should().ContainEquivalentOf(normalizedTempDir);
@@ -332,73 +237,186 @@ public class ProcessExecutorTests
 
     #endregion
 
-    #region IsToolAvailableAsync Tests
+    #region Live output
 
     [Fact]
-    public async Task IsToolAvailableAsync_WithNullToolName_ThrowsArgumentException()
+    public async Task ExecuteAsync_LineCallbacks_ReceiveOutputAsItArrives()
     {
-        // Act & Assert
-        var act = () => _executor.IsToolAvailableAsync(null!);
-        await act.Should().ThrowAsync<ArgumentException>()
-            .WithParameterName("toolName");
+        var command = IsWindows ? "echo one&& echo two&& echo err>&2" : "echo one; echo two; echo err >&2";
+        var outLines = new List<string>();
+        var errLines = new List<string>();
+
+        var result = await _executor.ExecuteAsync(new ProcessExecutionRequest
+        {
+            Command = command,
+            WorkingDirectory = Environment.CurrentDirectory,
+            OnOutputLine = outLines.Add,
+            OnErrorLine = errLines.Add
+        });
+
+        result.ExitCode.Should().Be(0);
+        outLines.Select(l => l.Trim()).Should().Equal("one", "two");
+        errLines.Select(l => l.Trim()).Should().Equal("err");
+        result.StandardOutput.Should().Contain("one").And.Contain("two");
     }
 
     [Fact]
-    public async Task IsToolAvailableAsync_WithEmptyToolName_ThrowsArgumentException()
+    public async Task ExecuteAsync_ThrowingLineCallback_DoesNotFailExecution()
     {
-        // Act & Assert
-        var act = () => _executor.IsToolAvailableAsync(string.Empty);
-        await act.Should().ThrowAsync<ArgumentException>()
-            .WithParameterName("toolName");
+        var result = await _executor.ExecuteAsync(new ProcessExecutionRequest
+        {
+            Command = "echo one",
+            WorkingDirectory = Environment.CurrentDirectory,
+            OnOutputLine = _ => throw new InvalidOperationException("handler bug")
+        });
+
+        result.ExitCode.Should().Be(0);
+        result.StandardOutput.Should().Contain("one");
+    }
+
+    #endregion
+
+    #region Timeout and cancellation
+
+    [Fact]
+    public async Task ExecuteAsync_WithTimeout_CompletesBeforeTimeout()
+    {
+        var result = await _executor.ExecuteAsync("echo fast", Environment.CurrentDirectory, timeout: TimeSpan.FromSeconds(30));
+
+        result.ExitCode.Should().Be(0);
+        result.TimedOut.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ExceedsTimeout_ReturnsExitCode124()
+    {
+        var command = IsWindows ? "ping -n 10 127.0.0.1" : "sleep 10";
+
+        var result = await _executor.ExecuteAsync(command, Environment.CurrentDirectory, timeout: TimeSpan.FromMilliseconds(500));
+
+        result.ExitCode.Should().Be(ExecutionResult.TimeoutExitCode);
+        result.TimedOut.Should().BeTrue();
+        result.Success.Should().BeFalse();
+        result.StandardError.Should().Contain("timed out");
+        result.Duration.Should().BeLessThan(TimeSpan.FromSeconds(9));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithCancellation_ThrowsOperationCanceled()
+    {
+        var command = IsWindows ? "ping -n 10 127.0.0.1" : "sleep 10";
+        using var cts = new CancellationTokenSource();
+        cts.CancelAfter(TimeSpan.FromMilliseconds(200));
+
+        var act = () => _executor.ExecuteAsync(command, Environment.CurrentDirectory, cancellationToken: cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AlreadyCancelled_ThrowsOperationCanceled()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var act = () => _executor.ExecuteAsync("echo test", Environment.CurrentDirectory, cancellationToken: cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    #endregion
+
+    #region CreateStartInfo
+
+    [Fact]
+    public void CreateStartInfo_UnixCommand_UsesShellWithSingleArgument()
+    {
+        var request = new ProcessExecutionRequest { Command = "echo \"a b\" | wc", WorkingDirectory = "/tmp" };
+
+        var info = ProcessExecutor.CreateStartInfo(request, OperatingSystemPlatform.Linux);
+
+        info.FileName.Should().BeOneOf("bash", "sh");
+        info.ArgumentList.Should().Equal("-c", "echo \"a b\" | wc");
+        info.Arguments.Should().BeEmpty();
+        info.UseShellExecute.Should().BeFalse();
+        info.RedirectStandardOutput.Should().BeTrue();
+        info.RedirectStandardError.Should().BeTrue();
+    }
+
+    [Fact]
+    public void CreateStartInfo_WindowsCommand_UsesCmdWithLiteralSwitch()
+    {
+        var request = new ProcessExecutionRequest { Command = "echo \"a b\"", WorkingDirectory = "C:\\work" };
+
+        var info = ProcessExecutor.CreateStartInfo(request, OperatingSystemPlatform.Windows);
+
+        info.FileName.Should().Be("cmd.exe");
+        info.Arguments.Should().Be("/d /s /c \"echo \"a b\"\"");
+        info.ArgumentList.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void CreateStartInfo_FileName_UsesArgumentList()
+    {
+        var request = new ProcessExecutionRequest
+        {
+            FileName = "git",
+            Arguments = new[] { "clone", "--", "https://example.com/repo.git", "/tmp/my repo" },
+            WorkingDirectory = "/tmp",
+            Environment = new Dictionary<string, string> { ["GIT_TERMINAL_PROMPT"] = "0" }
+        };
+
+        var info = ProcessExecutor.CreateStartInfo(request, OperatingSystemPlatform.Windows);
+
+        info.FileName.Should().Be("git");
+        info.ArgumentList.Should().Equal("clone", "--", "https://example.com/repo.git", "/tmp/my repo");
+        info.Environment["GIT_TERMINAL_PROMPT"].Should().Be("0");
+    }
+
+    #endregion
+
+    #region IsToolAvailableAsync Tests
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public async Task IsToolAvailableAsync_WithInvalidToolName_ThrowsArgumentException(string? toolName)
+    {
+        var act = () => _executor.IsToolAvailableAsync(toolName!);
+        await act.Should().ThrowAsync<ArgumentException>().WithParameterName(nameof(toolName));
     }
 
     [Fact]
     public async Task IsToolAvailableAsync_CommonTool_ReturnsTrue()
     {
-        // Arrange - use a tool that should exist on all platforms
-        var toolName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? "cmd"
-            : "sh";
+        var toolName = IsWindows ? "cmd" : "sh";
 
-        // Act
         var result = await _executor.IsToolAvailableAsync(toolName);
 
-        // Assert
         result.Should().BeTrue();
     }
 
     [Fact]
     public async Task IsToolAvailableAsync_NonExistentTool_ReturnsFalse()
     {
-        // Arrange
-        var toolName = "this-tool-definitely-does-not-exist-12345";
+        var result = await _executor.IsToolAvailableAsync("this-tool-definitely-does-not-exist-12345");
 
-        // Act
-        var result = await _executor.IsToolAvailableAsync(toolName);
-
-        // Assert
         result.Should().BeFalse();
     }
 
     [Fact]
-    public async Task IsToolAvailableAsync_Git_ReturnsExpectedResult()
+    public async Task IsToolAvailableAsync_ToolNameWithShellMetacharacters_IsNotInterpreted()
     {
-        // Act
-        var result = await _executor.IsToolAvailableAsync("git");
+        var result = await _executor.IsToolAvailableAsync("sh; echo injected");
 
-        // Assert - git should be available in most dev environments
-        // We don't assert true because it might not be installed
-        // Just verify it returns a valid boolean (either value is acceptable)
-        result.Should().Be(result); // Self-equality check - just ensures no exception
+        result.Should().BeFalse();
     }
 
     [Fact]
-    public async Task IsToolAvailableAsync_Dotnet_ReturnsExpectedResult()
+    public async Task IsToolAvailableAsync_Dotnet_ReturnsTrue()
     {
-        // Act
         var result = await _executor.IsToolAvailableAsync("dotnet");
 
-        // Assert - dotnet should be available since we're running .NET tests
         result.Should().BeTrue();
     }
 

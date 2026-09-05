@@ -12,854 +12,295 @@ using PDK.Runners.StepExecutors;
 /// </summary>
 public class DockerStepExecutorTests : RunnerTestBase
 {
-    #region Property Tests
+    private readonly DockerStepExecutor _executor = new();
+    private readonly List<ContainerExecRequest> _requests = new();
+
+    public DockerStepExecutorTests()
+    {
+        MockContainerManager.SetupClassicExec(c => c == "command -v docker").ReturnsAsync(RunnerMockExtensions.Ok("/usr/bin/docker"));
+        MockContainerManager.RecordExecs(_requests, RunnerMockExtensions.Ok("", "Successfully built abc123"));
+    }
+
+    private Step CreateDockerStep(string? command, Action<Step>? configure = null)
+    {
+        var step = CreateTestStep(StepType.Docker, "docker step");
+        step.Script = null;
+        step.With.Clear();
+        if (command != null)
+        {
+            step.With["command"] = command;
+        }
+
+        configure?.Invoke(step);
+        return step;
+    }
+
+    private IEnumerable<string?> Commands => _requests.Select(r => r.Command);
 
     [Fact]
     public void StepType_ReturnsDocker()
     {
-        // Arrange
-        var executor = new DockerStepExecutor();
-
-        // Act
-        var result = executor.StepType;
-
-        // Assert
-        result.Should().Be("docker");
+        _executor.StepType.Should().Be("docker");
     }
-
-    #endregion
-
-    #region ExecuteAsync - Build Command
 
     [Fact]
     public async Task ExecuteAsync_BuildWithDefaults_UsesDefaultDockerfileAndContext()
     {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Build image");
-        step.With["command"] = "build";
+        var result = await _executor.ExecuteAsync(CreateDockerStep("build"), CreateTestContext());
 
-        MockContainerManager
-            .SetupSequence(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult()) // Tool validation
-            .ReturnsAsync(CreateSuccessResult()); // Command execution
-
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
         result.Success.Should().BeTrue();
-
-        MockContainerManager.Verify(
-            x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("docker build") && cmd.Contains("-f Dockerfile") && cmd.EndsWith(".")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_BuildWithSingleTag_IncludesTag()
-    {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Build with tag");
-        step.With["command"] = "build";
-        step.With["tags"] = "myapp:latest";
-
-        MockContainerManager
-            .SetupSequence(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult())
-            .ReturnsAsync(CreateSuccessResult());
-
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-
-        MockContainerManager.Verify(
-            x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("-t myapp:latest")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_BuildWithMultipleTags_IncludesAllTags()
-    {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Build with multiple tags");
-        step.With["command"] = "build";
-        step.With["tags"] = "myapp:latest,myapp:v1.0.0,myapp:prod";
-
-        MockContainerManager
-            .SetupSequence(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult())
-            .ReturnsAsync(CreateSuccessResult());
-
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-
-        MockContainerManager.Verify(
-            x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd =>
-                    cmd.Contains("-t myapp:latest") &&
-                    cmd.Contains("-t myapp:v1.0.0") &&
-                    cmd.Contains("-t myapp:prod")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_BuildWithBuildArgs_IncludesAllArgs()
-    {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Build with args");
-        step.With["command"] = "build";
-        step.With["buildArgs"] = "VERSION=1.0.0,BUILD_DATE=2024-11-23,ENV=production";
-
-        MockContainerManager
-            .SetupSequence(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult())
-            .ReturnsAsync(CreateSuccessResult());
-
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-
-        MockContainerManager.Verify(
-            x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd =>
-                    cmd.Contains("--build-arg VERSION=1.0.0") &&
-                    cmd.Contains("--build-arg BUILD_DATE=2024-11-23") &&
-                    cmd.Contains("--build-arg ENV=production")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_BuildWithTarget_IncludesTarget()
-    {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Build with target");
-        step.With["command"] = "build";
-        step.With["target"] = "production";
-
-        MockContainerManager
-            .SetupSequence(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult())
-            .ReturnsAsync(CreateSuccessResult());
-
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-
-        MockContainerManager.Verify(
-            x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("--target production")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
+        Commands.Should().Equal("docker build -f Dockerfile .");
+        result.Output.Should().Contain("Successfully built abc123");
     }
 
     [Fact]
     public async Task ExecuteAsync_BuildWithAllParameters_FormatsCorrectly()
     {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Build with all parameters");
-        step.With["command"] = "build";
-        step.With["Dockerfile"] = "Dockerfile.prod";
-        step.With["context"] = "./app";
-        step.With["tags"] = "myapp:latest,myapp:v1.0";
-        step.With["buildArgs"] = "VERSION=1.0,ENV=prod";
-        step.With["target"] = "release";
+        var step = CreateDockerStep("build", s =>
+        {
+            s.With["file"] = "docker/Dockerfile.prod";
+            s.With["context"] = "./app";
+            s.With["tags"] = "myapp:latest, myapp:v1.0";
+            s.With["buildArgs"] = "VERSION=1.0,ENV=prod";
+            s.With["target"] = "release";
+            s.With["arguments"] = "--no-cache";
+        });
 
-        MockContainerManager
-            .SetupSequence(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult())
-            .ReturnsAsync(CreateSuccessResult());
+        await _executor.ExecuteAsync(step, CreateTestContext());
 
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-
-        MockContainerManager.Verify(
-            x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd =>
-                    cmd.Contains("docker build") &&
-                    cmd.Contains("-f Dockerfile.prod") &&
-                    cmd.Contains("-t myapp:latest") &&
-                    cmd.Contains("-t myapp:v1.0") &&
-                    cmd.Contains("--build-arg VERSION=1.0") &&
-                    cmd.Contains("--build-arg ENV=prod") &&
-                    cmd.Contains("--target release") &&
-                    cmd.EndsWith("./app")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
+        Commands.Single().Should().Be(
+            "docker build -f docker/Dockerfile.prod -t myapp:latest -t myapp:v1.0 --build-arg VERSION=1.0 --build-arg ENV=prod --target release --no-cache ./app");
     }
 
-    #endregion
+    [Fact]
+    public async Task ExecuteAsync_NewlineSeparatedTagsAndBuildArgs_AreAccepted()
+    {
+        var step = CreateDockerStep("build", s =>
+        {
+            s.With["tags"] = "myapp:latest\nmyapp:v1.0\n";
+            s.With["build-args"] = "A=1\nB=two words";
+        });
 
-    #region ExecuteAsync - Tag Command
+        await _executor.ExecuteAsync(step, CreateTestContext());
+
+        Commands.Single().Should().Be("docker build -f Dockerfile -t myapp:latest -t myapp:v1.0 --build-arg A=1 --build-arg 'B=two words' .");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RepositoryAndTags_AreCombined()
+    {
+        var step = CreateDockerStep("build", s =>
+        {
+            s.With["repository"] = "team/app";
+            s.With["tags"] = "42\nlatest";
+        });
+
+        await _executor.ExecuteAsync(step, CreateTestContext());
+
+        Commands.Single().Should().Be("docker build -f Dockerfile -t team/app:42 -t team/app:latest .");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ContainerRegistryHost_PrefixesRepository()
+    {
+        var step = CreateDockerStep("buildAndPush", s =>
+        {
+            s.With["repository"] = "app";
+            s.With["containerRegistry"] = "registry.example.com";
+            s.With["tags"] = "1.0";
+            s.With["Dockerfile"] = "Dockerfile";
+            s.With["buildContext"] = ".";
+        });
+
+        var result = await _executor.ExecuteAsync(step, CreateTestContext());
+
+        result.Success.Should().BeTrue();
+        Commands.Should().Equal(
+            "docker build -f Dockerfile -t registry.example.com/app:1.0 .",
+            "docker push registry.example.com/app:1.0");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_BuildAndPush_StopsWhenBuildFails()
+    {
+        MockContainerManager.SetupExec(r => r.Command!.StartsWith("docker build"))
+            .Callback<ContainerExecRequest, CancellationToken>((r, _) => _requests.Add(r))
+            .ReturnsAsync(RunnerMockExtensions.Fail(1, "build failed"));
+        var step = CreateDockerStep("buildAndPush", s => s.With["tags"] = "myapp:1");
+
+        var result = await _executor.ExecuteAsync(step, CreateTestContext());
+
+        result.Success.Should().BeFalse();
+        result.ExitCode.Should().Be(1);
+        Commands.Should().Equal("docker build -f Dockerfile -t myapp:1 .");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_BuildAndPushWithoutTags_ReturnsFailedResult()
+    {
+        var result = await _executor.ExecuteAsync(CreateDockerStep("buildAndPush"), CreateTestContext());
+
+        result.Success.Should().BeFalse();
+        result.ErrorOutput.Should().Contain("tag");
+        _requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_BuildWithPushTrue_PushesAfterBuild()
+    {
+        var step = CreateDockerStep("build", s =>
+        {
+            s.With["tags"] = "myapp:1";
+            s.With["push"] = "true";
+        });
+
+        await _executor.ExecuteAsync(step, CreateTestContext());
+
+        Commands.Should().Equal("docker build -f Dockerfile -t myapp:1 .", "docker push myapp:1");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_PushWithImage_PushesImage()
+    {
+        await _executor.ExecuteAsync(CreateDockerStep("push", s => s.With["image"] = "myapp:latest"), CreateTestContext());
+
+        Commands.Should().Equal("docker push myapp:latest");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_PushWithRepositoryTags_PushesEachTag()
+    {
+        var step = CreateDockerStep("push", s =>
+        {
+            s.With["repository"] = "myapp";
+            s.With["tags"] = "1,2";
+        });
+
+        await _executor.ExecuteAsync(step, CreateTestContext());
+
+        Commands.Should().Equal("docker push myapp:1", "docker push myapp:2");
+    }
 
     [Fact]
     public async Task ExecuteAsync_Tag_ExecutesSuccessfully()
     {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Tag image");
-        step.With["command"] = "tag";
-        step.With["sourceImage"] = "myapp:latest";
-        step.With["targetTag"] = "myapp:prod";
+        var step = CreateDockerStep("tag", s =>
+        {
+            s.With["sourceImage"] = "myapp:latest";
+            s.With["targetTag"] = "myapp:prod";
+        });
 
-        MockContainerManager
-            .SetupSequence(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult())
-            .ReturnsAsync(CreateSuccessResult());
+        await _executor.ExecuteAsync(step, CreateTestContext());
 
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
+        Commands.Should().Equal("docker tag myapp:latest myapp:prod");
+    }
 
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
+    [Fact]
+    public async Task ExecuteAsync_RunWithArguments_IncludesArgumentsBeforeImage()
+    {
+        var step = CreateDockerStep("run", s =>
+        {
+            s.With["image"] = "myapp:latest";
+            s.With["arguments"] = "--rm -d -p 8080:8080";
+        });
 
-        // Assert
+        await _executor.ExecuteAsync(step, CreateTestContext());
+
+        Commands.Should().Equal("docker run --rm -d -p 8080:8080 myapp:latest");
+    }
+
+    [Theory]
+    [InlineData("login")]
+    [InlineData("logout")]
+    public async Task ExecuteAsync_LoginLogout_AreNoOps(string command)
+    {
+        var result = await _executor.ExecuteAsync(CreateDockerStep(command), CreateTestContext());
+
         result.Success.Should().BeTrue();
-
-        MockContainerManager.Verify(
-            x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("docker tag myapp:latest myapp:prod")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
+        result.Output.Should().Contain("no-op");
+        _requests.Should().BeEmpty();
     }
 
-    [Fact]
-    public async Task ExecuteAsync_TagMissingSourceImage_ThrowsArgumentException()
+    [Theory]
+    [InlineData("tag", "sourceImage")]
+    [InlineData("run", "image")]
+    [InlineData("push", "image")]
+    public async Task ExecuteAsync_MissingRequiredInput_ReturnsFailedResult(string command, string expectedInput)
     {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Tag without source");
-        step.With["command"] = "tag";
-        step.With["targetTag"] = "myapp:prod";
-        // sourceImage is missing
+        var result = await _executor.ExecuteAsync(CreateDockerStep(command), CreateTestContext());
 
-        MockContainerManager
-            .Setup(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("command -v docker")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult());
-
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Should().NotBeNull();
         result.Success.Should().BeFalse();
-        result.ErrorOutput.Should().Contain("sourceImage");
-        result.ErrorOutput.Should().Contain("required");
+        result.ErrorOutput.Should().Contain(expectedInput).And.Contain("required");
+        _requests.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task ExecuteAsync_TagMissingTargetTag_ThrowsArgumentException()
+    public async Task ExecuteAsync_TagMissingTarget_ReturnsFailedResult()
     {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Tag without target");
-        step.With["command"] = "tag";
-        step.With["sourceImage"] = "myapp:latest";
-        // targetTag is missing
+        var result = await _executor.ExecuteAsync(CreateDockerStep("tag", s => s.With["sourceImage"] = "a"), CreateTestContext());
 
-        MockContainerManager
-            .Setup(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("command -v docker")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult());
-
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Should().NotBeNull();
         result.Success.Should().BeFalse();
         result.ErrorOutput.Should().Contain("targetTag");
-        result.ErrorOutput.Should().Contain("required");
     }
 
-    #endregion
-
-    #region ExecuteAsync - Run Command
-
-    [Fact]
-    public async Task ExecuteAsync_Run_ExecutesSuccessfully()
+    [Theory]
+    [InlineData(null, "required")]
+    [InlineData("invalid", "Unsupported")]
+    public async Task ExecuteAsync_InvalidCommand_ReturnsFailedResult(string? command, string expected)
     {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Run container");
-        step.With["command"] = "run";
-        step.With["image"] = "myapp:latest";
+        var result = await _executor.ExecuteAsync(CreateDockerStep(command), CreateTestContext());
 
-        MockContainerManager
-            .SetupSequence(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult())
-            .ReturnsAsync(CreateSuccessResult());
-
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-
-        MockContainerManager.Verify(
-            x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("docker run") && cmd.Contains("myapp:latest")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_RunWithArguments_IncludesArguments()
-    {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Run with args");
-        step.With["command"] = "run";
-        step.With["image"] = "myapp:latest";
-        step.With["arguments"] = "--rm -d -p 8080:8080";
-
-        MockContainerManager
-            .SetupSequence(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult())
-            .ReturnsAsync(CreateSuccessResult());
-
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-
-        MockContainerManager.Verify(
-            x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("--rm") && cmd.Contains("-d") && cmd.Contains("-p 8080:8080")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_RunMissingImage_ThrowsArgumentException()
-    {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Run without image");
-        step.With["command"] = "run";
-        // image is missing
-
-        MockContainerManager
-            .Setup(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("command -v docker")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult());
-
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Should().NotBeNull();
         result.Success.Should().BeFalse();
-        result.ErrorOutput.Should().Contain("image");
-        result.ErrorOutput.Should().Contain("required");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Push Command
-
-    [Fact]
-    public async Task ExecuteAsync_Push_ExecutesSuccessfully()
-    {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Push image");
-        step.With["command"] = "push";
-        step.With["image"] = "myapp:latest";
-
-        MockContainerManager
-            .SetupSequence(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult())
-            .ReturnsAsync(CreateSuccessResult());
-
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-
-        MockContainerManager.Verify(
-            x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("docker push myapp:latest")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
+        result.ErrorOutput.Should().Contain(expected).And.Contain("command");
     }
 
     [Fact]
-    public async Task ExecuteAsync_PushMissingImage_ThrowsArgumentException()
+    public async Task ExecuteAsync_DockerNotAvailable_ReturnsFailedResult()
     {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Push without image");
-        step.With["command"] = "push";
-        // image is missing
+        MockContainerManager.SetupClassicExec(c => c == "command -v docker").ReturnsAsync(RunnerMockExtensions.Fail());
 
-        MockContainerManager
-            .Setup(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("command -v docker")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult());
+        var result = await _executor.ExecuteAsync(CreateDockerStep("build"), CreateTestContext());
 
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Should().NotBeNull();
         result.Success.Should().BeFalse();
-        result.ErrorOutput.Should().Contain("image");
-        result.ErrorOutput.Should().Contain("required");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Command Validation
-
-    [Fact]
-    public async Task ExecuteAsync_MissingCommand_ThrowsArgumentException()
-    {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "No command");
-        // step.With is empty - no command
-
-        MockContainerManager
-            .Setup(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("command -v docker")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult());
-
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Should().NotBeNull();
-        result.Success.Should().BeFalse();
-        result.ErrorOutput.Should().Contain("command");
-        result.ErrorOutput.Should().Contain("required");
+        result.ErrorOutput.Should().Contain("docker").And.Contain("not found");
+        _requests.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task ExecuteAsync_UnsupportedCommand_ThrowsArgumentException()
+    public async Task ExecuteAsync_WithStepEnvironmentAndWorkingDirectory_AreApplied()
     {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Invalid command");
-        step.With["command"] = "invalid";
+        var step = CreateDockerStep("build", s =>
+        {
+            s.Environment["DOCKER_BUILDKIT"] = "1";
+            s.WorkingDirectory = "./docker";
+        });
 
-        MockContainerManager
-            .Setup(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("command -v docker")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult());
+        await _executor.ExecuteAsync(step, CreateTestContext());
 
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Should().NotBeNull();
-        result.Success.Should().BeFalse();
-        result.ErrorOutput.Should().Contain("Unsupported");
-        result.ErrorOutput.Should().Contain("command");
+        _requests.Single().Environment!["DOCKER_BUILDKIT"].Should().Be("1");
+        _requests.Single().Environment.Should().ContainKey("TEST_VAR");
+        _requests.Single().WorkingDirectory.Should().Be("/workspace/docker");
     }
-
-    #endregion
-
-    #region ExecuteAsync - Tool Validation
-
-    [Fact]
-    public async Task ExecuteAsync_DockerNotAvailable_ThrowsToolNotFoundException()
-    {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Build");
-        step.With["command"] = "build";
-
-        MockContainerManager
-            .Setup(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd => cmd.Contains("command -v docker")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateFailureResult()); // Docker NOT found
-
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        Func<Task> act = async () => await executor.ExecuteAsync(step, context);
-
-        // Assert
-        await act.Should().ThrowAsync<ToolNotFoundException>()
-            .WithMessage("*docker*not found*");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Comma-Separated Values
-
-    [Fact]
-    public async Task ExecuteAsync_TagsWithSpaces_TrimsCorrectly()
-    {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Build with spaced tags");
-        step.With["command"] = "build";
-        step.With["tags"] = "myapp:latest , myapp:v1.0 , myapp:prod";
-
-        MockContainerManager
-            .SetupSequence(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult())
-            .ReturnsAsync(CreateSuccessResult());
-
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-
-        MockContainerManager.Verify(
-            x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd =>
-                    cmd.Contains("-t myapp:latest") &&
-                    cmd.Contains("-t myapp:v1.0") &&
-                    cmd.Contains("-t myapp:prod")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_BuildArgsWithSpaces_TrimsCorrectly()
-    {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Build with spaced args");
-        step.With["command"] = "build";
-        step.With["buildArgs"] = "VERSION=1.0 , ENV=prod , DEBUG=false";
-
-        MockContainerManager
-            .SetupSequence(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult())
-            .ReturnsAsync(CreateSuccessResult());
-
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-
-        MockContainerManager.Verify(
-            x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.Is<string>(cmd =>
-                    cmd.Contains("--build-arg VERSION=1.0") &&
-                    cmd.Contains("--build-arg ENV=prod") &&
-                    cmd.Contains("--build-arg DEBUG=false")),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Environment and Context
-
-    [Fact]
-    public async Task ExecuteAsync_WithStepEnvironment_MergesWithContext()
-    {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Build with env");
-        step.With["command"] = "build";
-        step.Environment["DOCKER_BUILDKIT"] = "1";
-
-        IDictionary<string, string>? capturedEnv = null;
-
-        MockContainerManager
-            .Setup(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, string, string, IDictionary<string, string>, CancellationToken>(
-                (_, _, _, env, _) => capturedEnv = env)
-            .ReturnsAsync(CreateSuccessResult());
-
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-        capturedEnv.Should().ContainKey("TEST_VAR");
-        capturedEnv.Should().ContainKey("DOCKER_BUILDKIT");
-        capturedEnv!["DOCKER_BUILDKIT"].Should().Be("1");
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_WithWorkingDirectory_UsesCorrectPath()
-    {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Build in subdirectory");
-        step.With["command"] = "build";
-        step.WorkingDirectory = "./docker";
-
-        string? capturedWorkingDir = null;
-
-        MockContainerManager
-            .Setup(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, string, string, IDictionary<string, string>, CancellationToken>(
-                (_, _, wd, _, _) => capturedWorkingDir = wd)
-            .ReturnsAsync(CreateSuccessResult());
-
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Success.Should().BeTrue();
-        capturedWorkingDir.Should().Be("/workspace/docker");
-    }
-
-    #endregion
-
-    #region ExecuteAsync - Error Scenarios
 
     [Fact]
     public async Task ExecuteAsync_CommandFailure_ReturnsFailureResult()
     {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Build failing");
-        step.With["command"] = "build";
+        MockContainerManager.RecordExecs(_requests, RunnerMockExtensions.Fail(1, "error"));
 
-        MockContainerManager
-            .SetupSequence(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult())  // Tool validation
-            .ReturnsAsync(CreateFailureResult()); // Build fails
+        var result = await _executor.ExecuteAsync(CreateDockerStep("build"), CreateTestContext());
 
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        var result = await executor.ExecuteAsync(step, context);
-
-        // Assert
-        result.Should().NotBeNull();
         result.Success.Should().BeFalse();
         result.ExitCode.Should().Be(1);
     }
 
     [Fact]
-    public async Task ExecuteAsync_ContainerException_Rethrows()
+    public async Task ExecuteAsync_ContainerException_BecomesFailedResult()
     {
-        // Arrange
-        var step = CreateTestStep(StepType.Docker, "Build");
-        step.With["command"] = "build";
+        MockContainerManager.SetupExec().ThrowsAsync(new ContainerException("Container error"));
 
-        MockContainerManager
-            .SetupSequence(x => x.ExecuteCommandAsync(
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<IDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateSuccessResult())
-            .ThrowsAsync(new ContainerException("Container error"));
+        var result = await _executor.ExecuteAsync(CreateDockerStep("build"), CreateTestContext());
 
-        var executor = new DockerStepExecutor();
-        var context = CreateTestContext();
-
-        // Act
-        Func<Task> act = async () => await executor.ExecuteAsync(step, context);
-
-        // Assert
-        await act.Should().ThrowAsync<ContainerException>();
+        result.Success.Should().BeFalse();
+        result.ErrorOutput.Should().Contain("docker step failed").And.Contain("Container error");
     }
-
-    #endregion
 }
