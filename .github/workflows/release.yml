@@ -81,7 +81,7 @@ jobs:
           esac
 
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.PAT_TOKEN }}  # PAT required to push to the protected main branch
@@ -96,7 +96,7 @@ jobs:
           echo "Tag v$RELEASE_VERSION is available"
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
@@ -145,7 +145,7 @@ jobs:
 
       # Keep the package as a workflow artifact so a failed publish can be retried by hand.
       - name: Upload package artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pdk-${{ env.RELEASE_VERSION }}
           path: ./publish/*.nupkg
@@ -186,7 +186,7 @@ jobs:
       # trigger other workflows. The same applies to the push above, which is what rebuilds the
       # documentation site for the new version - the docs workflow watches CHANGELOG.md on main.
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           token: ${{ secrets.PAT_TOKEN }}
           tag_name: v${{ env.RELEASE_VERSION }}
