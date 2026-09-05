@@ -78,14 +78,14 @@ Circular dependency detected in jobs.
 ### PDK-E-PARSER-005
 
 Pipeline structure is invalid.
-**Cause:** the file does not follow the provider's shape: an Azure pipeline mixing `stages`, `jobs` and `steps` at the top level, a job without an identifier, an empty job, a GitHub `jobs:` mapping that is not a mapping, and similar.
-**What to do:** follow the suggestion in the message (it names the offending job/step); compare with the samples under `samples/`.
+**Cause:** the file does not follow the provider's shape: an Azure pipeline mixing `stages`, `jobs` and `steps` at the top level, a job without an identifier, an empty job, a GitHub `jobs:` mapping that is not a mapping, and similar. Azure template problems are reported with this code too: a template file that cannot be found, a template from another repository (`@otherRepo`), a parameter without a value, a value outside `values:`, an undeclared parameter, a `${{ }}` expression that does not evaluate, an `${{ else }}` without `${{ if }}`, an include cycle, or a `strategy` with both `matrix` and `parallel`. The message names the file (template files included) and the line.
+**What to do:** follow the suggestion in the message (it names the offending job/step); compare with the samples under `samples/`. For parameters, pass `--param name=value` or add a `default:`; see [Templates and parameters](expressions.md#templates-and-parameters).
 
 ### PDK-E-PARSER-006
 
 Unknown or unsupported CI/CD provider ("`<file>` is not a GitHub Actions workflow or an Azure DevOps pipeline").
-**Cause:** the file is valid YAML but neither parser recognises it: GitHub needs a top-level `jobs:` mapping plus an `on:` trigger (or jobs with `runs-on`); Azure needs a `.yml`/`.yaml` file with a top-level `steps`, `jobs`, `stages`, `pool`, `trigger`, ... key. Azure templates (`extends`, `template:`) and `${{ if }}`/`${{ each }}`/`${{ insert }}` insertions are rejected with a dedicated message.
-**What to do:** check the file shape (auto-detection may have picked up the wrong file; use `--file`); expand templates inline for the local run. A file that is not valid YAML is reported as `PDK-E-PARSER-001` with the line and column instead, and a missing file exits with code 3.
+**Cause:** the file is valid YAML but neither parser recognises it: GitHub needs a top-level `jobs:` mapping plus an `on:` trigger (or jobs with `runs-on`); Azure needs a `.yml`/`.yaml` file with a top-level `steps`, `jobs`, `stages`, `pool`, `trigger`, `extends`, ... key whose `stages`/`jobs`/`steps` are lists. Azure templates (`extends`, `template:`) and `${{ if }}`/`${{ each }}`/`${{ insert }}` insertions are accepted and expanded; problems inside them are reported as `PDK-E-PARSER-005`.
+**What to do:** check the file shape (auto-detection may have picked up the wrong file; use `--file`). A file that is not valid YAML is reported as `PDK-E-PARSER-001` with the line and column instead, and a missing file exits with code 3.
 
 ### PDK-E-PARSER-007
 

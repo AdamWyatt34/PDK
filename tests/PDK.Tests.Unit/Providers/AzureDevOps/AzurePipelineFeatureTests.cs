@@ -62,7 +62,6 @@ variables:
   - name: configuration
     value: Release
   - group: my-variable-group
-  - template: variables/common.yml
 steps:
   - script: echo $(configuration)
 ";
@@ -72,7 +71,6 @@ steps:
         pipeline.Variables.Should().Equal(new Dictionary<string, string> { ["configuration"] = "Release" });
         pipeline.Jobs["default"].Variables.Should().Equal(pipeline.Variables);
         Warnings.Should().Contain(w => w.Contains("my-variable-group"));
-        Warnings.Should().Contain(w => w.Contains("variables/common.yml"));
     }
 
     [Fact]
@@ -330,7 +328,7 @@ steps:
     #region A6 templates, deployments, conditional insertion
 
     [Fact]
-    public void Parse_StepsTemplate_ThrowsNamingTheTemplate()
+    public void Parse_StepsTemplate_MissingFile_ThrowsNamingTheTemplate()
     {
         var yaml = @"
 jobs:
@@ -344,11 +342,11 @@ jobs:
         var act = () => _parser.Parse(yaml);
 
         act.Should().Throw<PipelineParseException>()
-            .WithMessage("Azure DevOps templates are not supported yet: steps template 'steps/build-steps.yml'.");
+            .WithMessage("Template file 'steps/build-steps.yml' was not found*");
     }
 
     [Fact]
-    public void Parse_JobsTemplate_ThrowsInsteadOfMissingJobIdentifier()
+    public void Parse_JobsTemplate_MissingFile_ThrowsInsteadOfMissingJobIdentifier()
     {
         var yaml = @"
 stages:
@@ -360,12 +358,13 @@ stages:
         var act = () => _parser.Parse(yaml);
 
         var exception = act.Should().Throw<PipelineParseException>().Which;
-        exception.Message.Should().Be("Azure DevOps templates are not supported yet: jobs template 'jobs/build.yml'.");
+        exception.Message.Should().StartWith("Template file 'jobs/build.yml' was not found");
+        exception.Message.Should().Contain("line 5");
         exception.Message.Should().NotContain("missing required 'job'");
     }
 
     [Fact]
-    public void Parse_StagesTemplate_Throws()
+    public void Parse_StagesTemplate_MissingFile_Throws()
     {
         var yaml = @"
 stages:
@@ -375,11 +374,11 @@ stages:
         var act = () => _parser.Parse(yaml);
 
         act.Should().Throw<PipelineParseException>()
-            .WithMessage("*stages template 'stages/all.yml'*");
+            .WithMessage("Template file 'stages/all.yml' was not found*");
     }
 
     [Fact]
-    public void Parse_Extends_Throws()
+    public void Parse_ExtendsFromAnotherRepository_Throws()
     {
         var yaml = @"
 trigger: none
@@ -391,12 +390,14 @@ extends:
 
         var act = () => _parser.Parse(yaml);
 
-        act.Should().Throw<PipelineParseException>()
-            .WithMessage("*extends template 'pipeline-template.yml@templates'*");
+        var exception = act.Should().Throw<PipelineParseException>().Which;
+        exception.Message.Should().Contain("'pipeline-template.yml@templates' refers to repository resource 'templates'");
+        exception.Message.Should().Contain("templates from other repositories are not supported");
+        exception.Suggestions.Should().Contain(s => s.Contains("vendor", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
-    public void Parse_ConditionalInsertion_ThrowsNamingTheConstruct()
+    public void Parse_ConditionalInsertion_InsertsStepsAccordingToParameters()
     {
         var yaml = @"
 parameters:
@@ -411,17 +412,18 @@ jobs:
         - script: echo test
 ";
 
-        var act = () => _parser.Parse(yaml);
+        _parser.Parse(yaml).Jobs["Build"].Steps.Select(s => s.Script).Should().Equal("echo build", "echo test");
 
-        var exception = act.Should().Throw<PipelineParseException>().Which;
-        exception.Message.Should().Contain("template expressions are not supported yet");
-        exception.Message.Should().Contain("${{ if ... }}");
-        exception.Message.Should().Contain("line 10");
-        exception.Message.Should().NotContain("missing required 'job'");
+        var options = new PipelineParseOptions
+        {
+            Parameters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["runTests"] = "false" }
+        };
+
+        _parser.Parse(yaml, options).Jobs["Build"].Steps.Select(s => s.Script).Should().Equal("echo build");
     }
 
     [Fact]
-    public void Parse_EachInsertion_Throws()
+    public void Parse_EachInsertion_OverUndeclaredParameter_ThrowsNamingTheParameter()
     {
         var yaml = @"
 jobs:
@@ -433,7 +435,11 @@ jobs:
 
         var act = () => _parser.Parse(yaml);
 
-        act.Should().Throw<PipelineParseException>().WithMessage("*${{ each ... }}*");
+        var exception = act.Should().Throw<PipelineParseException>().Which;
+        exception.Message.Should().Contain("parameter 'environments'");
+        exception.Message.Should().Contain("not declared");
+        exception.Message.Should().Contain("line 3");
+        exception.Message.Should().NotContain("missing required 'job'");
     }
 
     [Fact]

@@ -58,7 +58,8 @@ public sealed class AzureStage
     public string? LockBehavior { get; set; }
 
     /// <summary>
-    /// Gets or sets the stages template reference (<c>- template: stages.yml</c>); not supported locally.
+    /// Gets or sets the stages template reference (<c>- template: stages.yml</c>). References are expanded before
+    /// the document is read; a value here means the reference sat where it could not be expanded.
     /// </summary>
     [YamlMember(Alias = "template")]
     public string? Template { get; set; }

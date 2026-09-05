@@ -1,0 +1,25 @@
+# Jobs template: included from a 'jobs:' list with '- template: templates/deploy-job.yml'.
+parameters:
+  - name: environment
+    type: string
+  - name: approvalRequired
+    type: boolean
+    default: false
+  - name: timeoutInMinutes
+    type: number
+    default: 5
+
+jobs:
+  - deployment: Deploy
+    displayName: Deploy to ${{ parameters.environment }}
+    environment: ${{ parameters.environment }}
+    timeoutInMinutes: ${{ parameters.timeoutInMinutes }}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+            - script: echo "Deploying $(artifactName) to ${{ parameters.environment }} - approval required ${{ parameters.approvalRequired }}"
+              displayName: Deploy
+            - ${{ if parameters.approvalRequired }}:
+              - script: echo "An approval gate would run here on Azure DevOps"
+                displayName: Approval gate

@@ -5,7 +5,7 @@ namespace PDK.Providers.AzureDevOps.Models;
 /// <summary>
 /// Represents a single step in an Azure Pipeline job. A step is one of:
 /// <c>task:</c>, <c>bash:</c>, <c>pwsh:</c>, <c>powershell:</c>, <c>script:</c>, <c>checkout:</c>,
-/// <c>publish:</c>, <c>download:</c>, or a <c>template:</c> reference (not supported locally).
+/// <c>publish:</c>, <c>download:</c>, or a <c>template:</c> reference (expanded before the document is read).
 /// </summary>
 public sealed class AzureStep
 {
@@ -160,7 +160,8 @@ public sealed class AzureStep
     public object? Patterns { get; set; }
 
     /// <summary>
-    /// Gets or sets the steps template reference (<c>- template: steps.yml</c>); not supported locally.
+    /// Gets or sets the steps template reference (<c>- template: steps.yml</c>). References are expanded before the
+    /// document is read; a value here means the reference sat where it could not be expanded.
     /// </summary>
     [YamlMember(Alias = "template")]
     public string? Template { get; set; }

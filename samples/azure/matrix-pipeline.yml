@@ -1,0 +1,49 @@
+# Exercises strategy.matrix and strategy.parallel: each leg becomes its own job.
+#
+#   pdk run --file samples/azure/matrix-pipeline.yml --host
+#   pdk list --file samples/azure/matrix-pipeline.yml
+name: Matrix Sample
+
+trigger: none
+
+pool:
+  vmImage: ubuntu-latest
+
+jobs:
+  - job: Build
+    displayName: Build
+    strategy:
+      matrix:
+        linux:
+          imageName: ubuntu-latest
+          nodeVersion: 18
+        linux_node20:
+          imageName: ubuntu-latest
+          nodeVersion: 20
+        windows:
+          imageName: windows-latest
+          nodeVersion: 20
+      maxParallel: 2
+    pool:
+      vmImage: $(imageName)
+    steps:
+      - script: echo "Building on $(imageName) with Node $(nodeVersion) - leg $(System.JobPositionInPhase) of $(System.TotalJobsInPhase) ($IMAGENAME)"
+        displayName: Build $(imageName)
+
+  - job: Test
+    displayName: Test slice
+    dependsOn: Build
+    strategy:
+      parallel: 3
+    steps:
+      - script: echo "Running test slice $(System.JobPositionInPhase)/$(System.TotalJobsInPhase)"
+        displayName: Test slice
+
+  - job: Report
+    displayName: Report
+    dependsOn:
+      - Build
+      - Test
+    steps:
+      - script: echo "All matrix legs and test slices finished"
+        displayName: Report

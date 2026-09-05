@@ -67,6 +67,51 @@ public class FixtureParsingTests
         pipeline.Jobs.Values.SelectMany(job => job.Steps).Should().OnlyContain(step => step.Type != StepType.Unknown);
     }
 
+    public static IEnumerable<object[]> AzureSamples()
+    {
+        yield return new object[] { "samples/azure/templates-pipeline.yml" };
+        yield return new object[] { "samples/azure/extends-pipeline.yml" };
+        yield return new object[] { "samples/azure/matrix-pipeline.yml" };
+    }
+
+    [Theory]
+    [MemberData(nameof(AzureSamples))]
+    public async Task AzureSample_ParsesWithTemplatesAndMatrixExpanded(string relativePath)
+    {
+        var path = ResolveRepositoryFile(relativePath);
+
+        _azure.CanParse(path).Should().BeTrue();
+        _gitHub.CanParse(path).Should().BeFalse();
+
+        var options = new PipelineParseOptions
+        {
+            Parameters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["environment"] = "staging", ["publish"] = "true" },
+            WorkspacePath = Path.GetDirectoryName(path)
+        };
+
+        var pipeline = await _azure.ParseFile(path, options);
+
+        pipeline.Provider.Should().Be(PipelineProvider.AzureDevOps);
+        pipeline.Jobs.Values.Should().OnlyContain(job => job.Steps.Count > 0 && !string.IsNullOrWhiteSpace(job.RunsOn));
+        pipeline.Jobs.Values.SelectMany(job => job.Steps).Should().OnlyContain(step => step.Type != StepType.Unknown);
+        pipeline.Jobs.Values.SelectMany(job => job.Steps)
+            .Should().OnlyContain(step => step.Script == null || !step.Script.Contains("${{"), "template expressions are resolved when the pipeline is parsed");
+    }
+
+    private static string ResolveRepositoryFile(string relativePath)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "PDK.sln")))
+        {
+            directory = directory.Parent;
+        }
+
+        directory.Should().NotBeNull("the repository root (PDK.sln) should be reachable from the test directory");
+        var path = Path.Combine(directory!.FullName, relativePath.Replace('/', Path.DirectorySeparatorChar));
+        File.Exists(path).Should().BeTrue($"sample {relativePath} should exist in the repository");
+        return path;
+    }
+
     [Fact]
     public async Task AllTasksFixture_MapsEveryTaskToAnExecutableStepType()
     {

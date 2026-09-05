@@ -1,0 +1,29 @@
+# Steps template: included from a 'steps:' list with '- template: templates/build-steps.yml'.
+parameters:
+  - name: configuration
+    type: string
+    values: [Debug, Release]
+  - name: runTests
+    type: boolean
+    default: true
+  - name: extraSteps
+    type: stepList
+    default: []
+
+steps:
+  - script: echo "Building ${{ parameters.configuration }} for $(environmentName) (artifact $(artifactName))"
+    displayName: Build ${{ parameters.configuration }}
+
+  - ${{ if parameters.runTests }}:
+    - script: echo "Testing ${{ parameters.configuration }}"
+      displayName: Test ${{ parameters.configuration }}
+  - ${{ else }}:
+    - script: echo "Tests skipped for ${{ parameters.configuration }}"
+      displayName: Tests skipped
+
+  # Steps passed in as a stepList parameter are inserted one by one
+  - ${{ each step in parameters.extraSteps }}:
+    - ${{ step }}
+
+  - script: echo "Done with ${{ lower(parameters.configuration) }}"
+    displayName: Finish

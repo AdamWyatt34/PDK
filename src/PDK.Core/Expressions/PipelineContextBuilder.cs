@@ -191,7 +191,7 @@ public static class PipelineContextBuilder
         if (SyntaxFor(info.Provider) == ExpressionSyntax.Azure)
         {
             var git = info.Git;
-            var predefined = AzurePredefinedVariables(pipeline, job, info, stepWorkspace, temp);
+            var predefined = AzurePredefinedVariables(info, job, stepWorkspace, temp);
             foreach (var (k, v) in predefined)
             {
                 env[AzureEnvName(k)] = v;
@@ -377,7 +377,7 @@ public static class PipelineContextBuilder
         var temp = info.StepTempDirectory ?? Path.Combine(stepWorkspace, ".pdk", "tmp");
 
         var variables = ExpressionValue.NewObject();
-        foreach (var (k, v) in AzurePredefinedVariables(pipeline, job, info, stepWorkspace, temp))
+        foreach (var (k, v) in AzurePredefinedVariables(info, job, stepWorkspace, temp))
         {
             variables[k] = v;
         }
@@ -443,9 +443,22 @@ public static class PipelineContextBuilder
         _ => result
     };
 
-    private static Dictionary<string, string> AzurePredefinedVariables(
-        Pipeline pipeline, Job job, JobRuntimeInfo info, string stepWorkspace, string temp)
+    /// <summary>
+    /// The predefined Azure variables (<c>Build.*</c>, <c>System.*</c>, <c>Agent.*</c>, <c>Pipeline.Workspace</c>) of a job,
+    /// or of the pipeline as a whole when <paramref name="job"/> is null (compile-time template expressions, where the
+    /// job- and stage-specific values are empty).
+    /// </summary>
+    /// <param name="info">The run information.</param>
+    /// <param name="job">The job, or null for pipeline-level values.</param>
+    /// <param name="stepWorkspace">The workspace as seen by the steps; defaults to the run's step workspace.</param>
+    /// <param name="temp">The temp directory as seen by the steps; defaults to the run's step temp directory.</param>
+    public static Dictionary<string, string> AzurePredefinedVariables(JobRuntimeInfo info, Job? job, string? stepWorkspace = null, string? temp = null)
     {
+        ArgumentNullException.ThrowIfNull(info);
+
+        stepWorkspace ??= info.StepWorkspace ?? info.Workspace;
+        temp ??= info.StepTempDirectory ?? Path.Combine(stepWorkspace, ".pdk", "tmp");
+
         var git = info.Git;
         var pdkDir = Path.Combine(stepWorkspace, ".pdk");
         var branch = git.Branch.Length > 0 ? git.Branch : "main";
@@ -475,9 +488,9 @@ public static class PipelineContextBuilder
             ["Build.RequestedFor"] = info.Actor,
             ["System.DefaultWorkingDirectory"] = stepWorkspace,
             ["System.TeamProject"] = "local",
-            ["System.JobName"] = job.Name,
-            ["System.JobDisplayName"] = job.Name,
-            ["System.StageName"] = job.Stage ?? string.Empty,
+            ["System.JobName"] = job?.Name ?? string.Empty,
+            ["System.JobDisplayName"] = job?.Name ?? string.Empty,
+            ["System.StageName"] = job?.Stage ?? string.Empty,
             ["System.PullRequest.SourceBranch"] = string.Empty,
             ["Agent.BuildDirectory"] = pdkDir,
             ["Agent.TempDirectory"] = temp,

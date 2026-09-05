@@ -1,0 +1,16 @@
+# Variables template: included from a 'variables:' list with '- template: templates/common-variables.yml'.
+parameters:
+  - name: environment
+    type: string
+
+variables:
+  - name: environmentName
+    value: ${{ parameters.environment }}
+  - name: buildConfiguration
+    value: Release
+  - ${{ if eq(parameters.environment, 'prod') }}:
+    - name: logLevel
+      value: warning
+  - ${{ else }}:
+    - name: logLevel
+      value: debug

@@ -109,11 +109,14 @@ host is expected to provide the tool.
 | `UseDotNet@2`, `NodeTool@0`, `UseNode@1`, `UsePythonVersion@0`, `JavaToolInstaller@0`, `GoTool@0`, `NuGetToolInstaller@1`, `Cache@2` | no-op |
 | any other task | skipped with a warning |
 | `stages` / `dependsOn` / `condition:`, deployment jobs (`runOnce`, `rolling`, `canary` `deploy` steps), `variables:` (mapping and list forms) | supported |
-| `template:` / `extends:`, `${{ if }}` / `${{ each }}` / `${{ insert }}` insertions | rejected with a clear error (expand them inline for the local run) |
-| variable groups / variable templates, `resources:`, deployment lifecycle hooks, `services:` | ignored with a warning |
+| `parameters:` (`--param NAME=VALUE`), `${{ }}` template expressions, `${{ if }}` / `${{ elseif }}` / `${{ else }}` / `${{ each }}` / `${{ insert }}` insertions | expanded when the pipeline is loaded |
+| `template:` files for steps, jobs, stages and variables, `extends:` (same repository, `@self`) | expanded in place with their parameters |
+| `strategy.matrix` (mapping form) / `strategy.parallel` | expanded into one job per leg (`<Job>_<leg>`, `<Job>_<n>`) |
+| variable groups, `resources:`, deployment lifecycle hooks, `services:`, `maxParallel` | ignored with a warning |
 
-Known gaps: parallel jobs (jobs run one after another), `workflow_dispatch` inputs, service
-containers, composite/local actions, persistent `counter()` values.
+Known gaps: parallel jobs (jobs run one after another), templates from other repositories
+(`@otherRepo`), runtime (`$[ ]`) matrices, `workflow_dispatch` inputs, service containers,
+composite/local actions, persistent `counter()` values.
 
 ## Project Structure
 

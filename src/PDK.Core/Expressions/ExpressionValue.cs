@@ -114,6 +114,46 @@ public static class ExpressionValue
         return !double.IsNaN(ln) && !double.IsNaN(rn) && ln == rn;
     }
 
+    /// <summary>
+    /// Azure Pipelines equality (<c>eq</c>, <c>ne</c>, <c>in</c>, <c>notIn</c>, <c>containsValue</c>): the right operand
+    /// is converted to the type of the left one before comparing, so <c>eq('true', true)</c> and
+    /// <c>eq(variables.count, 3)</c> compare as expected. Strings compare case-insensitively.
+    /// </summary>
+    public static bool AzureEquals(object? left, object? right)
+    {
+        switch (left)
+        {
+            case null:
+                return right is null || (right is string s && s.Length == 0) || (right is double d && d == 0) || (right is bool b && !b);
+
+            case bool lb:
+                return lb == IsTruthy(right);
+
+            case double ld:
+            {
+                var rn = ToNumber(right);
+                return !double.IsNaN(rn) && ld == rn;
+            }
+
+            case string ls:
+            {
+                var rs = right switch
+                {
+                    null => string.Empty,
+                    bool rb => rb ? "True" : "False",
+                    double rd => FormatNumber(rd),
+                    string text => text,
+                    _ => null
+                };
+
+                return rs is not null && string.Equals(ls, rs, StringComparison.OrdinalIgnoreCase);
+            }
+
+            default:
+                return ReferenceEquals(left, right);
+        }
+    }
+
     /// <summary>Relational comparison. Returns null when the values cannot be ordered (NaN).</summary>
     public static int? Compare(object? left, object? right)
     {
