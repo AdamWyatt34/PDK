@@ -27,6 +27,24 @@ public interface IPipelineParser
     Task<Pipeline> ParseFile(string filePath);
 
     /// <summary>
+    /// Parses pipeline content from a YAML string with parse options (parameters, workspace, event).
+    /// The default implementation ignores the options.
+    /// </summary>
+    /// <param name="yamlContent">The YAML content to parse.</param>
+    /// <param name="options">Parse options.</param>
+    /// <returns>A <see cref="Pipeline"/> representing the parsed workflow.</returns>
+    Pipeline Parse(string yamlContent, PipelineParseOptions options) => Parse(yamlContent);
+
+    /// <summary>
+    /// Parses a pipeline definition file with parse options (parameters, workspace, event).
+    /// The default implementation ignores the options.
+    /// </summary>
+    /// <param name="filePath">The path to the pipeline definition file.</param>
+    /// <param name="options">Parse options.</param>
+    /// <returns>A task containing the parsed <see cref="Pipeline"/>.</returns>
+    Task<Pipeline> ParseFile(string filePath, PipelineParseOptions options) => ParseFile(filePath);
+
+    /// <summary>
     /// Determines whether this parser can handle the specified file.
     /// </summary>
     /// <param name="filePath">The path to the pipeline file to check.</param>

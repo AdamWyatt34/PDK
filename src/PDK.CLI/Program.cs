@@ -298,6 +298,13 @@ var eventOption = new Option<string>(
     description: "Event name presented to the pipeline (github.event_name / Build.Reason), e.g. push, pull_request",
     getDefaultValue: () => "push");
 
+var paramOption = new Option<string[]>(
+    aliases: ["--param", "--input"],
+    description: "Parameter or input value as NAME=VALUE (Azure 'parameters', GitHub 'inputs'); repeatable")
+{
+    AllowMultipleArgumentsPerToken = false
+};
+
 var keepContainersOption = new Option<bool>(
     aliases: ["--keep-containers"],
     description: "Keep job containers after the run for inspection (Docker mode)",
@@ -344,6 +351,7 @@ runCommand.AddOption(noDepsOption);
 runCommand.AddOption(strictOption);
 runCommand.AddOption(eventOption);
 runCommand.AddOption(keepContainersOption);
+runCommand.AddOption(paramOption);
 
 runCommand.SetHandler(async context =>
 {
@@ -389,6 +397,7 @@ runCommand.SetHandler(async context =>
     var strict = context.ParseResult.GetValueForOption(strictOption);
     var eventName = context.ParseResult.GetValueForOption(eventOption) ?? "push";
     var keepContainers = context.ParseResult.GetValueForOption(keepContainersOption);
+    var paramValues = context.ParseResult.GetValueForOption(paramOption) ?? [];
 
     // --dry-run-json implies --dry-run
     if (!string.IsNullOrEmpty(dryRunJson))
@@ -478,15 +487,16 @@ runCommand.SetHandler(async context =>
         }
 
         // Parse NAME=VALUE arrays into dictionaries (reject malformed entries)
-        var malformed = vars.Concat(secrets).Where(p => p.IndexOf('=') <= 0).ToList();
+        var malformed = vars.Concat(secrets).Concat(paramValues).Where(p => p.IndexOf('=') <= 0).ToList();
         if (malformed.Count > 0)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] Expected NAME=VALUE for --var/--secret, got: {Markup.Escape(string.Join(", ", malformed))}");
+            AnsiConsole.MarkupLine($"[red]Error:[/] Expected NAME=VALUE for --var/--secret/--param, got: {Markup.Escape(string.Join(", ", malformed))}");
             context.ExitCode = ExitCodes.InvalidArguments;
             return;
         }
         var cliVariables = ParseKeyValuePairs(vars);
         var cliSecrets = ParseKeyValuePairs(secrets);
+        var cliParameters = new Dictionary<string, string>(ParseKeyValuePairs(paramValues), StringComparer.OrdinalIgnoreCase);
 
         // Options kept for compatibility that no longer change behaviour
         if (parallel || noReuse)
@@ -523,7 +533,13 @@ runCommand.SetHandler(async context =>
 
             // Parse pipeline
             var parser = parserFactory.GetParser(file.FullName);
-            var pipeline = await parser.ParseFile(file.FullName);
+            var pipeline = await parser.ParseFile(file.FullName, new PDK.Core.Models.PipelineParseOptions
+            {
+                Parameters = cliParameters,
+                Variables = cliVariables,
+                WorkspacePath = Directory.GetCurrentDirectory(),
+                EventName = eventName
+            });
 
             // Run dry-run validation
             var runnerTypeStr = runnerType switch
@@ -626,7 +642,8 @@ runCommand.SetHandler(async context =>
                 NoDependencies = noDeps,
                 StrictUnsupportedSteps = strict,
                 EventName = eventName,
-                KeepContainers = keepContainers
+                KeepContainers = keepContainers,
+                Parameters = cliParameters
             };
 
             // Configuration supplies the defaults for watch mode; explicit CLI flags win
@@ -686,7 +703,8 @@ runCommand.SetHandler(async context =>
             NoDependencies = noDeps,
             StrictUnsupportedSteps = strict,
             EventName = eventName,
-            KeepContainers = keepContainers
+            KeepContainers = keepContainers,
+            Parameters = cliParameters
         }, cancellationToken);
         context.ExitCode = runResult.ExitCode;
     }

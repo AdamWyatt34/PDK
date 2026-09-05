@@ -229,6 +229,25 @@ public class ExecutionOptions
     public bool KeepContainers { get; set; }
 
     /// <summary>
+    /// Gets or sets the parameter / input values given on the command line (<c>--param NAME=VALUE</c>):
+    /// Azure Pipelines <c>parameters</c>, GitHub <c>inputs</c>.
+    /// </summary>
+    public Dictionary<string, string> Parameters { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Builds the options handed to the pipeline parser.
+    /// </summary>
+    /// <param name="workspacePath">The workspace the pipeline runs in.</param>
+    /// <returns>The parse options.</returns>
+    public PDK.Core.Models.PipelineParseOptions ToParseOptions(string? workspacePath = null) => new()
+    {
+        Parameters = Parameters,
+        Variables = CliVariables,
+        WorkspacePath = workspacePath,
+        EventName = string.IsNullOrWhiteSpace(EventName) ? "push" : EventName
+    };
+
+    /// <summary>
     /// Gets whether any step filtering is active.
     /// </summary>
     public bool HasStepFiltering =>

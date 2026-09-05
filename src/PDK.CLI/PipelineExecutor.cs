@@ -140,7 +140,7 @@ public class PipelineExecutor
 
         // Parse pipeline
         var parser = _parserFactory.GetParser(options.FilePath);
-        var pipeline = await parser.ParseFile(options.FilePath);
+        var pipeline = await parser.ParseFile(options.FilePath, options.ToParseOptions(Directory.GetCurrentDirectory()));
 
         if (parser is PDK.Providers.IPipelineParserWarnings { Warnings.Count: > 0 } parserWarnings)
         {
@@ -435,6 +435,7 @@ public class PipelineExecutor
             NeedsResults = needsResults,
             NeedsOutputs = needsOutputs,
             EventName = string.IsNullOrWhiteSpace(options.EventName) ? "push" : options.EventName,
+            Inputs = options.Parameters,
             RunId = runId,
             StrictUnsupportedSteps = options.StrictUnsupportedSteps,
             OutputLineHandler = outputHandler,
