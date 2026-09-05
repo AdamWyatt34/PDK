@@ -171,6 +171,31 @@ The parser validates:
 
 Location: `src/PDK.Providers/AzureDevOps/AzureDevOpsParser.cs`
 
+### Parsing Flow
+
+```mermaid
+flowchart TD
+    A[Read YAML File] --> B[Load the YamlDotNet node graph]
+    B --> C[AzureTemplateProcessor: parameters, template expressions, directives, template files, extends]
+    C --> D[Deserialize the expanded graph to AzurePipeline through YamlNodeParser]
+    D --> E{Validate Structure}
+    E -->|Invalid| F[Throw PipelineParseException]
+    E -->|Valid| G[Expand strategy.matrix / strategy.parallel legs]
+    G --> H[Map stages, jobs and steps to the common model]
+    H --> I[Rewrite dependsOn to expanded job ids]
+    I --> J[Return Pipeline]
+```
+
+Templates are resolved before the typed model is read (`src/PDK.Providers/AzureDevOps/Templates/`).
+`AzureTemplateProcessor` walks the YamlDotNet node graph, evaluates `${{ }}` expressions with the shared
+expression engine against the `parameters` and `variables` contexts, applies the `${{ if }}` /
+`${{ elseif }}` / `${{ else }}` / `${{ each }}` / `${{ insert }}` directives, splices template files and
+resolves `extends`. Every node of the expanded graph is mapped back to its source file and position
+(`YamlNodeOrigin`), and `YamlNodeParser` (`src/PDK.Providers/Common/`) replays the graph as parsing events,
+so deserialization errors still name the original file and line, template files included. `$( )` macros
+and `$[ ]` runtime expressions are left untouched for the run time. `AzureMatrixExpander` turns
+`strategy.matrix` / `strategy.parallel` into one job per leg after validation.
+
 ### Pipeline Hierarchy
 
 Azure DevOps supports multiple hierarchy patterns; exactly one of them must be used at the top level:
@@ -199,17 +224,19 @@ A steps-only pipeline becomes a single job with id `default`.
 
 | Pipeline feature | Common model |
 |------------------|--------------|
-| `variables:` (mapping or `- name/value` list) at pipeline, stage and job level | `Pipeline.Variables` / `Job.Variables` (`AzureVariableParser`); `- group:` and `- template:` entries are ignored with a warning |
+| `parameters:` (list form or `name: default` mapping form) | resolved from `--param NAME=VALUE` (converted to the declared type; structured types parsed as JSON / flow YAML), then the declared defaults; `values:` is enforced; a parameter without value and default is an error |
+| `${{ }}` template expressions, `${{ if }}` / `${{ elseif }}` / `${{ else }}` / `${{ each }}` / `${{ insert }}` | evaluated by `AzureTemplateProcessor` before deserialization against `parameters`, `variables` (pipeline literals defined earlier, `--var` values, predefined `Build.*` / `System.*`) and `${{ each }}` loop variables; whole-value expressions insert objects and lists structurally |
+| `template:` in `steps`, `jobs`, `stages` and `variables` lists; `extends:` | the file (relative to the including file, or the workspace for `/paths`; `@self` accepted) is expanded in place with its own `parameters:`; include cycles and nesting deeper than 20 levels are errors; `file.yml@otherRepo` is rejected with a suggestion to vendor the file |
+| `variables:` (mapping or `- name/value` list) at pipeline, stage and job level | `Pipeline.Variables` / `Job.Variables` (`AzureVariableParser`); `- template:` entries are expanded, `- group:` entries are ignored with a warning |
 | `pool.vmImage` / `pool.name` | `Job.RunsOn` (a pool `name` means `self-hosted`; no pool falls back to `ubuntu-latest`) |
 | `container:` | `Job.Container` |
 | `stages` | flattened to jobs with ids `<Stage>_<Job>`; stage `dependsOn` (explicit, or the previous stage by default) becomes a dependency on every job of that stage; a stage `condition:` is combined with the job condition with `and()` |
 | `dependsOn` (job) | `Job.DependsOn` (prefixed with the stage name in multi-stage pipelines) |
 | `condition:` (job and step) | `Condition` with the raw expression |
 | `deployment:` jobs | the `strategy.runOnce` / `rolling` / `canary` `deploy` steps; lifecycle hooks (`preDeploy`, `routeTraffic`, `postRouteTraffic`) are ignored with a warning |
-| `strategy.matrix` | one job per leg with `Job.Matrix` |
+| `strategy.matrix` (mapping form) / `strategy.parallel: N` | one job per leg (`AzureMatrixExpander`): ids `<Job>_<leg>` / `<Job>_<n>`, names `<name> <leg>` / `<name> <n>/<N>`, the leg variables in `Job.Matrix` and `Job.Variables` plus `System.JobPositionInPhase` / `System.TotalJobsInPhase`, `$(name)` in `pool.vmImage` resolved from the leg; `dependsOn` references target every leg; a `$[ ]` matrix or count runs once with a warning; `maxParallel` is ignored with a warning; `matrix` and `parallel` together is an error |
 | `timeoutInMinutes`, `continueOnError`, `enabled`, `workingDirectory`, `env`, `name`, `displayName` | step / job properties |
 | `resources:`, `services:` | ignored with a warning |
-| `template:` / `extends:`, `${{ if }}` / `${{ each }}` / `${{ insert }}` insertions | rejected with a dedicated `PipelineParseException` |
 
 ### Task Mapping
 
@@ -332,7 +359,7 @@ throw new PipelineParseException(
 | "Step has both uses and run" | `PDK-E-PARSER-005` | Use either `uses` or `run` |
 | Unknown / self dependency | `PDK-E-PARSER-007` / `PDK-E-PARSER-008` | Fix `needs` / `dependsOn` |
 | Circular dependency | `PDK-E-PARSER-004` | Remove the circular reference |
-| Azure template or `${{ if }}` insertion | `PDK-E-PARSER-005` | Expand the template inline |
+| Azure template problem (template file not found, template from another repository, parameter without a value, value outside `values:`, undeclared parameter, invalid `${{ }}` expression, include cycle) | `PDK-E-PARSER-005` | The message names the template file and line; fix the reference, the expression or pass `--param` |
 
 See [Error codes](../../errors.md) for the full list.
 

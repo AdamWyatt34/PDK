@@ -68,13 +68,15 @@ public sealed class AzurePipeline
     public object? Resources { get; set; }
 
     /// <summary>
-    /// Gets or sets the runtime parameters declaration.
+    /// Gets or sets the runtime parameters declaration. The template processor consumes the block before the
+    /// document is read, so this is normally null after parsing.
     /// </summary>
     [YamlMember(Alias = "parameters")]
     public object? Parameters { get; set; }
 
     /// <summary>
-    /// Gets or sets the <c>extends:</c> block (template pipelines); not supported locally.
+    /// Gets or sets the <c>extends:</c> block (template pipelines). The template processor resolves it before the
+    /// document is read, so this is normally null after parsing.
     /// </summary>
     [YamlMember(Alias = "extends")]
     public object? Extends { get; set; }

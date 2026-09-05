@@ -1,0 +1,26 @@
+# A pipeline that extends a template: the template provides the stages, this file supplies parameters,
+# triggers and variables (merged with the template's; values here win).
+#
+#   pdk run --file samples/azure/extends-pipeline.yml --host
+#   pdk run --file samples/azure/extends-pipeline.yml --host --param publish=true
+name: Extends Sample
+
+trigger: none
+
+parameters:
+  - name: publish
+    type: boolean
+    default: false
+
+variables:
+  pipelineVariable: from-pipeline
+  buildConfiguration: Debug
+
+extends:
+  template: templates/pipeline-template.yml
+  parameters:
+    projects: [Api, Worker, Web]
+    publish: ${{ parameters.publish }}
+    postBuildSteps:
+      - script: echo "post-build step from the extending pipeline"
+        displayName: Post-build

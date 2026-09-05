@@ -3,8 +3,10 @@ using Microsoft.Extensions.Logging;
 using PDK.Core.ErrorHandling;
 using PDK.Core.Models;
 using PDK.Providers.AzureDevOps.Models;
+using PDK.Providers.AzureDevOps.Templates;
 using PDK.Providers.Common;
 using YamlDotNet.Core;
+using YamlDotNet.RepresentationModel;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 
@@ -12,7 +14,10 @@ namespace PDK.Providers.AzureDevOps;
 
 /// <summary>
 /// Parses Azure DevOps Pipeline YAML files into the common PDK Pipeline model.
-/// Supports multi-stage pipelines, single-stage pipelines, and simple pipelines.
+/// Supports multi-stage pipelines, single-stage pipelines, and simple pipelines. Templates (<c>template:</c>,
+/// <c>extends:</c>), <c>parameters:</c> and <c>${{ }}</c> template expressions are expanded before the document
+/// is read (see <see cref="AzureTemplateProcessor"/>); <c>strategy.matrix</c> and <c>strategy.parallel</c> are
+/// expanded into one job per leg (see <see cref="AzureMatrixExpander"/>).
 /// </summary>
 public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
 {
@@ -31,10 +36,6 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
     private static readonly Regex GitHubJobsKey = new(@"^jobs\s*:", RegexOptions.Multiline | RegexOptions.Compiled);
 
     private static readonly Regex GitHubRunsOnKey = new(@"^\s*runs-on\s*:", RegexOptions.Multiline | RegexOptions.Compiled);
-
-    private static readonly Regex TemplateExpressionKey = new(
-        @"^(?<indent>[ \t]*-?[ \t]*)\$\{\{\s*(?<kind>if|elseif|else|each|insert)\b[^}]*\}\}\s*:",
-        RegexOptions.Multiline | RegexOptions.Compiled);
 
     private readonly ILogger<AzureDevOpsParser>? _logger;
     private readonly IDeserializer _yamlDeserializer;
@@ -60,8 +61,9 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
 
     /// <summary>
     /// Determines whether this parser can parse the specified file: a <c>.yml</c>/<c>.yaml</c> file whose top level
-    /// contains an Azure key (<c>steps</c>, <c>jobs</c>, <c>stages</c>, <c>pool</c>, <c>trigger</c>, <c>pr</c>, ...)
-    /// and that is not shaped like a GitHub workflow (<c>on:</c> + <c>jobs:</c>, or <c>runs-on</c>).
+    /// contains an Azure key (<c>steps</c>, <c>jobs</c>, <c>stages</c>, <c>pool</c>, <c>trigger</c>, <c>pr</c>,
+    /// <c>extends</c>, ...) and that is not shaped like a GitHub workflow (<c>on:</c> + <c>jobs:</c>, or <c>runs-on</c>).
+    /// The check is structural only, so template expressions and template references do not have to resolve.
     /// </summary>
     /// <param name="filePath">The path to the pipeline file.</param>
     /// <returns>True if this parser can handle the file; otherwise, false.</returns>
@@ -88,9 +90,8 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
                 return false;
             }
 
-            // Must deserialize into the Azure model (a GitHub 'jobs' mapping fails here)
-            var pipeline = _yamlDeserializer.Deserialize<AzurePipeline>(content);
-            var result = pipeline is not null;
+            // The hierarchy lists must have the Azure shape (a GitHub 'jobs' mapping or a GitLab 'stages' name list fails here)
+            var result = LooksLikeAzurePipelineDocument(content);
 
             _logger?.LogDebug("CanParse result for {FilePath}: {Result}", filePath, result);
 
@@ -104,12 +105,24 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
     }
 
     /// <summary>
-    /// Parses Azure Pipeline YAML content into a common PDK Pipeline model.
+    /// Parses Azure Pipeline YAML content into a common PDK Pipeline model. Parameters resolve to their defaults;
+    /// template files are resolved relative to the workspace (current directory).
     /// </summary>
     /// <param name="yamlContent">The YAML content to parse.</param>
     /// <returns>A Pipeline object representing the parsed Azure Pipeline.</returns>
     /// <exception cref="PipelineParseException">Thrown when the YAML content is invalid or cannot be parsed.</exception>
-    public Pipeline Parse(string yamlContent) => ParseCore(yamlContent, null);
+    public Pipeline Parse(string yamlContent) => ParseCore(yamlContent, null, PipelineParseOptions.None);
+
+    /// <summary>
+    /// Parses Azure Pipeline YAML content with parse options: <c>--param</c> values for the pipeline's
+    /// <c>parameters:</c>, <c>--var</c> values for compile-time <c>${{ variables.x }}</c> lookups, the workspace
+    /// template paths resolve against, and the event name behind <c>Build.Reason</c>.
+    /// </summary>
+    /// <param name="yamlContent">The YAML content to parse.</param>
+    /// <param name="options">The parse options.</param>
+    /// <returns>A Pipeline object representing the parsed Azure Pipeline.</returns>
+    /// <exception cref="PipelineParseException">Thrown when the YAML content is invalid or cannot be parsed.</exception>
+    public Pipeline Parse(string yamlContent, PipelineParseOptions options) => ParseCore(yamlContent, null, options ?? PipelineParseOptions.None);
 
     /// <summary>
     /// Parses an Azure Pipeline YAML file into a common PDK Pipeline model.
@@ -117,7 +130,17 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
     /// <param name="filePath">The path to the Azure Pipeline YAML file.</param>
     /// <returns>A Task that resolves to a Pipeline object.</returns>
     /// <exception cref="PipelineParseException">Thrown when the file cannot be read or parsed.</exception>
-    public async Task<Pipeline> ParseFile(string filePath)
+    public Task<Pipeline> ParseFile(string filePath) => ParseFile(filePath, PipelineParseOptions.None);
+
+    /// <summary>
+    /// Parses an Azure Pipeline YAML file with parse options (see <see cref="Parse(string, PipelineParseOptions)"/>).
+    /// Template files referenced by the pipeline are resolved relative to it.
+    /// </summary>
+    /// <param name="filePath">The path to the Azure Pipeline YAML file.</param>
+    /// <param name="options">The parse options.</param>
+    /// <returns>A Task that resolves to a Pipeline object.</returns>
+    /// <exception cref="PipelineParseException">Thrown when the file cannot be read or parsed.</exception>
+    public async Task<Pipeline> ParseFile(string filePath, PipelineParseOptions options)
     {
         if (string.IsNullOrWhiteSpace(filePath))
         {
@@ -142,13 +165,62 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
             throw new PipelineParseException($"Failed to read file '{filePath}': {ex.Message}", ex);
         }
 
-        return ParseCore(yamlContent, filePath);
+        return ParseCore(yamlContent, filePath, options ?? PipelineParseOptions.None);
     }
 
     private static bool LooksLikeGitHubWorkflow(string content) =>
         (GitHubOnKey.IsMatch(content) && GitHubJobsKey.IsMatch(content)) || GitHubRunsOnKey.IsMatch(content);
 
-    private Pipeline ParseCore(string yamlContent, string? filePath)
+    /// <summary>
+    /// Structural check used by <see cref="CanParse"/>: the document is a mapping whose <c>stages</c>/<c>jobs</c>/<c>steps</c>
+    /// values are lists of mappings (job/step/template/<c>${{ if }}</c> entries) or whole-value expressions.
+    /// </summary>
+    private static bool LooksLikeAzurePipelineDocument(string content)
+    {
+        var stream = new YamlStream();
+        using var reader = new StringReader(content);
+        stream.Load(reader);
+
+        if (stream.Documents.Count == 0 || stream.Documents[0].RootNode is not YamlMappingNode root)
+        {
+            return false;
+        }
+
+        foreach (var (keyNode, valueNode) in root.Children)
+        {
+            if (keyNode is not YamlScalarNode { Value: "stages" or "jobs" or "steps" })
+            {
+                continue;
+            }
+
+            switch (valueNode)
+            {
+                case YamlSequenceNode sequence:
+                    if (sequence.Children.Any(item => item is not YamlMappingNode && !IsExpressionScalar(item)))
+                    {
+                        // GitLab: 'stages' is a list of names
+                        return false;
+                    }
+
+                    break;
+
+                case YamlScalarNode scalar when IsExpressionScalar(scalar):
+                    // steps: ${{ parameters.steps }}
+                    break;
+
+                default:
+                    // GitHub: 'jobs' is a mapping
+                    return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsExpressionScalar(YamlNode node) =>
+        node is YamlScalarNode scalar && scalar.Value is not null && scalar.Value.Contains("${{", StringComparison.Ordinal);
+
+    private Pipeline ParseCore(string yamlContent, string? filePath, PipelineParseOptions options)
     {
         _warnings = new List<string>();
 
@@ -161,17 +233,22 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
 
         _logger?.LogDebug("Starting Azure Pipeline parsing");
 
-        RejectTemplateExpressions(yamlContent, displayPath);
+        // Expand parameters, template expressions, template files and extends before reading the document
+        var processor = new AzureTemplateProcessor(options, _warnings);
+        var expanded = processor.Process(yamlContent, filePath);
+        var nodeParser = expanded.CreateParser();
 
         AzurePipeline? azurePipeline;
         try
         {
-            azurePipeline = _yamlDeserializer.Deserialize<AzurePipeline>(yamlContent);
+            azurePipeline = _yamlDeserializer.Deserialize<AzurePipeline>(nodeParser);
         }
         catch (YamlException ex)
         {
             _logger?.LogError(ex, "Failed to deserialize YAML content");
-            throw YamlErrorTranslator.Translate(ex, yamlContent, displayPath);
+            var file = nodeParser.CurrentFile ?? displayPath;
+            var content = expanded.Sources.TryGetValue(file, out var source) ? source : yamlContent;
+            throw YamlErrorTranslator.Translate(ex, content, file);
         }
         catch (Exception ex)
         {
@@ -188,7 +265,7 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
         ValidatePipeline(azurePipeline, displayPath);
 
         // Convert to common Pipeline model
-        var pipeline = ConvertToPipeline(azurePipeline);
+        var pipeline = ConvertToPipeline(azurePipeline, displayPath);
 
         foreach (var warning in _warnings)
         {
@@ -201,38 +278,6 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
     }
 
     /// <summary>
-    /// Rejects <c>${{ if }}</c>/<c>${{ each }}</c>/<c>${{ insert }}</c> insertion keys with a clear message: they are
-    /// template expressions that reshape the document and cannot be honoured locally.
-    /// </summary>
-    private static void RejectTemplateExpressions(string yamlContent, string displayPath)
-    {
-        var match = TemplateExpressionKey.Match(yamlContent);
-        if (!match.Success)
-        {
-            return;
-        }
-
-        var line = yamlContent.AsSpan(0, match.Index).Count('\n') + 1;
-        var kind = match.Groups["kind"].Value;
-        var construct = kind switch
-        {
-            "each" => "'${{ each ... }}' loop insertion",
-            "insert" => "'${{ insert }}' insertion",
-            _ => "'${{ " + kind + " ... }}' conditional insertion"
-        };
-
-        throw new PipelineParseException(
-            ErrorCodes.InvalidPipelineStructure,
-            $"Azure DevOps template expressions are not supported yet: {construct} at line {line} in {Path.GetFileName(displayPath)}.",
-            ErrorContext.FromParserPosition(displayPath, line, match.Groups["indent"].Length + 1),
-            new[]
-            {
-                "Replace the conditional/loop insertion with the concrete YAML it produces for the local run",
-                "Template expressions are evaluated by Azure DevOps before the pipeline runs; PDK reads the file as-is"
-            });
-    }
-
-    /// <summary>
     /// Validates the Azure Pipeline structure and required fields.
     /// </summary>
     /// <param name="pipeline">The Azure Pipeline to validate.</param>
@@ -240,11 +285,6 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
     /// <exception cref="PipelineParseException">Thrown when validation fails.</exception>
     private static void ValidatePipeline(AzurePipeline pipeline, string displayPath)
     {
-        if (pipeline.Extends is not null)
-        {
-            throw TemplatesNotSupported("extends template", ExtractTemplateName(pipeline.Extends), displayPath);
-        }
-
         // Validate hierarchy pattern - must have exactly one of: stages, jobs, or steps
         if (!pipeline.IsValid())
         {
@@ -290,7 +330,7 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
 
             if (stage.Template is not null)
             {
-                throw TemplatesNotSupported("stages template", stage.Template, displayPath);
+                throw TemplateNotExpanded("stages", stage.Template, displayPath);
             }
 
             // Validate stage identifier
@@ -341,7 +381,7 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
 
             if (job.Template is not null)
             {
-                throw TemplatesNotSupported("jobs template", job.Template, displayPath);
+                throw TemplateNotExpanded("jobs", job.Template, displayPath);
             }
 
             // Validate job identifier
@@ -400,7 +440,7 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
 
             if (step.Template is not null)
             {
-                throw TemplatesNotSupported("steps template", step.Template, displayPath, jobId);
+                throw TemplateNotExpanded("steps", step.Template, displayPath, jobId);
             }
 
             var stepType = step.GetStepType();
@@ -587,7 +627,7 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
     /// <summary>
     /// Converts an Azure Pipeline to the common PDK Pipeline model.
     /// </summary>
-    private Pipeline ConvertToPipeline(AzurePipeline azurePipeline)
+    private Pipeline ConvertToPipeline(AzurePipeline azurePipeline, string displayPath)
     {
         var pipelineVariables = AzureVariableParser.Parse(azurePipeline.Variables, "pipeline", _warnings);
 
@@ -608,11 +648,11 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
         switch (hierarchyPattern)
         {
             case "multi-stage":
-                ConvertMultiStagePipeline(azurePipeline, pipeline, pipelineVariables);
+                ConvertMultiStagePipeline(azurePipeline, pipeline, pipelineVariables, displayPath);
                 break;
 
             case "single-stage":
-                ConvertSingleStagePipeline(azurePipeline, pipeline, pipelineVariables);
+                ConvertSingleStagePipeline(azurePipeline, pipeline, pipelineVariables, displayPath);
                 break;
 
             case "simple":
@@ -625,43 +665,62 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
 
     /// <summary>
     /// Converts a multi-stage Azure Pipeline by flattening stages to jobs.
-    /// Jobs are named using the pattern: {stageName}_{jobName}
+    /// Jobs are named using the pattern: {stageName}_{jobName} (matrix legs: {stageName}_{jobName}_{leg}).
     /// </summary>
-    private void ConvertMultiStagePipeline(AzurePipeline azurePipeline, Pipeline pipeline, Dictionary<string, string> pipelineVariables)
+    private void ConvertMultiStagePipeline(AzurePipeline azurePipeline, Pipeline pipeline, Dictionary<string, string> pipelineVariables, string displayPath)
     {
         var stages = azurePipeline.Stages!;
         var effectiveDependencies = GetEffectiveStageDependencies(stages);
+
+        // Pass 1: convert (and expand) every job so that dependencies can target every expanded instance
+        var converted = new List<(AzureStage Stage, int Index, AzureJob AzureJob, List<Job> Jobs)>();
+        var idsByStage = new Dictionary<string, Dictionary<string, List<string>>>(StringComparer.Ordinal);
 
         for (var i = 0; i < stages.Count; i++)
         {
             var stage = stages[i];
             var stageName = stage.Stage;
             var stageVariables = AzureVariableParser.Parse(stage.Variables, $"stage '{stageName}'", _warnings);
+            var stageIds = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            idsByStage[stageName] = stageIds;
 
             foreach (var azureJob in stage.Jobs!)
             {
-                var jobId = $"{stageName}_{azureJob.Identifier}";
-
                 // Determine pool with inheritance: job → stage → pipeline
                 var effectivePool = azureJob.Pool ?? stage.Pool ?? azurePipeline.Pool;
 
-                var job = ConvertToJob(azureJob, effectivePool, pipelineVariables, stageVariables);
-                job.Id = jobId;
-                job.Stage = stageName;
-
-                // Map stage dependencies (explicit or implicit ordering) to job dependencies:
-                // all jobs in this stage depend on all jobs in the stages it depends on
-                foreach (var depStage in effectiveDependencies[i])
+                var jobs = ConvertJobs(azureJob, effectivePool, pipelineVariables, stageVariables);
+                foreach (var job in jobs)
                 {
-                    var depStageObj = stages.FirstOrDefault(s => s.Stage == depStage);
-                    if (depStageObj?.Jobs != null)
-                    {
-                        job.DependsOn.AddRange(depStageObj.Jobs.Select(j => $"{depStage}_{j.Identifier}"));
-                    }
+                    job.Id = $"{stageName}_{job.Id}";
+                    job.Stage = stageName;
                 }
 
-                // Also add job-level dependencies (within the same stage)
-                job.DependsOn.AddRange(azureJob.GetDependencies().Select(dep => $"{stageName}_{dep}"));
+                stageIds[azureJob.Identifier] = jobs.Select(job => job.Id).ToList();
+                converted.Add((stage, i, azureJob, jobs));
+            }
+        }
+
+        // Pass 2: dependencies and conditions
+        foreach (var (stage, index, azureJob, jobs) in converted)
+        {
+            var stageName = stage.Stage;
+
+            // Map stage dependencies (explicit or implicit ordering) to job dependencies:
+            // all jobs in this stage depend on all jobs in the stages it depends on
+            var stageDependencies = effectiveDependencies[index]
+                .SelectMany(depStage => idsByStage.TryGetValue(depStage, out var ids) ? ids.Values.SelectMany(list => list) : Enumerable.Empty<string>())
+                .ToList();
+
+            // Job-level dependencies (within the same stage) target every leg of a matrix job
+            var jobDependencies = azureJob.GetDependencies()
+                .SelectMany(dep => idsByStage[stageName].TryGetValue(dep, out var ids) ? ids : new List<string> { $"{stageName}_{dep}" })
+                .ToList();
+
+            foreach (var job in jobs)
+            {
+                job.DependsOn.AddRange(stageDependencies);
+                job.DependsOn.AddRange(jobDependencies);
 
                 // Transfer stage-level condition to job
                 if (!string.IsNullOrWhiteSpace(stage.Condition))
@@ -682,7 +741,7 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
                     }
                 }
 
-                pipeline.Jobs[jobId] = job;
+                AddJob(pipeline, job, displayPath);
             }
         }
     }
@@ -690,22 +749,34 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
     /// <summary>
     /// Converts a single-stage Azure Pipeline (jobs without stages).
     /// </summary>
-    private void ConvertSingleStagePipeline(AzurePipeline azurePipeline, Pipeline pipeline, Dictionary<string, string> pipelineVariables)
+    private void ConvertSingleStagePipeline(AzurePipeline azurePipeline, Pipeline pipeline, Dictionary<string, string> pipelineVariables, string displayPath)
     {
+        // Pass 1: convert (and expand) every job
+        var converted = new List<(AzureJob AzureJob, List<Job> Jobs)>();
+        var idsByJob = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+
         foreach (var azureJob in azurePipeline.Jobs!)
         {
-            var jobId = azureJob.Identifier;
-
             // Determine pool with inheritance: job → pipeline
             var effectivePool = azureJob.Pool ?? azurePipeline.Pool;
 
-            var job = ConvertToJob(azureJob, effectivePool, pipelineVariables, null);
-            job.Id = jobId;
+            var jobs = ConvertJobs(azureJob, effectivePool, pipelineVariables, null);
+            idsByJob[azureJob.Identifier] = jobs.Select(job => job.Id).ToList();
+            converted.Add((azureJob, jobs));
+        }
 
-            // Add job-level dependencies
-            job.DependsOn.AddRange(azureJob.GetDependencies());
+        // Pass 2: dependencies target every leg of a matrix job
+        foreach (var (azureJob, jobs) in converted)
+        {
+            var dependencies = azureJob.GetDependencies()
+                .SelectMany(dep => idsByJob.TryGetValue(dep, out var ids) ? ids : new List<string> { dep })
+                .ToList();
 
-            pipeline.Jobs[jobId] = job;
+            foreach (var job in jobs)
+            {
+                job.DependsOn.AddRange(dependencies);
+                AddJob(pipeline, job, displayPath);
+            }
         }
     }
 
@@ -731,6 +802,49 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
         }
 
         pipeline.Jobs["default"] = job;
+    }
+
+    private static void AddJob(Pipeline pipeline, Job job, string displayPath)
+    {
+        if (pipeline.Jobs.ContainsKey(job.Id))
+        {
+            throw StructureError(
+                $"Duplicate job id '{job.Id}': a matrix or parallel leg produces the same id as another job.\n" +
+                "Suggestion: Rename the job or the matrix leg.",
+                displayPath,
+                job.Id);
+        }
+
+        pipeline.Jobs[job.Id] = job;
+    }
+
+    /// <summary>
+    /// Converts an Azure job into one PDK job, or one per <c>strategy.matrix</c> / <c>strategy.parallel</c> leg.
+    /// </summary>
+    private List<Job> ConvertJobs(
+        AzureJob azureJob,
+        AzurePool? effectivePool,
+        Dictionary<string, string> pipelineVariables,
+        Dictionary<string, string>? stageVariables)
+    {
+        var legs = azureJob.IsDeployment
+            ? Array.Empty<AzureMatrixLeg>()
+            : AzureMatrixExpander.Expand(azureJob.Strategy, azureJob.Identifier, _warnings);
+
+        if (legs.Count == 0)
+        {
+            return new List<Job> { ConvertToJob(azureJob, effectivePool, pipelineVariables, stageVariables) };
+        }
+
+        var jobs = new List<Job>(legs.Count);
+        foreach (var leg in legs)
+        {
+            var job = ConvertToJob(azureJob, effectivePool, pipelineVariables, stageVariables);
+            AzureMatrixExpander.ApplyLeg(job, leg);
+            jobs.Add(job);
+        }
+
+        return jobs;
     }
 
     /// <summary>
@@ -829,18 +943,6 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
         return string.IsNullOrWhiteSpace(image) ? null : image.Trim();
     }
 
-    private static string ExtractTemplateName(object extends)
-    {
-        var name = extends switch
-        {
-            string text => text,
-            IDictionary<object, object> mapping => YamlValues.AsString(YamlValues.GetValue(mapping, "template")),
-            _ => null
-        };
-
-        return string.IsNullOrWhiteSpace(name) ? "<unknown>" : name.Trim();
-    }
-
     private static PipelineParseException HierarchyError(string displayPath) => StructureError(
         "Pipeline must define exactly one hierarchy level: stages, jobs, or steps.\n" +
         "Suggestion: Choose one structure:\n" +
@@ -849,15 +951,18 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
         "  - Simple: steps only",
         displayPath);
 
-    private static PipelineParseException TemplatesNotSupported(string kind, string templateName, string displayPath, string? jobId = null) =>
+    /// <summary>
+    /// Template references are expanded before deserialization; one that survives sits in a position the expander
+    /// does not handle.
+    /// </summary>
+    private static PipelineParseException TemplateNotExpanded(string listName, string templateName, string displayPath, string? jobId = null) =>
         StructureError(
-            $"Azure DevOps templates are not supported yet: {kind} '{templateName}'.",
+            $"Template reference '{templateName}' could not be expanded: template references are only supported as items of 'steps', 'jobs', 'stages' and 'variables' lists (found in '{listName}').",
             displayPath,
             jobId,
             suggestions: new[]
             {
-                "Expand the template inline for the local run",
-                "Templates are resolved by Azure DevOps before the pipeline runs; PDK reads the file as-is"
+                "Move the '- template:' entry directly under steps:, jobs:, stages: or variables:"
             });
 
     private static PipelineParseException StructureError(

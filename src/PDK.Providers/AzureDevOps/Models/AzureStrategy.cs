@@ -27,19 +27,20 @@ public sealed class AzureStrategy
     public AzureDeploymentStrategy? Canary { get; set; }
 
     /// <summary>
-    /// Gets or sets the matrix definition of a regular job (not expanded locally).
+    /// Gets or sets the matrix definition of a regular job: a mapping of leg names to variables (expanded into one
+    /// job per leg by <see cref="AzureMatrixExpander"/>), or a <c>$[ ]</c> runtime expression (not expandable locally).
     /// </summary>
     [YamlMember(Alias = "matrix")]
     public object? Matrix { get; set; }
 
     /// <summary>
-    /// Gets or sets the <c>parallel</c> value of a regular job.
+    /// Gets or sets the <c>parallel</c> value of a regular job (expanded into that many legs).
     /// </summary>
     [YamlMember(Alias = "parallel")]
     public object? Parallel { get; set; }
 
     /// <summary>
-    /// Gets or sets <c>maxParallel</c>.
+    /// Gets or sets <c>maxParallel</c> (ignored locally: legs run one after another).
     /// </summary>
     [YamlMember(Alias = "maxParallel")]
     public object? MaxParallel { get; set; }

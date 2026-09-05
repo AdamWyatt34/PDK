@@ -105,7 +105,8 @@ public sealed class AzureJob
     public object? Environment { get; set; }
 
     /// <summary>
-    /// Gets or sets the jobs template reference (<c>- template: jobs.yml</c>); not supported locally.
+    /// Gets or sets the jobs template reference (<c>- template: jobs.yml</c>). References are expanded before the
+    /// document is read; a value here means the reference sat where it could not be expanded.
     /// </summary>
     [YamlMember(Alias = "template")]
     public string? Template { get; set; }

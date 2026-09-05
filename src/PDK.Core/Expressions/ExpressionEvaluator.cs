@@ -259,7 +259,12 @@ public static class ExpressionEvaluator
                 Arity(2, 2);
                 var target = Arg(0);
                 var item = Arg(1);
-                return target is IReadOnlyDictionary<string, object?> dict && dict.Values.Any(v => ExpressionValue.LooseEquals(v, item));
+                return target switch
+                {
+                    IReadOnlyDictionary<string, object?> dict => dict.Values.Any(v => ExpressionValue.AzureEquals(v, item)),
+                    IReadOnlyList<object?> list => list.Any(v => ExpressionValue.AzureEquals(v, item)),
+                    _ => false
+                };
             }
             case "startswith":
                 Arity(2, 2);
@@ -281,11 +286,19 @@ public static class ExpressionEvaluator
             case "join":
             {
                 Arity(1, 2);
-                var separator = args.Count > 1 ? Str(1) : ",";
-                var value = Arg(0);
-                return value is IReadOnlyList<object?> list
+                var first = Arg(0);
+                var second = args.Count > 1 ? Arg(1) : null;
+
+                // Azure writes join(separator, list); GitHub writes join(list, separator)
+                if (first is not IReadOnlyList<object?> && second is IReadOnlyList<object?> azureList)
+                {
+                    return string.Join(ExpressionValue.ToText(first), azureList.Select(ExpressionValue.ToText));
+                }
+
+                var separator = args.Count > 1 ? ExpressionValue.ToText(second) : ",";
+                return first is IReadOnlyList<object?> list
                     ? string.Join(separator, list.Select(ExpressionValue.ToText))
-                    : ExpressionValue.ToText(value);
+                    : ExpressionValue.ToText(first);
             }
             case "tojson":
             case "converttojson":
@@ -319,10 +332,10 @@ public static class ExpressionEvaluator
             // ---- Azure functions ----
             case "eq":
                 Arity(2, 2);
-                return ExpressionValue.LooseEquals(Arg(0), Arg(1));
+                return ExpressionValue.AzureEquals(Arg(0), Arg(1));
             case "ne":
                 Arity(2, 2);
-                return !ExpressionValue.LooseEquals(Arg(0), Arg(1));
+                return !ExpressionValue.AzureEquals(Arg(0), Arg(1));
             case "and":
             {
                 Arity(1);
@@ -373,7 +386,7 @@ public static class ExpressionEvaluator
                 var needle = Arg(0);
                 for (var i = 1; i < args.Count; i++)
                 {
-                    if (ExpressionValue.LooseEquals(needle, Arg(i)))
+                    if (ExpressionValue.AzureEquals(needle, Arg(i)))
                     {
                         return true;
                     }
@@ -387,7 +400,7 @@ public static class ExpressionEvaluator
                 var needle = Arg(0);
                 for (var i = 1; i < args.Count; i++)
                 {
-                    if (ExpressionValue.LooseEquals(needle, Arg(i)))
+                    if (ExpressionValue.AzureEquals(needle, Arg(i)))
                     {
                         return false;
                     }

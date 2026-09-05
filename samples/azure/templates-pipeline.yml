@@ -1,0 +1,102 @@
+# Exercises the Azure Pipelines template features PDK expands locally: parameters (with --param overrides),
+# ${{ }} template expressions, ${{ if }} / ${{ elseif }} / ${{ else }} / ${{ each }} / ${{ insert }} directives,
+# and template files for variables, steps and jobs.
+#
+#   pdk run --file samples/azure/templates-pipeline.yml --host
+#   pdk run --file samples/azure/templates-pipeline.yml --host --param environment=staging --param runTests=false
+#
+# See docs/expressions.md ("Templates and parameters") for the details.
+name: Templates Sample
+
+trigger: none
+
+parameters:
+  - name: environment
+    displayName: Target environment
+    type: string
+    default: dev
+    values: [dev, staging, prod]
+  - name: runTests
+    type: boolean
+    default: true
+  - name: configurations
+    type: object
+    default: [Debug, Release]
+  - name: tags
+    type: object
+    default:
+      owner: platform-team
+      tier: bronze
+  - name: extraBuildSteps
+    type: stepList
+    default:
+      - script: echo "extra step passed as a stepList parameter"
+        displayName: Extra step
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  # A variables template: its parameters are bound from this reference
+  - template: templates/common-variables.yml
+    parameters:
+      environment: ${{ parameters.environment }}
+  # Variables defined earlier are visible to later template expressions
+  - name: artifactName
+    value: app-${{ variables.environmentName }}
+  - ${{ if eq(parameters.environment, 'prod') }}:
+    - name: deployTimeout
+      value: 30
+  - ${{ elseif eq(parameters.environment, 'staging') }}:
+    - name: deployTimeout
+      value: 10
+  - ${{ else }}:
+    - name: deployTimeout
+      value: 5
+  # Iterating over an object parameter: pair.key / pair.value
+  - ${{ each pair in parameters.tags }}:
+    - name: tag.${{ pair.key }}
+      value: ${{ pair.value }}
+
+stages:
+  - stage: Build
+    displayName: Build (${{ parameters.environment }}, tests ${{ parameters.runTests }})
+    jobs:
+      # One job per configuration, with a steps template inside each
+      - ${{ each config in parameters.configurations }}:
+        - job: Build_${{ config }}
+          displayName: Build ${{ config }}
+          variables:
+            buildConfiguration: ${{ config }}
+          steps:
+            - template: templates/build-steps.yml
+              parameters:
+                configuration: ${{ config }}
+                runTests: ${{ parameters.runTests }}
+                ${{ if eq(config, 'Release') }}:
+                  extraSteps: ${{ parameters.extraBuildSteps }}
+
+      - job: Summary
+        displayName: Summary
+        dependsOn:
+          - ${{ each config in parameters.configurations }}:
+            - Build_${{ config }}
+        steps:
+          - script: |
+              echo "environment: $(environmentName) log level: $(logLevel) artifact: $(artifactName)"
+              echo "deploy timeout: $(deployTimeout) tags: $(tag.owner)/$(tag.tier)"
+              echo "predefined at compile time: ${{ variables['Build.Repository.Name'] }} reason ${{ variables['Build.Reason'] }}"
+              echo "functions: ${{ upper(parameters.environment) }} ${{ length(parameters.configurations) }} ${{ join(', ', parameters.configurations) }} ${{ format('{0}-{1}', 'a', 1) }}"
+            displayName: Show resolved values
+
+  - stage: Deploy
+    displayName: Deploy to ${{ parameters.environment }}
+    dependsOn: Build
+    jobs:
+      # A jobs template producing a deployment job
+      - template: templates/deploy-job.yml
+        parameters:
+          environment: ${{ parameters.environment }}
+          timeoutInMinutes: ${{ variables.deployTimeout }}
+          ${{ if eq(parameters.environment, 'prod') }}:
+            approvalRequired: true

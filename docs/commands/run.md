@@ -32,7 +32,8 @@ summarised in [Execution semantics](#execution-semantics) below and described in
 | `--event <name>` | string | `push` | Event name presented to the pipeline as `github.event_name` / `GITHUB_EVENT_NAME` |
 
 Job ids and names are matched case-insensitively. Matrix jobs are addressed by their expanded id
-(`build-ubuntu-latest`), Azure stage jobs by `<Stage>_<Job>`; `pdk list` shows them.
+(GitHub `build-ubuntu-latest`, Azure `Build_linux` / parallel legs `Test_1`), Azure stage jobs by
+`<Stage>_<Job>`; `pdk list` shows them.
 
 ### Runner Mode
 
@@ -124,6 +125,20 @@ values registered as secrets are still replaced with `***` in captured step outp
 Variables and secrets are exported to every step by name and are available in expressions as
 `vars.NAME` / `secrets.NAME` (GitHub) or `variables['NAME']` / `$(NAME)` (Azure). See
 [Variables](../configuration/variables.md) and [Secrets](../configuration/secrets.md).
+
+### Parameters
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--param <NAME=VALUE>` | string[] | - | Set a pipeline parameter (repeatable): an Azure `parameters:` entry (`${{ parameters.NAME }}`) or a GitHub `workflow_dispatch` input (`inputs.NAME`) |
+
+Azure parameters are converted to their declared type (`--param runTests=false` is a boolean);
+`object`, `stepList` and the other structured types take JSON or flow YAML
+(`--param regions='["eu", "us"]'`). A parameter without a value and without a `default:` is an
+error; a `--param` that no parameter declares is ignored with a warning. Azure templates
+(`template:`, `extends:`), `${{ }}` template expressions and `strategy.matrix` / `strategy.parallel`
+are expanded when the pipeline is loaded, so `pdk list` and `--dry-run` show the expanded jobs. See
+[Templates and parameters](../expressions.md#templates-and-parameters).
 
 ### Other Options
 
@@ -292,6 +307,9 @@ pdk run --var-file variables.json
 
 # Set secrets (use with caution)
 pdk run --secret API_KEY=example-value
+
+# Pipeline parameters (Azure parameters:, GitHub workflow_dispatch inputs)
+pdk run --file samples/azure/templates-pipeline.yml --host --param environment=staging --param runTests=false
 ```
 
 ### Combined Examples

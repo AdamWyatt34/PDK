@@ -1,5 +1,6 @@
 using FluentAssertions;
 using PDK.Core.Models;
+using PDK.Providers;
 using PDK.Providers.AzureDevOps;
 using PDK.Providers.GitHub;
 using Xunit;
@@ -41,6 +42,10 @@ public class RepositoryFixtureParsingTests
         yield return new object[] { "samples/azure/azure-pipelines.yml" };
         yield return new object[] { "samples/azure/simple-pipeline.yml" };
         yield return new object[] { "samples/azure/multistage-pipeline.yml" };
+        yield return new object[] { "samples/azure/expressions-pipeline.yml" };
+        yield return new object[] { "samples/azure/templates-pipeline.yml" };
+        yield return new object[] { "samples/azure/extends-pipeline.yml" };
+        yield return new object[] { "samples/azure/matrix-pipeline.yml" };
     }
 
     [Theory]
@@ -158,6 +163,89 @@ public class RepositoryFixtureParsingTests
         pipeline.Jobs["Deploy_DeployApp"].RunsOn.Should().Be("windows-latest");
         pipeline.Jobs["Deploy_DeployApp"].Steps[0].Type.Should().Be(StepType.PowerShell);
         pipeline.Jobs["Deploy_DeployApp"].Steps[1].Type.Should().Be(StepType.Script);
+    }
+
+    [Fact]
+    public async Task SampleTemplatesPipeline_ExpandsTemplatesParametersAndVariables()
+    {
+        var path = Resolve("samples/azure/templates-pipeline.yml");
+
+        var pipeline = await _azure.ParseFile(path);
+
+        pipeline.Jobs.Keys.Should().Equal("Build_Build_Debug", "Build_Build_Release", "Build_Summary", "Deploy_Deploy");
+        pipeline.Variables.Should().Contain("environmentName", "dev")
+            .And.Contain("logLevel", "debug")
+            .And.Contain("artifactName", "app-dev")
+            .And.Contain("deployTimeout", "5")
+            .And.Contain("tag.owner", "platform-team");
+
+        var release = pipeline.Jobs["Build_Build_Release"];
+        release.Name.Should().Be("Build Release");
+        release.Variables["buildConfiguration"].Should().Be("Release");
+        release.Steps.Select(s => s.Name).Should().Equal("Build Release", "Test Release", "Extra step", "Finish");
+        pipeline.Jobs["Build_Build_Debug"].Steps.Select(s => s.Name).Should().Equal("Build Debug", "Test Debug", "Finish");
+
+        var summary = pipeline.Jobs["Build_Summary"];
+        summary.DependsOn.Should().Equal("Build_Build_Debug", "Build_Build_Release");
+        summary.Steps[0].Script.Should().Contain("functions: DEV 2 Debug, Release a-1");
+        summary.Steps[0].Script.Should().NotContain("${{");
+
+        var deploy = pipeline.Jobs["Deploy_Deploy"];
+        deploy.Name.Should().Be("Deploy to dev");
+        deploy.Timeout.Should().Be(TimeSpan.FromMinutes(5));
+        deploy.Steps.Select(s => s.Name).Should().Equal("Deploy");
+        deploy.DependsOn.Should().Equal("Build_Build_Debug", "Build_Build_Release", "Build_Summary");
+
+        var options = new PipelineParseOptions
+        {
+            Parameters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["environment"] = "prod", ["runTests"] = "false" }
+        };
+        var prod = await _azure.ParseFile(path, options);
+
+        prod.Variables.Should().Contain("logLevel", "warning").And.Contain("deployTimeout", "30");
+        prod.Jobs["Build_Build_Release"].Steps.Select(s => s.Name).Should().Equal("Build Release", "Tests skipped", "Extra step", "Finish");
+        prod.Jobs["Deploy_Deploy"].Timeout.Should().Be(TimeSpan.FromMinutes(30));
+        prod.Jobs["Deploy_Deploy"].Steps.Select(s => s.Name).Should().Equal("Deploy", "Approval gate");
+    }
+
+    [Fact]
+    public async Task SampleExtendsPipeline_UsesTheTemplateAndMergesVariables()
+    {
+        var path = Resolve("samples/azure/extends-pipeline.yml");
+
+        var pipeline = await _azure.ParseFile(path);
+
+        pipeline.Name.Should().Be("Extends Sample");
+        pipeline.Jobs.Keys.Should().Equal("Build_Build_Api", "Build_Build_Worker", "Build_Build_Web");
+        pipeline.Variables.Should().Equal(new Dictionary<string, string>
+        {
+            ["templateVariable"] = "from-template",
+            ["buildConfiguration"] = "Debug",
+            ["pipelineVariable"] = "from-pipeline"
+        });
+        pipeline.Jobs["Build_Build_Api"].Steps.Select(s => s.Name).Should().Equal("Build Api", "Post-build");
+
+        var options = new PipelineParseOptions
+        {
+            Parameters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["publish"] = "true" }
+        };
+
+        (await _azure.ParseFile(path, options)).Jobs.Keys.Should().Equal("Build_Build_Api", "Build_Build_Worker", "Build_Build_Web", "Publish_Publish");
+    }
+
+    [Fact]
+    public async Task SampleMatrixPipeline_ExpandsLegsAndRewritesDependencies()
+    {
+        var pipeline = await _azure.ParseFile(Resolve("samples/azure/matrix-pipeline.yml"));
+
+        pipeline.Jobs.Keys.Should().Equal("Build_linux", "Build_linux_node20", "Build_windows", "Test_1", "Test_2", "Test_3", "Report");
+        pipeline.Jobs["Build_windows"].RunsOn.Should().Be("windows-latest");
+        pipeline.Jobs["Build_windows"].Matrix.Should().Equal(new Dictionary<string, string> { ["imageName"] = "windows-latest", ["nodeVersion"] = "20" });
+        pipeline.Jobs["Build_windows"].Variables["System.JobPositionInPhase"].Should().Be("3");
+        pipeline.Jobs["Test_2"].Name.Should().Be("Test slice 2/3");
+        pipeline.Jobs["Test_2"].DependsOn.Should().Equal("Build_linux", "Build_linux_node20", "Build_windows");
+        pipeline.Jobs["Report"].DependsOn.Should().Equal("Build_linux", "Build_linux_node20", "Build_windows", "Test_1", "Test_2", "Test_3");
+        ((IPipelineParserWarnings)_azure).Warnings.Should().ContainSingle(w => w.Contains("maxParallel"));
     }
 
     [Fact]
