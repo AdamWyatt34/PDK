@@ -1107,6 +1107,7 @@ static void ConfigureServices(ServiceCollection services)
     // Register parsers
     services.AddSingleton<IPipelineParser, GitHubActionsParser>();
     services.AddSingleton<IPipelineParser, AzureDevOpsParser>();
+    services.AddSingleton<IPipelineParser, PDK.Providers.GitLab.GitLabCiParser>();
 
     // Register services
     services.AddSingleton<PipelineParserFactory>();

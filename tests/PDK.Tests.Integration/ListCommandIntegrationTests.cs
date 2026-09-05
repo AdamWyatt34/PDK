@@ -393,7 +393,7 @@ metadata:
             result.Should().Be(1);
             // Should explain that the file is not a supported pipeline definition (console output may wrap)
             System.Text.RegularExpressions.Regex.Replace(_testConsole.Output, @"\s+", " ")
-                .Should().Contain("not a GitHub Actions workflow or an Azure DevOps pipeline");
+                .Should().Contain("not a GitHub Actions workflow, an Azure DevOps pipeline or a GitLab CI configuration");
         }
         finally
         {

@@ -35,7 +35,14 @@ public static class PipelineContextBuilder
             BuildGitHubRoots(context, pipeline, job, info);
         }
 
-        context.Status = StatusFromNeeds(info.NeedsResults, syntax);
+        if (info.Provider == PipelineProvider.GitLab)
+        {
+            // GitLab conditions are literal booleans decided at parse time (rules/only/except), so the GitHub
+            // roots are only a vehicle for always()/failure(); `env` must show the GitLab environment.
+            context.SetRoot("env", ExpressionValue.FromStrings(GitLabEnvironment(pipeline, job, info)));
+        }
+
+        context.Status = StatusFromNeeds(info.NeedsResults, syntax, info.Provider);
 
         return context;
     }
@@ -45,7 +52,16 @@ public static class PipelineContextBuilder
     /// GitHub skips a job whose dependency was skipped (unless it uses <c>always()</c>); Azure treats
     /// a skipped dependency as succeeded.
     /// </summary>
-    public static ExpressionJobStatus StatusFromNeeds(IReadOnlyDictionary<string, string> needsResults, ExpressionSyntax syntax)
+    public static ExpressionJobStatus StatusFromNeeds(IReadOnlyDictionary<string, string> needsResults, ExpressionSyntax syntax) =>
+        StatusFromNeeds(needsResults, syntax, syntax == ExpressionSyntax.Azure ? PipelineProvider.AzureDevOps : PipelineProvider.GitHub);
+
+    /// <summary>
+    /// Derives the status seen by a job's condition from the results of the jobs it depends on, for a provider.
+    /// GitHub skips a job whose dependency was skipped (unless it uses <c>always()</c>); Azure and GitLab treat
+    /// a skipped dependency as succeeded (a GitLab job that was not created, was manual or did not match its rules
+    /// never blocks later stages).
+    /// </summary>
+    public static ExpressionJobStatus StatusFromNeeds(IReadOnlyDictionary<string, string> needsResults, ExpressionSyntax syntax, PipelineProvider provider)
     {
         ArgumentNullException.ThrowIfNull(needsResults);
 
@@ -60,12 +76,63 @@ public static class PipelineContextBuilder
         }
 
         if (syntax == ExpressionSyntax.GitHub &&
+            provider != PipelineProvider.GitLab &&
             needsResults.Values.Any(r => string.Equals(r, "skipped", StringComparison.OrdinalIgnoreCase)))
         {
             return ExpressionJobStatus.Skipped;
         }
 
         return ExpressionJobStatus.Success;
+    }
+
+    /// <summary>
+    /// The GitLab environment of a job, in precedence order: predefined <c>CI_*</c> variables, pipeline
+    /// <c>variables:</c>, PDK variables, secrets, then job <c>variables:</c> (later entries win).
+    /// </summary>
+    /// <param name="pipeline">The pipeline.</param>
+    /// <param name="job">The job.</param>
+    /// <param name="info">Run facts.</param>
+    /// <returns>Variable name → value.</returns>
+    public static Dictionary<string, string> GitLabEnvironment(Pipeline pipeline, Job job, JobRuntimeInfo info)
+    {
+        ArgumentNullException.ThrowIfNull(pipeline);
+        ArgumentNullException.ThrowIfNull(job);
+        ArgumentNullException.ThrowIfNull(info);
+
+        var env = GitLabPredefinedVariables.Build(new GitLabVariableContext
+        {
+            Git = info.Git,
+            Workspace = info.StepWorkspace ?? info.Workspace,
+            EventName = info.EventName,
+            DefaultBranch = pipeline.DefaultBranch,
+            PipelineName = info.PipelineName,
+            RunId = info.RunId,
+            Actor = info.Actor,
+            Job = job,
+            JobNumber = info.RunNumber
+        });
+
+        foreach (var (k, v) in pipeline.Variables)
+        {
+            env[k] = v;
+        }
+
+        foreach (var (k, v) in info.Variables)
+        {
+            env[k] = v;
+        }
+
+        foreach (var (k, v) in info.Secrets)
+        {
+            env[k] = v;
+        }
+
+        foreach (var (k, v) in job.Variables)
+        {
+            env[k] = v;
+        }
+
+        return env;
     }
 
     /// <summary>
@@ -188,7 +255,16 @@ public static class PipelineContextBuilder
             env[k] = v;
         }
 
-        if (SyntaxFor(info.Provider) == ExpressionSyntax.Azure)
+        if (info.Provider == PipelineProvider.GitLab)
+        {
+            // CI, GITLAB_CI and the CI_* predefined variables, then pipeline variables, PDK variables,
+            // secrets and job variables; no GITHUB_* / RUNNER_* values.
+            foreach (var (k, v) in GitLabEnvironment(pipeline, job, info))
+            {
+                env[k] = v;
+            }
+        }
+        else if (SyntaxFor(info.Provider) == ExpressionSyntax.Azure)
         {
             var git = info.Git;
             var predefined = AzurePredefinedVariables(info, job, stepWorkspace, temp);

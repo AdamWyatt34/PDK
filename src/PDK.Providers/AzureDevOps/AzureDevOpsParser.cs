@@ -25,8 +25,10 @@ public class AzureDevOpsParser : IPipelineParser, IPipelineParserWarnings
     private const string DefaultRunner = "ubuntu-latest";
     private const string SelfHostedRunner = "self-hosted";
 
+    // 'variables:' alone is deliberately not enough: GitLab CI files have it too, and an Azure pipeline always
+    // carries one of the structural keys as well.
     private static readonly Regex AzureTopLevelKey = new(
-        @"^(?:steps|jobs|stages|pool|trigger|pr|extends|resources|variables|parameters|schedules)\s*:",
+        @"^(?:steps|jobs|stages|pool|trigger|pr|extends|resources|parameters|schedules)\s*:",
         RegexOptions.Multiline | RegexOptions.Compiled);
 
     private static readonly Regex GitHubOnKey = new(

@@ -2,19 +2,55 @@ using FluentAssertions;
 using PDK.Core.Models;
 using PDK.Providers.AzureDevOps;
 using PDK.Providers.GitHub;
+using PDK.Providers.GitLab;
 using Xunit;
 
 namespace PDK.Tests.Integration.Parsers;
 
 /// <summary>
 /// Parser-only checks over every YAML fixture shipped with the integration tests: each file parses with the parser
-/// that claims it, and the two parsers never claim the same file.
+/// that claims it, and the parsers never claim each other's files.
 /// </summary>
 public class FixtureParsingTests
 {
     private readonly GitHubActionsParser _gitHub = new();
     private readonly AzureDevOpsParser _azure = new();
+    private readonly GitLabCiParser _gitLab = new();
     private readonly string _fixturesPath = Path.Combine(AppContext.BaseDirectory, "Fixtures");
+
+    public static IEnumerable<object[]> GitLabFixtures()
+    {
+        yield return new object[] { "gitlab-ci-pipeline.yml" };
+    }
+
+    [Theory]
+    [MemberData(nameof(GitLabFixtures))]
+    public async Task GitLabFixture_ParsesWithGitLabParserOnly(string fileName)
+    {
+        var path = Path.Combine(_fixturesPath, fileName);
+
+        _gitLab.CanParse(path).Should().BeTrue();
+        _gitHub.CanParse(path).Should().BeFalse();
+        _azure.CanParse(path).Should().BeFalse();
+
+        var pipeline = await _gitLab.ParseFile(path, new PipelineParseOptions { WorkspacePath = _fixturesPath });
+
+        pipeline.Provider.Should().Be(PipelineProvider.GitLab);
+        pipeline.Jobs.Keys.Should().Equal("build", "unit", "lint", "deploy");
+        pipeline.Jobs.Values.Should().OnlyContain(job => job.Steps.Count > 0 && !string.IsNullOrWhiteSpace(job.RunsOn));
+        pipeline.Jobs.Values.SelectMany(job => job.Steps).Should().OnlyContain(step => step.Type != StepType.Unknown);
+        pipeline.Jobs.Values.Should().OnlyContain(job => job.Container == "alpine:3.20");
+
+        pipeline.Variables["OUTPUT_DIR"].Should().Be("out/Release");
+        pipeline.Jobs["unit"].DependsOn.Should().Equal("build");
+        pipeline.Jobs["unit"].Steps[0].Type.Should().Be(StepType.DownloadArtifact);
+        pipeline.Jobs["unit"].Steps[1].Script.Should().Be("echo \"preparing $CI_JOB_NAME\"\necho \"testing $OUTPUT_DIR\"");
+        pipeline.Jobs["lint"].DependsOn.Should().BeEmpty();
+        pipeline.Jobs["lint"].Steps.Should().OnlyContain(step => step.ContinueOnError);
+        pipeline.Jobs["deploy"].DependsOn.Should().BeEquivalentTo("build", "unit", "lint");
+        pipeline.Jobs["deploy"].Condition.Should().BeNull();
+        pipeline.Jobs["deploy"].Steps.Last().Name.Should().Be("after_script");
+    }
 
     public static IEnumerable<object[]> GitHubFixtures()
     {
@@ -43,6 +79,7 @@ public class FixtureParsingTests
 
         _gitHub.CanParse(path).Should().BeTrue();
         _azure.CanParse(path).Should().BeFalse();
+        _gitLab.CanParse(path).Should().BeFalse();
 
         var pipeline = await _gitHub.ParseFile(path);
 
@@ -59,6 +96,7 @@ public class FixtureParsingTests
 
         _azure.CanParse(path).Should().BeTrue();
         _gitHub.CanParse(path).Should().BeFalse();
+        _gitLab.CanParse(path).Should().BeFalse();
 
         var pipeline = await _azure.ParseFile(path);
 

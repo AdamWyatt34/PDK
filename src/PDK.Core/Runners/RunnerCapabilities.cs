@@ -133,7 +133,8 @@ public static class RunnerCapabilities
 
         if (!string.IsNullOrWhiteSpace(job.Container))
         {
-            return true;
+            // A GitLab image: is a preference (shell executors ignore it); a GitHub/Azure container: is a requirement
+            return !job.ContainerOptional;
         }
 
         return IsImageReference(job.RunsOn);

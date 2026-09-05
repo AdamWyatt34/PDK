@@ -89,11 +89,12 @@ public class PipelineParserFactory : IPipelineParserFactory
 
         return new PipelineParseException(
             ErrorCodes.UnknownProvider,
-            $"{Path.GetFileName(filePath)} is not a GitHub Actions workflow or an Azure DevOps pipeline",
+            $"{Path.GetFileName(filePath)} is not a GitHub Actions workflow, an Azure DevOps pipeline or a GitLab CI configuration",
             ErrorContext.FromParserPosition(filePath, 0, 0),
             [
                 "A GitHub Actions workflow needs a top-level 'jobs:' mapping and an 'on:' trigger (or jobs with 'runs-on')",
                 "An Azure DevOps pipeline needs top-level 'steps:', 'jobs:', 'stages:', 'pool:' or 'trigger:'",
+                "A GitLab CI configuration is a .gitlab-ci.yml file, or has 'stages:' (a list of names), 'include:' or a job with 'script:'",
                 "Use --file to point at the pipeline definition if PDK picked up the wrong file"
             ]);
     }

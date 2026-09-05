@@ -417,6 +417,13 @@ public sealed class ListCommand
         {
             return "-";
         }
+
+        // Parse-time decisions (GitLab rules/only/except, manual jobs) explain themselves better than "false"
+        if (!string.IsNullOrWhiteSpace(condition.Description))
+        {
+            return TruncateString(condition.Description, 30);
+        }
+
         return TruncateString(condition.Expression, 30);
     }
 

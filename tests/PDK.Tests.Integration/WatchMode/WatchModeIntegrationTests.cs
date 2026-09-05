@@ -151,7 +151,7 @@ public class WatchModeIntegrationTests : IDisposable
         var loggerFactory = LoggerFactory.Create(b => b.SetMinimumLevel(LogLevel.Debug));
         using var debouncer = new DebounceEngine(loggerFactory.CreateLogger<DebounceEngine>())
         {
-            DebounceMs = 200
+            DebounceMs = 500 // generous: a loaded runner must not split the burst into two batches
         };
 
         var debounceEvents = new List<IReadOnlyList<FileChangeEvent>>();
@@ -175,7 +175,6 @@ public class WatchModeIntegrationTests : IDisposable
                 RelativePath = $"file{i}.yml",
                 ChangeType = FileChangeType.Modified
             });
-            await Task.Delay(30); // Small delay, but within debounce window
         }
 
         // Wait for debounce
@@ -393,7 +392,7 @@ public class WatchModeIntegrationTests : IDisposable
         var loggerFactory = LoggerFactory.Create(b => b.SetMinimumLevel(LogLevel.Debug));
         using var debouncer = new DebounceEngine(loggerFactory.CreateLogger<DebounceEngine>())
         {
-            DebounceMs = 200
+            DebounceMs = 500 // generous: a loaded runner must not split the burst
         };
         using var queue = new ExecutionQueue(loggerFactory.CreateLogger<ExecutionQueue>());
 

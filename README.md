@@ -8,8 +8,8 @@ directly on your machine, so you can test pipeline changes before pushing them.
 
 ## Features
 
-- Runs the same YAML you commit: `.github/workflows/*.yml` and `azure-pipelines.yml`
-  (multi-stage pipelines included). GitLab CI is planned.
+- Runs the same YAML you commit: `.github/workflows/*.yml`, `azure-pipelines.yml`
+  (multi-stage pipelines included) and `.gitlab-ci.yml` (see [docs/providers/gitlab.md](docs/providers/gitlab.md)).
 - Expressions and conditions as on the CI service: GitHub `${{ }}` / `if:` with the `github`,
   `env`, `vars`, `secrets`, `matrix`, `needs`, `steps`, `runner` contexts; Azure `$(macro)`,
   `${{ }}`, `$[ ]` and function-style `condition:`. See [docs/expressions.md](docs/expressions.md).
@@ -202,8 +202,9 @@ failure handling without needing a project.
 - [x] Dry-run mode
 - [x] Structured logging
 
+- [x] GitLab CI support
+
 ### Planned
-- [ ] GitLab CI support
 - [ ] Service containers
 - [ ] Reusable workflows and composite actions
 - [ ] Parallel job execution

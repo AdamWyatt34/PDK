@@ -26,6 +26,8 @@ public static class PipelineFileLocator
         "azure-pipelines.yaml",
         ".azure-pipelines/*.yml",
         ".azure-pipelines/*.yaml",
+        ".gitlab-ci.yml",
+        ".gitlab-ci.yaml",
         "*.pipeline.yml",
         "*.pipeline.yaml"
     ];
@@ -60,6 +62,15 @@ public static class PipelineFileLocator
         {
             files.AddRange(Directory.GetFiles(azureDir, "*.yml"));
             files.AddRange(Directory.GetFiles(azureDir, "*.yaml"));
+        }
+
+        foreach (var name in new[] { ".gitlab-ci.yml", ".gitlab-ci.yaml" })
+        {
+            var candidate = Path.Combine(currentDir, name);
+            if (System.IO.File.Exists(candidate))
+            {
+                files.Add(candidate);
+            }
         }
 
         files.AddRange(Directory.GetFiles(currentDir, "*.pipeline.yml"));

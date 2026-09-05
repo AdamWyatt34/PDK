@@ -179,6 +179,7 @@ public class FilteringJobRunner : IJobRunner
             Condition = originalJob.Condition,
             Timeout = originalJob.Timeout,
             Container = originalJob.Container,
+            ContainerOptional = originalJob.ContainerOptional,
             Matrix = originalJob.Matrix,
             Variables = originalJob.Variables,
             Stage = originalJob.Stage

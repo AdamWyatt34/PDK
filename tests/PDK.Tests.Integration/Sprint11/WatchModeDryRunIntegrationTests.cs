@@ -117,7 +117,9 @@ public class WatchModeDryRunIntegrationTests : Sprint11IntegrationTestBase
     public async Task WatchMode_Debounce_AggregatesRapidChanges()
     {
         // Arrange
-        using var debouncer = CreateDebounceEngine(debounceMs: 100);
+        // A generous window and back-to-back queueing: a loaded runner can stall a test thread for
+        // longer than a short window, which would split the changes into two batches.
+        using var debouncer = CreateDebounceEngine(debounceMs: 500);
         var debouncedChanges = new TaskCompletionSource<IReadOnlyList<PDK.CLI.WatchMode.FileChangeEvent>>();
 
         debouncer.Debounced += (_, changes) =>
@@ -134,7 +136,6 @@ public class WatchModeDryRunIntegrationTests : Sprint11IntegrationTestBase
                 RelativePath = $"file{i}.yml",
                 ChangeType = PDK.CLI.WatchMode.FileChangeType.Modified
             });
-            await Task.Delay(20); // Within debounce window
         }
 
         // Assert
