@@ -300,7 +300,7 @@ public class WatchModeBehaviourTests : IDisposable
             if (e.RunNumber == 1) firstFinished.TrySetResult();
         };
 
-        queue.EnqueueExecution([], async _ => { await Task.Delay(30); return true; });
+        queue.EnqueueExecution([], async ct => { await Task.Delay(30, ct); return true; });
         queue.EnqueueExecution([], async ct =>
         {
             secondStarted.TrySetResult();
