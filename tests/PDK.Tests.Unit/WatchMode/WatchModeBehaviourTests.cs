@@ -268,6 +268,54 @@ public class WatchModeBehaviourTests : IDisposable
         completed.Success.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task ExecutionQueue_CancelImmediatelyAfterEnqueue_IsReportedAsCancelled()
+    {
+        using var queue = new ExecutionQueue(NullLogger<ExecutionQueue>.Instance);
+        ExecutionCompletedEventArgs? completed = null;
+        queue.ExecutionCompleted += (_, e) => completed = e;
+
+        // No delay: the run loop may not have started yet when the cancel arrives.
+        queue.EnqueueExecution([], async ct =>
+        {
+            await Task.Delay(10_000, ct);
+            return true;
+        });
+        await queue.CancelCurrentAsync();
+
+        completed.Should().NotBeNull();
+        completed!.Cancelled.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ExecutionQueue_CancelDuringHandoverToPendingRun_CancelsThePendingRun()
+    {
+        using var queue = new ExecutionQueue(NullLogger<ExecutionQueue>.Instance);
+        var completions = new List<ExecutionCompletedEventArgs>();
+        var firstFinished = new TaskCompletionSource();
+        var secondStarted = new TaskCompletionSource();
+        queue.ExecutionCompleted += (_, e) =>
+        {
+            lock (completions) completions.Add(e);
+            if (e.RunNumber == 1) firstFinished.TrySetResult();
+        };
+
+        queue.EnqueueExecution([], async _ => { await Task.Delay(30); return true; });
+        queue.EnqueueExecution([], async ct =>
+        {
+            secondStarted.TrySetResult();
+            await Task.Delay(10_000, ct);
+            return true;
+        });
+
+        await firstFinished.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await queue.CancelCurrentAsync();
+
+        completions.Should().HaveCount(2);
+        completions[1].Cancelled.Should().BeTrue();
+    }
+
     private static void InterlockedMax(ref int location, int value)
     {
         int current;

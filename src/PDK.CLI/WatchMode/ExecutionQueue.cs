@@ -89,7 +89,11 @@ public sealed class ExecutionQueue : IExecutionQueue, IDisposable
             {
                 // No run loop is active: start one. The loop only exits under this lock, so a
                 // concurrent enqueue can never start a second loop while one is still handing over.
-                _currentExecution = Task.Run(() => RunLoopAsync(request));
+                // The token source exists before the loop starts, so a cancel that arrives before the
+                // run has begun still reaches it.
+                var cts = new CancellationTokenSource();
+                _currentCts = cts;
+                _currentExecution = Task.Run(() => RunLoopAsync(request, cts));
                 _logger.LogDebug("Started execution run loop");
                 return true;
             }
@@ -209,25 +213,34 @@ public sealed class ExecutionQueue : IExecutionQueue, IDisposable
 
     /// <summary>
     /// Runs the first request and then every pending request handed over while it was running.
+    /// A run owns a token source from before it is visible until it hands over to the next one,
+    /// so <see cref="CancelCurrentAsync"/> can never fall into a gap between two runs.
     /// </summary>
-    private async Task RunLoopAsync(PendingExecution first)
+    private async Task RunLoopAsync(PendingExecution first, CancellationTokenSource firstCts)
     {
         var next = first;
+        var cts = firstCts;
 
         while (true)
         {
             int runNumber;
-            var cts = new CancellationTokenSource();
-
             lock (_lock)
             {
                 _runNumber++;
                 runNumber = _runNumber;
-                _currentCts = cts;
             }
 
             if (!await TryAcquireSemaphoreAsync())
             {
+                lock (_lock)
+                {
+                    if (ReferenceEquals(_currentCts, cts))
+                    {
+                        _currentCts = null;
+                    }
+                }
+
+                cts.Dispose();
                 return; // disposed
             }
 
@@ -238,30 +251,30 @@ public sealed class ExecutionQueue : IExecutionQueue, IDisposable
             finally
             {
                 ReleaseSemaphore();
-
-                lock (_lock)
-                {
-                    if (ReferenceEquals(_currentCts, cts))
-                    {
-                        _currentCts = null;
-                    }
-                }
-
-                cts.Dispose();
             }
 
+            var finished = cts;
             lock (_lock)
             {
                 if (_pendingExecution is null || _disposed)
                 {
                     // Exit under the lock so that EnqueueExecution observes either a running loop
                     // or no loop at all - never a loop that is about to exit.
+                    if (ReferenceEquals(_currentCts, finished))
+                    {
+                        _currentCts = null;
+                    }
+
                     _currentExecution = null;
+                    finished.Dispose();
                     return;
                 }
 
                 next = _pendingExecution;
                 _pendingExecution = null;
+                cts = new CancellationTokenSource();
+                _currentCts = cts;
+                finished.Dispose();
                 _logger.LogDebug("Starting pending execution");
             }
         }

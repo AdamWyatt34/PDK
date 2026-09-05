@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Artifact store scoped per run: `.pdk/artifacts/run-<id>/job-<job>/step-<n>-<step>/artifact-<name>/`; `if-no-files-found` and `retention-days` honoured; downloads fall back to the newest previous run with a warning; host-mode upload and download executors.
 - Dry run: unsupported actions/tasks are reported as warnings and labelled in the execution plan, setup steps are labelled as no-ops, every step carries `willRun` and a skip reason, `--job` and step filters narrow the plan, and secrets known to the resolver are written as `***MASKED***` in `--dry-run-json` output.
 - Watch mode: `includePatterns` / `excludePatterns` and a `watch` configuration section.
+- Watch mode: cancelling a run that was queued a moment earlier now cancels it instead of letting it finish (the run owns its cancellation token from the moment it is queued).
 - `pdk list --format json` now includes stage, container, matrix values, dependencies, conditions and steps.
 - Error panels reference `docs/errors.md#<code>`; new parser codes `PDK-E-PARSER-007` (missing dependency) and `PDK-E-PARSER-008` (self dependency).
 - Documentation: expressions and execution semantics page, error code reference, runnable expression samples under `samples/`.
