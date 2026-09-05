@@ -235,6 +235,10 @@ deploy:
   if: github.ref == 'refs/heads/main'
 ```
 
+PDK evaluates the condition locally: `github.ref` comes from the git repository in the workspace,
+`github.event_name` from `--event` (default `push`). A job whose dependency failed is skipped unless
+its condition uses `always()`.
+
 ## Customization
 
 ### Add More Stages
@@ -264,6 +268,9 @@ test:
   runs-on: ${{ matrix.os }}
 ```
 
+PDK expands this into four jobs (`test-ubuntu-latest-6-0`, ...) that run sequentially; jobs that
+`need: test` wait for all of them.
+
 ## Project Structure
 
 ```
@@ -285,7 +292,8 @@ multi-stage/
 
 ### Jobs run out of order
 
-Check `needs` declarations. Jobs without dependencies run in parallel.
+Check `needs` declarations. PDK runs jobs one at a time in dependency order; jobs without
+dependencies run in the order they are declared.
 
 ### Artifacts not found
 

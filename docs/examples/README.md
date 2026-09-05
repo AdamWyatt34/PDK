@@ -112,6 +112,11 @@ steps:
       dotnet-version: ${{ matrix.dotnet }}
 ```
 
+PDK expands the matrix into one job per combination (`build-ubuntu-latest-6-0`,
+`build-ubuntu-latest-8-0`, ...) and runs them one after another; `pdk list` shows the generated ids
+for `--job`. Setup actions such as `actions/setup-dotnet` are no-ops locally, so the runner image or
+host must provide the requested SDK.
+
 ## Creating Your Own Examples
 
 Use these templates as starting points:

@@ -74,18 +74,33 @@ pdk version --full
 
 ## Exit Codes
 
-All PDK commands return standard exit codes:
+All PDK commands use the same exit codes:
 
 | Code | Meaning |
 |------|---------|
 | 0 | Success |
-| 1 | General error / Pipeline failed |
-| 2 | Invalid arguments |
-| 3 | File not found |
-| 4 | Docker not available |
+| 1 | Pipeline failed, validation failed, or an unexpected error |
+| 2 | Invalid arguments (unknown option, conflicting flags, unknown job, invalid filter, several candidate pipeline files) |
+| 3 | Pipeline file (or another required file) not found |
+| 4 | Docker was required but is not available (`pdk doctor` also uses this) |
+| 130 | Cancelled with Ctrl+C |
+
+## Pipeline Auto-Detection
+
+`run`, `validate`, `list` and `interactive` accept `--file`; without it they look for exactly one
+pipeline file in the current directory, in this order: `.github/workflows/*.yml|yaml`,
+`azure-pipelines.yml|yaml`, `.azure-pipelines/*.yml|yaml`, `*.pipeline.yml|yaml`. Several candidates
+are an error (exit code 2), none is exit code 3.
+
+## Error Codes
+
+Errors are reported with a code such as `PDK-E-PARSER-005` and a reference to the matching section of
+the [error code reference](../errors.md).
 
 ## See Also
 
 - [Getting Started](../getting-started.md)
 - [Configuration Guide](../configuration/README.md)
+- [Expressions and Execution Semantics](../expressions.md)
+- [Error Codes](../errors.md)
 - [Troubleshooting](../guides/troubleshooting.md)

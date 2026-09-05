@@ -80,17 +80,25 @@ pdk run --skip-step "Deploy" --skip-step "Notify"
 
 **Important**: Skip filters take precedence over include filters.
 
-### Job Filter (`--job`)
+### Job Selection (`--job`)
 
-Run only steps from specific jobs:
+`--job` selects the job to run (by id or display name, case-insensitively). It is not a step filter:
+the job's transitive dependencies run first unless `--no-deps` is given, and the step filters below
+apply within the selected job.
 
 ```bash
-# Only run the build job
+# Run the build job (and the jobs it depends on)
 pdk run --job "build"
 
-# Run build and test jobs
-pdk run --job "build" --job "test"
+# Run only the build job
+pdk run --job "build" --no-deps
+
+# Run one step of one job (--step is shorthand for --step-filter)
+pdk run --job "build" --step "Build"
 ```
+
+Matrix jobs are addressed by their expanded id (`test-ubuntu-latest-20`), Azure stage jobs by
+`<Stage>_<Job>`; `pdk list` shows the ids.
 
 ### Include Dependencies (`--include-dependencies`)
 
@@ -106,7 +114,9 @@ When combining filters, precedence is:
 
 1. **Skip filters** (highest priority)
 2. **Include filters** (step name, index, range)
-3. **Job filters**
+
+Index and range filters are validated per job (`PDK-E-FILTER-002` when an index is out of range),
+and unknown step names are errors (`PDK-E-FILTER-001`) with suggestions for close matches.
 
 Example:
 
@@ -127,13 +137,24 @@ pdk run --preview-filter --step-filter "Build" --step-filter "Test"
 
 Output:
 ```
-Execution Preview
-=================
-Step 1: Checkout     [WILL SKIP] - Not in step filter
-Step 2: Setup        [WILL SKIP] - Not in step filter
-Step 3: Build        [WILL RUN]
-Step 4: Test         [WILL RUN]
-Step 5: Deploy       [WILL SKIP] - Not in step filter
+Step Filtering Active
+  Total steps: 5
+  Selected: 2
+  Skipped: 3
+
+Warnings:
+  ! Step 'Build' depends on 'Setup' which will be skipped.
+
+Pipeline: CI Build
+
+Job: build
+  - Step 1: Checkout [SKIPPED - Filtered out]
+  - Step 2: Setup [SKIPPED - Filtered out]
+  + Step 3: Build [WILL EXECUTE]
+  + Step 4: Test [WILL EXECUTE]
+  - Step 5: Deploy [SKIPPED - Filtered out]
+
+i Preview-only mode. Exiting without execution.
 ```
 
 ### Confirm Before Running
@@ -185,9 +206,11 @@ Each step evaluation produces a result with:
 | None | Step will execute |
 | FilteredOut | Step didn't match include filter |
 | ExplicitlySkipped | Step matched a skip filter |
-| JobNotSelected | Step's job not in job filter |
-| ConditionalSkip | Step's `if:` condition was false |
-| DependencyFailed | Dependent step failed |
+| JobNotSelected | Step's job was not selected with `--job` |
+| DependencySkipped | A step this step depends on is skipped |
+
+Steps skipped at run time because their `if:` / `condition:` was false or because an earlier step
+failed are not filter decisions; see [Execution semantics](../expressions.md#execution-semantics).
 
 ## Combining with Other Features
 
@@ -276,15 +299,15 @@ pdk run --skip-step "Deploy" --skip-step "Notify"
 ### Focus on Specific Job
 
 ```bash
-# Debug test job only
+# Debug the test job only (its dependencies still run first)
 pdk run --job "test" --verbose
 ```
 
 ### Combine Filters
 
 ```bash
-# Build and test jobs, but skip e2e tests
-pdk run --job "build" --job "test" --skip-step "E2E Tests"
+# The test job, but skip the e2e tests
+pdk run --job "test" --skip-step "E2E Tests"
 ```
 
 ## Troubleshooting
@@ -295,10 +318,11 @@ If your filter matches no steps:
 
 ```bash
 pdk run --step-filter "NonExistent"
-# Warning: No steps matched the filter criteria
+# Error: [PDK-E-FILTER-001] Step 'NonExistent' not found in pipeline.
+#   Did you mean: ...?
 ```
 
-PDK will suggest similar step names if fuzzy matching is enabled.
+The command exits with code 2; similar step names are suggested when fuzzy matching is enabled.
 
 ### Step Runs When It Shouldn't
 
@@ -310,13 +334,14 @@ pdk run --step-filter "Build" --skip-step "Build"
 # Build will NOT run (skip takes precedence)
 ```
 
-### Job Filter Not Working
+### Job Not Found
 
-Ensure job names match exactly:
+`--job` matches job ids and display names case-insensitively; matrix and stage jobs have generated
+ids:
 
 ```bash
-# Check job names in your pipeline
-pdk list --details
+# Check job ids in your pipeline
+pdk list
 ```
 
 ## Best Practices
@@ -326,7 +351,7 @@ pdk list --details
 3. **Preview before running**: Use `--preview-filter` to verify filters
 4. **Combine with watch mode**: Rapid iteration on specific steps
 5. **Document common filters**: Add presets to configuration file
-6. **Use job filters for multi-job pipelines**: Focus on relevant jobs
+6. **Use `--job` for multi-job pipelines**: Focus on the relevant job (add `--no-deps` to skip its dependencies)
 
 ## See Also
 

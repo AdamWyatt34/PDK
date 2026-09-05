@@ -1,6 +1,6 @@
 # pdk doctor
 
-Check system requirements and diagnose issues.
+Check whether Docker is available for PDK.
 
 ## Syntax
 
@@ -10,100 +10,69 @@ pdk doctor
 
 ## Description
 
-The `doctor` command checks your system configuration to ensure PDK can run correctly. It verifies:
-
-- .NET SDK installation
-- Docker availability and configuration
-- Required permissions
-- Common configuration issues
+The `doctor` command checks whether PDK can reach a Docker daemon (through `DOCKER_HOST` or the
+platform default socket / named pipe) and, when it cannot, explains what to do. It is the quickest way
+to find out why `pdk run` fell back to host mode or why `--docker` failed.
 
 ## Output
 
-### All Checks Passing
+### Docker Available
 
 ```
-PDK Doctor
+PDK Doctor - System Diagnostics
 
-Checking system requirements...
-
-  [PASS] .NET SDK 8.0.0 installed
-  [PASS] Docker daemon is running
-  [PASS] Docker version 24.0.7 (API 1.43)
-  [PASS] User can access Docker socket
-  [PASS] Sufficient disk space (50 GB free)
-
-All checks passed! PDK is ready to use.
+Checking Docker availability...
+✓ Docker is available
+✓ Version: 27.3.1
+✓ Platform: linux
 ```
 
-### Issues Detected
+Exit code 0.
+
+### Docker Not Available
 
 ```
-PDK Doctor
+PDK Doctor - System Diagnostics
 
-Checking system requirements...
+Checking Docker availability...
+✗ Docker is not available
 
-  [PASS] .NET SDK 8.0.0 installed
-  [FAIL] Docker daemon is not running
-  [WARN] Low disk space (5 GB free)
+Problem: Unknown error checking Docker availability: Connection failed
 
-Issues detected:
-
-1. Docker daemon is not running
-   - Start Docker Desktop or the Docker service
-   - Or use --host mode to run without Docker
-
-2. Low disk space
-   - Docker images can be large
-   - Consider running 'docker system prune' to free space
-
-Run 'pdk doctor' again after resolving issues.
+Solutions:
+  • Check if Docker is installed and running
+  • Try restarting Docker Desktop
+  • Alternative: Use host mode (no Docker required): pdk run --host
 ```
+
+Exit code 4. The suggestions depend on the kind of failure (daemon not running, Docker not
+installed, permission denied on the socket, ...).
 
 ## Checks Performed
 
-### .NET SDK
-
-Verifies that .NET 8.0 or later is installed and accessible.
-
-**Resolution if failing:**
-- Install .NET SDK from https://dotnet.microsoft.com/download
-- Ensure `dotnet` is in your PATH
-
 ### Docker Daemon
 
-Checks if Docker is installed and the daemon is running.
+Checks that the Docker daemon answers on the configured endpoint (`pdk version --full` shows the
+endpoint).
 
 **Resolution if failing:**
 - Start Docker Desktop (Windows/macOS)
-- Start Docker service: `sudo systemctl start docker` (Linux)
-- Or use `--host` mode to skip Docker
+- Start the Docker service: `sudo systemctl start docker` (Linux)
+- Or use `--host` mode to run without Docker
 
 ### Docker Permissions
 
-Verifies the current user can communicate with Docker.
+A "permission denied" error means the current user cannot access the Docker socket.
 
-**Resolution if failing (Linux):**
+**Resolution (Linux):**
 ```bash
 sudo usermod -aG docker $USER
 # Log out and back in
 ```
 
-### Disk Space
-
-Checks for sufficient disk space for Docker images and containers.
-
-**Resolution if failing:**
-```bash
-docker system prune -a
-```
-
-### Configuration
-
-Validates any existing PDK configuration files.
-
-**Resolution if failing:**
-- Check `.pdkrc` or `pdk.config.json` for syntax errors
-- Run `pdk validate` on your configuration
+`pdk doctor` does not check the .NET installation, disk space or configuration files; use
+`pdk version --full` for the runtime and system information and `pdk run --dry-run` to validate a
+pipeline and its configuration.
 
 ## Examples
 
@@ -117,18 +86,18 @@ pdk doctor
 
 ```bash
 if pdk doctor > /dev/null 2>&1; then
-  echo "PDK is ready"
-  pdk run
+  echo "Docker is ready"
+  pdk run --docker
 else
-  echo "PDK has issues, please check"
-  exit 1
+  echo "No Docker, running on the host"
+  pdk run --host
 fi
 ```
 
 ### CI/CD Health Check
 
 ```yaml
-- name: Check PDK Health
+- name: Check Docker for PDK
   run: pdk doctor
 
 - name: Run Pipeline
@@ -139,11 +108,13 @@ fi
 
 | Code | Meaning |
 |------|---------|
-| 0 | All checks passed |
-| 1 | One or more checks failed |
+| 0 | Docker is available |
+| 4 | Docker is not available |
+| 1 | The check itself failed unexpectedly |
 
 ## See Also
 
 - [pdk version --full](version.md)
 - [Installation Guide](../installation.md)
 - [Troubleshooting](../guides/troubleshooting.md)
+- [Error codes](../errors.md#docker)

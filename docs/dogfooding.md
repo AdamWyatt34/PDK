@@ -82,7 +82,7 @@ Compares your local run with the latest GitHub Actions CI run.
 - CI workflow file existence
 
 **Exit Codes**:
-- `0`: All checks passed
+- `0`: All checks passed (warnings for optional components do not fail the check)
 - `2`: Missing required component
 
 ### self-test.sh / self-test.ps1
@@ -90,10 +90,15 @@ Compares your local run with the latest GitHub Actions CI run.
 **Purpose**: Run PDK on its own CI workflow (REQ-09-020)
 
 **What it does**:
-1. Builds PDK if needed
+1. Checks that Docker is available (exit code 2 otherwise) and builds PDK if needed
 2. Creates output directory in `.pdk-dogfood/runs/<timestamp>/`
-3. Runs: `pdk run --file .github/workflows/ci.yml --job build --verbose`
+3. Runs PDK on its own workflow in host mode, limited to the steps that can run locally:
+   `pdk run --file .github/workflows/ci.yml --job build --host --step-filter "Checkout code" --step-filter "Restore dependencies" --step-filter "Run unit tests" --verbose`
 4. Captures output and generates summary
+
+The CI workflow's `build` job is a matrix job (`ubuntu-latest`, `windows-latest`, `macos-latest`), so
+PDK expands it into `build-ubuntu-latest`, `build-windows-latest` and `build-macos-latest`; `--job`
+must name one of these expanded ids (the plain `build` id is rejected with exit code 2).
 
 **Output**:
 - `output.log`: Full PDK execution output
@@ -102,8 +107,8 @@ Compares your local run with the latest GitHub Actions CI run.
 
 **Exit Codes**:
 - `0`: Self-test passed
-- `1`: PDK execution failed
 - `2`: Docker not available
+- otherwise: PDK's own exit code (`1` pipeline failed, `2` invalid arguments such as an unknown job, ...)
 
 ### compare-outputs.sh / compare-outputs.ps1
 
@@ -120,8 +125,9 @@ Compares your local run with the latest GitHub Actions CI run.
 
 **Exit Codes**:
 - `0`: Results match
+- `1`: Invalid option, or no local run / summary found
 - `2`: GitHub CLI not available/authenticated
-- `3`: Comparison mismatch
+- `3`: Comparison mismatch, or no CI run found
 
 ### validate-pdk.sh / validate-pdk.ps1
 
@@ -146,7 +152,7 @@ When comparing local runs with CI, some differences are expected and acceptable:
 |------------|--------|
 | Execution time | Different machine specs, startup overhead |
 | Absolute paths | `/home/runner/work/...` vs local paths |
-| GitHub context variables | `GITHUB_SHA`, `GITHUB_REF` not set locally |
+| GitHub context variables | `GITHUB_SHA`, `GITHUB_REF`, ... are derived from the local git repository; tokens and PR data are empty |
 | Cache behavior | CI may have cached dependencies |
 | Artifact upload | CI uploads to GitHub, local saves to disk |
 | Agent names | CI uses ephemeral runners |
@@ -238,7 +244,10 @@ Error: GitHub CLI is not authenticated.
 
 ## Known Limitations
 
-1. **Matrix builds**: PDK doesn't currently support matrix builds. Self-test runs the `build` job targeting ubuntu-latest only.
+1. **Matrix builds**: PDK expands the CI matrix into one job per operating system and runs them
+   sequentially on the local machine; the self-test targets a single expanded job
+   (`build-ubuntu-latest`), and the steps that rely on GitHub-hosted actions (setup-dotnet, cache,
+   upload-artifact, codecov) are no-ops or skipped locally.
 
 2. **Artifacts**: CI uploads artifacts to GitHub; local runs save to `.pdk-dogfood/`.
 
@@ -257,4 +266,4 @@ Error: GitHub CLI is not authenticated.
 
 - [README.md](../README.md) - Main documentation
 - [Sprint 9 Requirements](Sprints/sprint-9-requirements.md) - Full requirements
-- [GitHub Actions CI](.github/workflows/ci.yml) - CI workflow being tested
+- [GitHub Actions CI](../.github/workflows/ci.yml) - CI workflow being tested

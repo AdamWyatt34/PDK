@@ -12,10 +12,10 @@ pdk secret <subcommand> [options]
 
 The `secret` command manages secrets stored locally on your machine. These secrets are:
 
-- Encrypted at rest using AES-256
-- Tied to your machine (cannot be transferred)
-- Automatically masked in pipeline output
-- Available as environment variables during pipeline execution
+- Encrypted at rest with AES-256-GCM, using a random key kept in `~/.pdk/secret.key`
+- Automatically masked in pipeline output and logs
+- Exported to every step as environment variables and available in expressions
+  (`${{ secrets.NAME }}`, `$(NAME)`)
 
 ## Subcommands
 
@@ -41,7 +41,7 @@ pdk secret set <name> [options]
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `name` | Yes | Secret name (e.g., `API_KEY`, `DOCKER_PASSWORD`) |
+| `name` | Yes | Secret name (letters, digits and underscores, not starting with a digit; e.g. `API_KEY`) |
 
 ### Options
 
@@ -54,12 +54,12 @@ pdk secret set <name> [options]
 
 **Interactive (Recommended)**
 
-The safest method - value is not visible:
+The safest method - the value is not echoed:
 
 ```bash
 pdk secret set API_KEY
-Enter secret value: ********
-Secret 'API_KEY' stored successfully.
+Enter value for API_KEY:
+✓ Secret 'API_KEY' saved
 ```
 
 **From Standard Input**
@@ -73,7 +73,7 @@ echo "my-secret-value" | pdk secret set API_KEY --stdin
 Or from a file:
 
 ```bash
-cat secrets/api-key.txt | pdk secret set API_KEY --stdin
+pdk secret set SSH_KEY --stdin < ~/.ssh/deploy_key
 ```
 
 **Direct Value (Not Recommended)**
@@ -82,30 +82,14 @@ The value is visible in process lists and shell history:
 
 ```bash
 pdk secret set API_KEY --value "my-secret-value"
-# Warning: Secret value may be visible in process list
-```
-
-### Examples
-
-```bash
-# Interactive input (recommended)
-pdk secret set GITHUB_TOKEN
-
-# From stdin
-echo "$MY_SECRET" | pdk secret set GITHUB_TOKEN --stdin
-
-# From file
-pdk secret set SSH_KEY --stdin < ~/.ssh/deploy_key
-
-# Direct value (use with caution)
-pdk secret set API_KEY --value "abc123"
+# Warning: Value provided via CLI is visible in process list.
 ```
 
 ---
 
 ## pdk secret list
 
-List all stored secret names.
+List all stored secret names, one per line.
 
 ### Syntax
 
@@ -115,21 +99,13 @@ pdk secret list
 
 ### Output
 
-```bash
-pdk secret list
+```
+API_KEY
+DOCKER_PASSWORD
+OLD_TOKEN (unreadable: cannot be decrypted with the current key; set it again)
 ```
 
-```
-Stored secrets:
-  - API_KEY
-  - DOCKER_PASSWORD
-  - GITHUB_TOKEN
-  - NPM_TOKEN
-
-4 secrets stored.
-```
-
-Note: Secret values are never displayed, only names.
+`No secrets stored` is printed when the store is empty. Secret values are never displayed.
 
 ---
 
@@ -143,29 +119,24 @@ Remove a stored secret.
 pdk secret delete <name>
 ```
 
-### Arguments
-
-| Argument | Required | Description |
-|----------|----------|-------------|
-| `name` | Yes | Secret name to delete |
-
 ### Examples
 
 ```bash
 # Delete a secret
 pdk secret delete API_KEY
-Secret 'API_KEY' deleted.
+✓ Secret 'API_KEY' deleted
 
-# Try to delete non-existent secret
+# Try to delete non-existent secret (exit code 1)
 pdk secret delete UNKNOWN_SECRET
-Error: Secret 'UNKNOWN_SECRET' not found.
+Secret 'UNKNOWN_SECRET' not found
 ```
 
 ---
 
 ## Using Secrets in Pipelines
 
-Secrets are automatically available as environment variables during pipeline execution:
+Secrets are automatically available as environment variables and in expressions during pipeline
+execution:
 
 ```yaml
 steps:
@@ -185,24 +156,23 @@ pdk secret set API_KEY
 
 # Run the pipeline - API_KEY is automatically available
 pdk run --file .github/workflows/deploy.yml
+
+# Override it for one run (visible in the process list)
+pdk run --file .github/workflows/deploy.yml --secret API_KEY=other-value
 ```
+
+`PDK_SECRET_<NAME>` environment variables are another way to supply secrets, for example in CI.
 
 ## Secret Storage
 
-Secrets are stored in:
+| File | Purpose |
+|------|---------|
+| `~/.pdk/secrets.json` | Encrypted entries (format version 2.0) |
+| `~/.pdk/secret.key` | Random 256-bit key (DPAPI-protected on Windows) |
 
-| Platform | Location |
-|----------|----------|
-| Windows | `%APPDATA%\PDK\secrets\` |
-| macOS | `~/Library/Application Support/PDK/secrets/` |
-| Linux | `~/.config/pdk/secrets/` |
-
-**Security notes:**
-
-- Secrets are encrypted using AES-256 with a machine-specific key
-- Encrypted files cannot be decrypted on other machines
-- The encryption key is derived from machine-specific identifiers
-- Secrets are loaded into memory only when needed
+Both files are created with owner-only permissions (0600). Entries written by earlier PDK versions
+are migrated to the current format on first read; entries that cannot be decrypted are reported as
+`(unreadable)` by `pdk secret list` and can simply be set again.
 
 ## Secret Masking
 
@@ -216,17 +186,18 @@ Step: Deploy
 
 Masking works for:
 
-- Console output
-- Log files (text and JSON)
+- Step output (streamed and captured)
+- Console output and log files (text and JSON)
 - Error messages
+- Dry-run output (`***MASKED***`)
 
-To disable masking (for debugging only):
+To disable masking in the log sinks (for debugging only):
 
 ```bash
 pdk run --no-redact
 ```
 
-**Warning:** Using `--no-redact` may expose secrets in output.
+**Warning:** Using `--no-redact` may expose secrets in logs.
 
 ## Best Practices
 
@@ -242,7 +213,7 @@ pdk run --no-redact
 | Code | Meaning |
 |------|---------|
 | 0 | Success |
-| 1 | Error (secret not found, storage error) |
+| 1 | Error (secret not found, invalid name, storage error) |
 | 2 | Invalid arguments |
 
 ## See Also

@@ -112,12 +112,17 @@ See [Secrets Guide](secrets.md) for more details.
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| level | string | "Info" | Log level: Info, Debug, Warning, Error |
+| level | string | "Info" | Log level: Trace, Debug, Information (Info), Warning (Warn), Error, Critical |
 | file | string | null | Log file path (~ supported) |
+| jsonFile | string | null | JSON log file path |
 | maxSizeMb | int | 10 | Max log file size before rotation |
+| retainedFileCount | int | 5 | Rotated files to keep |
 | noRedact | bool | false | Disable secret masking |
+| console.showTimestamp, console.showCorrelationId | bool | false | Console log decorations |
 
-See [Logging Guide](logging.md) for more details.
+The section is validated, but the logging pipeline is currently driven by the command-line flags
+(`--verbose`, `--log-file`, `--log-json`, ...); a rotated log is always written to
+`~/.pdk/logs/pdk.log`. See [Logging Guide](logging.md) for more details.
 
 ### features
 
@@ -144,6 +149,18 @@ See [Logging Guide](logging.md) for more details.
 | parallelSteps | bool | false | Enable parallel execution |
 | maxParallelism | int | 4 | Maximum concurrent steps |
 
+### watch
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| debounceMs | int | 500 | Debounce window for file changes |
+| clearOnRerun | bool | false | Clear the terminal before each re-run |
+| excludePatterns | string[] | [] | Additional globs (relative to the workspace) that do not trigger a re-run |
+| includePatterns | string[] | [] | When set, only changes to matching files trigger a re-run |
+
+Command-line flags (`--watch-debounce`, `--watch-clear`) override these values. See
+[Watch Mode](watch-mode.md).
+
 ### stepFiltering
 
 | Property | Type | Default | Description |
@@ -161,7 +178,7 @@ When multiple configuration sources exist, they are merged with this precedence 
 
 1. Built-in defaults (lowest)
 2. Configuration file
-3. Environment variables
+3. Environment variables (`PDK_VAR_*` / `PDK_SECRET_*` for variables and secrets)
 4. CLI arguments (highest)
 
 Objects are deep-merged; arrays are replaced.

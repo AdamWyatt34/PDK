@@ -233,23 +233,27 @@ pdk run --watch --step-filter "Build" --step-filter "Test"
 pdk run --metrics
 ```
 
-Output:
+Output (also shown with `--verbose`):
 
 ```
-Performance Metrics
-==================
-Total Duration:    45.2s
-Docker Overhead:   12.3s (27%)
-Step Execution:    30.1s (67%)
-Setup/Cleanup:      2.8s (6%)
-
-Step Breakdown:
-  Checkout:        1.2s
-  Setup .NET:      8.5s
-  Restore:        12.3s
-  Build:           5.2s
-  Test:            3.1s
+    Performance Metrics
+╭──────────────────────────┬────────╮
+│ Metric                   │ Value  │
+├──────────────────────────┼────────┤
+│ Total duration           │ 45.2s  │
+│ Time in steps            │ 30.1s  │
+│ Container overhead       │ 2.8s   │
+│ Image pull time          │ 9.5s   │
+│ Containers created       │ 1      │
+│ Images pulled / cached   │ 1 / 0  │
+│ Pulled images            │ mcr.microsoft.com/dotnet/sdk:8.0 │
+│ Step: build / Restore    │ 12.3s  │
+│ Step: build / Build      │ 5.2s   │
+│ Step: build / Test       │ 3.1s   │
+╰──────────────────────────┴────────╯
 ```
+
+The container and image rows only appear in Docker mode; the slowest ten steps are listed.
 
 ### Compare Modes
 

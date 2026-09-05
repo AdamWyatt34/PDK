@@ -110,23 +110,23 @@ pdk doctor
 pdk version --full
 ```
 
-Expected output from `pdk version --full`:
+Expected output from `pdk version --full` (abridged):
 
 ```
-PDK version 1.0.0
-
-System Information:
-  .NET Runtime: 8.0.0
-  OS: Windows 11 (10.0.22631)
-  Architecture: X64
+PDK v1.0.0+b45694f80797763319dacabc938a359187fcce92
+.NET Runtime: .NET 8.0.30
+OS: Windows 11 (x64)
+Commit: b45694f
 
 Docker:
-  Status: Available
-  Version: 24.0.7
+  Status: Running ✓
+  Version: 27.3.1
+  Platform: linux
+  Endpoint: npipe://./pipe/docker_engine
 
 Providers:
-  - GitHub Actions
-  - Azure DevOps
+  ✓ GitHubActions
+  ✓ AzureDevOps
 ```
 
 ## Post-Installation Setup
