@@ -121,7 +121,7 @@ macros: `$(buildConfiguration)`, `$(Build.SourceBranch)`, `$(produce.myOutput)`,
 Predefined variables: `Build.SourcesDirectory`, `Build.Repository.LocalPath`, `Build.Repository.Name`,
 `Build.Repository.Uri`, `Build.ArtifactStagingDirectory`, `Build.StagingDirectory`,
 `Build.BinariesDirectory`, `Build.BuildId`, `Build.BuildNumber`, `Build.DefinitionName`,
-`Build.SourceBranch`, `Build.SourceBranchName`, `Build.SourceVersion`, `Build.Reason` (always `Manual`),
+`Build.SourceBranch`, `Build.SourceBranchName`, `Build.SourceVersion`, `Build.Reason` (`IndividualCI` for `push`, `PullRequest` for `pull_request`, `Schedule` for `schedule`, otherwise `Manual`; set with `--event`),
 `Build.RequestedFor`, `System.DefaultWorkingDirectory`, `System.TeamProject` (`local`),
 `System.JobName`, `System.JobDisplayName`, `System.StageName`, `System.PullRequest.SourceBranch`
 (empty), `Agent.BuildDirectory`, `Agent.TempDirectory`, `Agent.OS`, `Agent.Name` (`pdk`),

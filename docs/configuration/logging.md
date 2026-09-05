@@ -220,8 +220,9 @@ The `logging` section of `.pdkrc` / `pdk.config.json` is validated (`level` must
 }
 ```
 
-Note that the command-line flags above are what drive the logging pipeline today; the configuration
-section is accepted and validated but does not yet change the sinks or the level.
+The `logging` section supplies the defaults for a run (`level`, `file`, `jsonFile`, `maxSizeMb`,
+`retainedFileCount`, `noRedact`); the command-line flags above override it for that run. Relative
+file paths are resolved from the current directory and `~` is expanded.
 
 ## Troubleshooting
 

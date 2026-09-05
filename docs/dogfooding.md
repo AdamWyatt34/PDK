@@ -192,10 +192,11 @@ The dogfood workflow (`.github/workflows/dogfood.yml`) runs automatically:
 ### Docker not running
 
 ```
-Error: Docker daemon is not running. Please start Docker.
+Warning: Docker daemon is not running; the self-test runs in host mode and does not need it.
 ```
 
-**Solution**: Start Docker Desktop or the Docker daemon.
+The self-test runs PDK in host mode, so this is informational. Start Docker Desktop or the Docker
+daemon only if you also want to exercise Docker mode.
 
 ### .NET version mismatch
 

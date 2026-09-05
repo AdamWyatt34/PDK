@@ -38,7 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Masking covers multi-line secrets, URL-, base64- and JSON-encoded variants, and `Authorization` / `Bearer` headers in logs.
 - Docker mode uses the job's `container:` image when present and mounts the Docker socket only for jobs with Docker steps; `--no-cache` forces image pulls.
 - `--parallel`, `--max-parallel` and `--no-reuse` never changed behaviour; they are now hidden, still accepted, and print a warning.
-- `pdk version` no longer prints a build date; `--full` shows the Docker endpoint.
+- `pdk version` no longer prints a build date; `--full` shows the Docker endpoint, and `pdk doctor` names the endpoint it probed and where it came from (`DOCKER_HOST`, Docker context, socket search or default).
+- The `logging` configuration section now supplies the defaults for the log level, file paths, rotation and redaction; command-line flags override it.
+- Azure `Build.Reason` follows `--event` (`IndividualCI`, `PullRequest`, `Schedule`, `Manual`).
+- `scripts/self-test.sh` / `.ps1` run in host mode and no longer abort when Docker is missing.
 - Parser warnings are printed before a run.
 - Dependencies: SharpCompress 1.0.0, FluentAssertions 7.x, BenchmarkDotNet 0.15.
 
