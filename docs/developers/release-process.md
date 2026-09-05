@@ -52,8 +52,10 @@ manually with the version to release (`workflow_dispatch`). The workflow:
 
 1. Validates the version format and checks that the tag `v<version>` does not exist yet
 2. Updates `VersionPrefix` in `Directory.Build.props` (`scripts/set-version.sh`)
-3. Generates the changelog section from the conventional-commit subjects since the previous tag
-   (`scripts/generate-changelog.sh`), keeping the `## [Unreleased]` placeholder
+3. Turns the `## [Unreleased]` section of CHANGELOG.md into the `## [<version>] - <date>` section and
+   leaves an empty `## [Unreleased]` placeholder behind (`scripts/generate-changelog.sh`); when
+   `## [Unreleased]` is empty the section is built from the conventional-commit subjects since the
+   previous tag instead, so a release is never cut without notes
 4. Restores, builds (`Release`), runs the unit and integration tests with coverage
    (`PDK_DOCKER_TESTS=require`) and packs the tool; nothing is pushed until this succeeds
 5. Commits `Directory.Build.props` and `CHANGELOG.md`, creates the `v<version>` tag and pushes both
@@ -83,7 +85,9 @@ The version lives in one place:
 ### Changelog
 
 The `## [Unreleased]` section of CHANGELOG.md collects user-visible changes while they are being
-made; the release workflow adds the versioned section. Keep entries short and grouped by type:
+made; the release workflow renames it to the version being released. What is written there is what
+ships as the GitHub release notes, so keep entries short, grouped by type, and lead a major release
+with `### Breaking Changes`:
 
 ```markdown
 ## [1.2.0] - 2024-01-15
