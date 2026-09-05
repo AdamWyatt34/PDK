@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+- Exit codes: 0 success, 1 pipeline or validation failure, 2 invalid arguments (also unknown `--job` and several candidate pipeline files), 3 pipeline file not found, 4 Docker unavailable, 130 cancelled.
+- Pipeline auto-detection searches `.github/workflows/*.yml|yaml`, `azure-pipelines.yml|yaml`, `.azure-pipelines/*.yml|yaml`, `.gitlab-ci.yml|yaml` and `*.pipeline.yml|yaml`; more than one candidate is an error instead of a silent pick.
+- A failed step no longer aborts the job: later steps are skipped, `always()` / `failure()` steps still run, and `continue-on-error` keeps the job green while reporting the step as an allowed failure. `enabled: false` steps are skipped.
+- Setup actions/tasks (`actions/setup-*`, `actions/cache`, `UseDotNet@2`, `NodeTool@0`, ...) are no-ops; unsupported actions/tasks are skipped with a warning instead of failing the run (`--strict` restores the failure).
+- `--step` is shorthand for a single `--step-filter`; `--job` selects jobs and is no longer a step filter.
+- Only `PDK_VAR_*` and `PDK_SECRET_*` are imported from the environment; other host variables can still be referenced by `${VAR}` in step inputs but are never exported to steps or listed as variables. An unknown `${VAR}` is left as written (`${VAR:-default}` and `${VAR:?message}` keep working).
+- Scripts are no longer rewritten: variables and secrets are exported to the shell by name, and PDK's `${VAR}` expansion applies to step inputs, environment values and working directories. Azure `$(var)` is no longer converted to `${var}` at parse time; unknown macros stay literal.
+- Secrets are encrypted with AES-256-GCM using a random key stored in `~/.pdk/secret.key` (mode 0600; additionally DPAPI-protected on Windows) instead of a machine-derived key; `secrets.json` uses format version 2.0 and legacy entries are migrated on first read; entries that cannot be decrypted are listed as `(unreadable)` by `pdk secret list`; missing secrets raise an error instead of returning null.
+
 ### Added
 - `--parallel` runs independent jobs concurrently (up to `--max-parallel`, default 4), preserving dependency order; step names and output lines are prefixed with the job name.
 - `--param NAME=VALUE` (alias `--input`) supplies Azure `parameters:` values and GitHub `inputs`; parsers receive parameters, variables, workspace and event through `PipelineParseOptions`.
@@ -31,16 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Build: central package management (`Directory.Packages.props`), deterministic builds, Docker-dependent integration tests skip automatically without a daemon (`PDK_DOCKER_TESTS=require|skip`), 70% line coverage gate in CI.
 
 ### Changed
-- Exit codes: 0 success, 1 pipeline or validation failure, 2 invalid arguments (also unknown `--job` and several candidate pipeline files), 3 pipeline file not found, 4 Docker unavailable, 130 cancelled.
-- Pipeline auto-detection searches `.github/workflows/*.yml|yaml`, `azure-pipelines.yml|yaml`, `.azure-pipelines/*.yml|yaml`, `.gitlab-ci.yml|yaml` and `*.pipeline.yml|yaml`; more than one candidate is an error instead of a silent pick.
-- A failed step no longer aborts the job: later steps are skipped, `always()` / `failure()` steps still run, and `continue-on-error` keeps the job green while reporting the step as an allowed failure. `enabled: false` steps are skipped.
-- Setup actions/tasks (`actions/setup-*`, `actions/cache`, `UseDotNet@2`, `NodeTool@0`, ...) are no-ops; unsupported actions/tasks are skipped with a warning instead of failing the run (`--strict` restores the failure).
-- `--step` is shorthand for a single `--step-filter`; `--job` selects jobs and is no longer a step filter.
 - Verbosity flags (`--verbose`, `--trace`, `--quiet`, `--silent`), `--log-file`, `--log-json` and `--no-redact` now drive the logging pipeline; a rotated log is always written to `~/.pdk/logs/pdk.log`; `--verbose` / `--trace` mirror the log to stderr.
-- Only `PDK_VAR_*` and `PDK_SECRET_*` are imported from the environment; other host variables can still be referenced by `${VAR}` in step inputs but are never exported to steps or listed as variables. An unknown `${VAR}` is left as written (`${VAR:-default}` and `${VAR:?message}` keep working).
-- Scripts are no longer rewritten: variables and secrets are exported to the shell by name, and PDK's `${VAR}` expansion applies to step inputs, environment values and working directories. Azure `$(var)` is no longer converted to `${var}` at parse time; unknown macros stay literal.
 - `--secret NAME=value` overrides a stored secret of the same name.
-- Secrets are encrypted with AES-256-GCM using a random key stored in `~/.pdk/secret.key` (mode 0600; additionally DPAPI-protected on Windows) instead of a machine-derived key; `secrets.json` uses format version 2.0 and legacy entries are migrated on first read; entries that cannot be decrypted are listed as `(unreadable)` by `pdk secret list`; missing secrets raise an error instead of returning null.
 - Masking covers multi-line secrets, URL-, base64- and JSON-encoded variants, and `Authorization` / `Bearer` headers in logs.
 - Docker mode uses the job's `container:` image when present and mounts the Docker socket only for jobs with Docker steps; `--no-cache` forces image pulls.
 - Before creating a job container, Docker mode removes containers left behind by PDK processes that are no longer running on this machine (they are labelled with the creating process); containers of a running `pdk`, `--keep-containers` containers and containers created from another host are never touched.

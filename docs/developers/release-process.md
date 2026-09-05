@@ -52,8 +52,10 @@ manually with the version to release (`workflow_dispatch`). The workflow:
 
 1. Validates the version format and checks that the tag `v<version>` does not exist yet
 2. Updates `VersionPrefix` in `Directory.Build.props` (`scripts/set-version.sh`)
-3. Generates the changelog section from the conventional-commit subjects since the previous tag
-   (`scripts/generate-changelog.sh`), keeping the `## [Unreleased]` placeholder
+3. Turns the `## [Unreleased]` section of CHANGELOG.md into the `## [<version>] - <date>` section and
+   leaves an empty `## [Unreleased]` placeholder behind (`scripts/generate-changelog.sh`); when
+   `## [Unreleased]` is empty the section is built from the conventional-commit subjects since the
+   previous tag instead, so a release is never cut without notes
 4. Restores, builds (`Release`), runs the unit and integration tests with coverage
    (`PDK_DOCKER_TESTS=require`) and packs the tool; nothing is pushed until this succeeds
 5. Commits `Directory.Build.props` and `CHANGELOG.md`, creates the `v<version>` tag and pushes both
@@ -83,7 +85,9 @@ The version lives in one place:
 ### Changelog
 
 The `## [Unreleased]` section of CHANGELOG.md collects user-visible changes while they are being
-made; the release workflow adds the versioned section. Keep entries short and grouped by type:
+made; the release workflow renames it to the version being released. What is written there is what
+ships as the GitHub release notes, so keep entries short, grouped by type, and lead a major release
+with `### Breaking Changes`:
 
 ```markdown
 ## [1.2.0] - 2024-01-15
@@ -106,6 +110,21 @@ made; the release workflow adds the versioned section. Keep entries short and gr
 2. Start the **Release** workflow from the Actions tab with the version (e.g. `1.2.0`)
 3. Watch the run: the release commit and tag are pushed only after build, tests and pack succeed
 4. Check the GitHub release and the package on NuGet (`dotnet tool update -g pdk`)
+
+### Release Credentials
+
+Two repository secrets are used, under Settings > Secrets and variables > Actions:
+
+| Secret | Required | Used for |
+|--------|----------|----------|
+| `PAT_TOKEN` | Yes | Pushing the release commit and the tag to the protected `main` branch, and creating the GitHub release. The default `GITHUB_TOKEN` cannot push to `main`, and releases it creates do not trigger the docs workflow. |
+| `NUGET_API_KEY` | No | Pushing the package to NuGet. Without it the release is still tagged and published on GitHub, and the `.nupkg` is attached there. |
+
+`PAT_TOKEN` needs `repo` scope (a fine-grained token needs this repository, with read and write access
+to contents). **Personal access tokens expire**, and an expired one is the most likely reason for a
+release that fails immediately. The workflow checks the token before checking out and names the
+problem; without that check the failure surfaces at the checkout step as
+`fatal: could not read Username for 'https://github.com'`, which says nothing about the token.
 
 ## Release Artifacts
 
@@ -243,6 +262,7 @@ After releasing:
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 2.0.0 | 2026-09-05 | Expression engine, job graph, GitLab CI, Azure templates and matrices, parallel jobs; breaking changes to exit codes, step filtering, environment import and the secret store |
 | 1.0.0 | 2025-12-26 | Initial release |
 
 ## Maintainer Responsibilities
