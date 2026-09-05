@@ -382,7 +382,7 @@ public class NpmExecutionTests : IAsyncDisposable
     [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
-    public async Task NpmNotInstalled_ThrowsToolNotFoundException()
+    public async Task NpmNotInstalled_ReturnsFailedStep()
     {
         // Arrange - Use Alpine image without npm
         await _containerManager.PullImageIfNeededAsync("alpine:latest");
@@ -422,10 +422,12 @@ public class NpmExecutionTests : IAsyncDisposable
             }
         };
 
-        // Act & Assert
-        await executor.Invoking(e => e.ExecuteAsync(step, context))
-            .Should().ThrowAsync<ToolNotFoundException>()
-            .WithMessage("*npm*not found*");
+        // Act
+        var result = await executor.ExecuteAsync(step, context);
+
+        // Assert: executors report a missing tool as a failed step (so continue-on-error applies) instead of throwing
+        result.Success.Should().BeFalse();
+        result.ErrorOutput.Should().ContainEquivalentOf("npm").And.ContainEquivalentOf("not found");
     }
 
     #endregion

@@ -179,7 +179,8 @@ public class DockerContainerManager : IContainerManager
     /// </summary>
     /// <param name="cancellationToken">Token to cancel the operation.</param>
     /// <returns>A detailed status object containing availability, version, and error information.
-    /// On success <see cref="DockerAvailabilityStatus.Platform"/> is <c>os/arch via endpoint</c>.</returns>
+    /// On success <see cref="DockerAvailabilityStatus.Platform"/> is <c>os/arch</c> and
+    /// <see cref="DockerAvailabilityStatus.Endpoint"/> names the endpoint that answered.</returns>
     public async Task<DockerAvailabilityStatus> GetDockerStatusAsync(CancellationToken cancellationToken = default)
     {
         try
@@ -200,7 +201,7 @@ public class DockerContainerManager : IContainerManager
 
             RecordSystemInfo(info);
 
-            var platform = $"{info.OSType}/{info.Architecture} via {Endpoint.Uri}";
+            var platform = $"{info.OSType}/{info.Architecture}";
             var versionText = string.IsNullOrEmpty(version.Version) ? "unknown" : version.Version;
 
             _logger?.LogDebug("Docker is available - Version: {Version}, Platform: {Platform}", versionText, platform);
@@ -213,7 +214,7 @@ public class DockerContainerManager : IContainerManager
         }
         catch (Exception ex)
         {
-            var (type, message) = DockerErrorClassifier.Classify(ex, Endpoint);
+            var (type, message) = DockerErrorClassifier.Classify(ex, Endpoint, _hostEnvironment);
             _logger?.LogWarning("Docker is not available ({ErrorType}): {Message}", type, message);
             return DockerAvailabilityStatus.CreateFailure(type, message) with { Endpoint = DescribeEndpoint() };
         }

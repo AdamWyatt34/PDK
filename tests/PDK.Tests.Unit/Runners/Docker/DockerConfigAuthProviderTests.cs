@@ -8,7 +8,7 @@ public class DockerConfigAuthProviderTests
 {
     private readonly FakeDockerHostEnvironment _env = new();
 
-    private string ConfigPath => Path.Combine(_env.HomeDirectory, ".docker", "config.json");
+    private string ConfigPath => U(_env.HomeDirectory, ".docker", "config.json");
 
     private static string Base64(string value) => Convert.ToBase64String(Encoding.UTF8.GetBytes(value));
 
@@ -196,4 +196,7 @@ public class DockerConfigAuthProviderTests
     {
         DockerConfigAuthProvider.NormalizeKey(key).Should().Be(expected);
     }
+
+    /// <summary>Joins Unix path segments with '/', independent of the host that runs the tests.</summary>
+    private static string U(params string[] parts) => string.Join("/", parts.Select((p, i) => i == 0 ? p.TrimEnd('/') : p.Trim('/')));
 }

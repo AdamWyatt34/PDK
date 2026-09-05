@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docker mode uses the job's `container:` image when present and mounts the Docker socket only for jobs with Docker steps; `--no-cache` forces image pulls.
 - `--no-reuse` never changed behaviour; it is now hidden, still accepted, and prints a warning.
 - `pdk version` no longer prints a build date; `--full` shows the Docker endpoint, and `pdk doctor` names the endpoint it probed and where it came from (`DOCKER_HOST`, Docker context, socket search or default).
+- Docker diagnostics report a missing socket as *not installed* on every platform (Windows and macOS surface it differently from Linux), explain Unix socket paths longer than the 91 bytes the Docker client can address, and report `Platform` as plain `os/arch` with the endpoint listed separately; socket and config paths are joined with `/` on Unix hosts even when PDK runs elsewhere.
 - The `logging` configuration section now supplies the defaults for the log level, file paths, rotation and redaction; command-line flags override it.
 - Azure `Build.Reason` follows `--event` (`IndividualCI`, `PullRequest`, `Schedule`, `Manual`).
 - `scripts/self-test.sh` / `.ps1` run in host mode and no longer abort when Docker is missing.

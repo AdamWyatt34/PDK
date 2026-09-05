@@ -9,11 +9,11 @@ public class DockerEndpointResolverTests
 {
     private readonly FakeDockerHostEnvironment _env = new();
 
-    private string ConfigDir => Path.Combine(_env.HomeDirectory, ".docker");
+    private string ConfigDir => U(_env.HomeDirectory, ".docker");
 
     private void AddContext(string name, string host)
     {
-        var meta = Path.Combine(ConfigDir, "contexts", "meta", DockerEndpointResolver.GetContextDirectoryName(name), "meta.json");
+        var meta = U(ConfigDir, "contexts", "meta", DockerEndpointResolver.GetContextDirectoryName(name), "meta.json");
         _env.FileContents[meta] = "{\"Name\":\"" + name + "\",\"Metadata\":{},\"Endpoints\":{\"docker\":{\"Host\":\"" + host + "\",\"SkipTLSVerify\":false}}}";
     }
 
@@ -116,7 +116,7 @@ public class DockerEndpointResolverTests
     [Fact]
     public void Resolve_CurrentContextInConfig_UsesContextEndpoint()
     {
-        _env.FileContents[Path.Combine(ConfigDir, "config.json")] = "{\"currentContext\":\"desktop-linux\"}";
+        _env.FileContents[U(ConfigDir, "config.json")] = "{\"currentContext\":\"desktop-linux\"}";
         AddContext("desktop-linux", "unix:///home/tester/.docker/desktop/docker.sock");
 
         var endpoint = DockerEndpointResolver.Resolve(_env);
@@ -130,7 +130,7 @@ public class DockerEndpointResolverTests
     {
         _env.Variables["DOCKER_CONFIG"] = "/etc/docker-cli";
         _env.FileContents["/etc/docker-cli/config.json"] = "{\"currentContext\":\"remote\"}";
-        var meta = Path.Combine("/etc/docker-cli", "contexts", "meta", DockerEndpointResolver.GetContextDirectoryName("remote"), "meta.json");
+        var meta = U("/etc/docker-cli", "contexts", "meta", DockerEndpointResolver.GetContextDirectoryName("remote"), "meta.json");
         _env.FileContents[meta] = "{\"Endpoints\":{\"docker\":{\"Host\":\"tcp://build-host:2376\"}}}";
 
         var endpoint = DockerEndpointResolver.Resolve(_env);
@@ -143,12 +143,12 @@ public class DockerEndpointResolverTests
     [Fact]
     public void Resolve_DefaultContext_FallsThroughToSocketSearch()
     {
-        _env.FileContents[Path.Combine(ConfigDir, "config.json")] = "{\"currentContext\":\"default\"}";
-        _env.Files.Add(Path.Combine(_env.HomeDirectory, ".docker", "run", "docker.sock"));
+        _env.FileContents[U(ConfigDir, "config.json")] = "{\"currentContext\":\"default\"}";
+        _env.Files.Add(U(_env.HomeDirectory, ".docker", "run", "docker.sock"));
 
         var endpoint = DockerEndpointResolver.Resolve(_env);
 
-        endpoint.SocketPath.Should().Be(Path.Combine(_env.HomeDirectory, ".docker", "run", "docker.sock"));
+        endpoint.SocketPath.Should().Be(U(_env.HomeDirectory, ".docker", "run", "docker.sock"));
     }
 
     [Fact]
@@ -165,7 +165,7 @@ public class DockerEndpointResolverTests
     [Fact]
     public void Resolve_InvalidConfigJson_IsIgnored()
     {
-        _env.FileContents[Path.Combine(ConfigDir, "config.json")] = "{ not json";
+        _env.FileContents[U(ConfigDir, "config.json")] = "{ not json";
         _env.Files.Add("/var/run/docker.sock");
 
         var endpoint = DockerEndpointResolver.Resolve(_env);
@@ -177,17 +177,17 @@ public class DockerEndpointResolverTests
     public void Resolve_ProbesWellKnownSocketsInOrder()
     {
         _env.Variables["XDG_RUNTIME_DIR"] = "/run/user/1000";
-        _env.Files.Add(Path.Combine(_env.HomeDirectory, ".orbstack", "run", "docker.sock"));
+        _env.Files.Add(U(_env.HomeDirectory, ".orbstack", "run", "docker.sock"));
         _env.Files.Add("/run/podman/podman.sock");
 
         var endpoint = DockerEndpointResolver.Resolve(_env);
 
-        endpoint.SocketPath.Should().Be(Path.Combine(_env.HomeDirectory, ".orbstack", "run", "docker.sock"));
+        endpoint.SocketPath.Should().Be(U(_env.HomeDirectory, ".orbstack", "run", "docker.sock"));
         endpoint.Source.Should().StartWith("socket ");
         endpoint.SearchedPaths.Should().ContainInOrder(
             "/var/run/docker.sock",
-            Path.Combine("/run/user/1000", "docker.sock"),
-            Path.Combine(_env.HomeDirectory, ".docker", "run", "docker.sock"));
+            U("/run/user/1000", "docker.sock"),
+            U(_env.HomeDirectory, ".docker", "run", "docker.sock"));
     }
 
     [Fact]
@@ -198,18 +198,18 @@ public class DockerEndpointResolverTests
 
         var endpoint = DockerEndpointResolver.Resolve(_env);
 
-        endpoint.SocketPath.Should().Be(Path.Combine("/run/user/1000", "docker.sock"));
+        endpoint.SocketPath.Should().Be(U("/run/user/1000", "docker.sock"));
     }
 
     [Fact]
     public void Resolve_PodmanSocket_IsFound()
     {
         _env.Variables["XDG_RUNTIME_DIR"] = "/run/user/1000";
-        _env.Files.Add(Path.Combine("/run/user/1000", "podman", "podman.sock"));
+        _env.Files.Add(U("/run/user/1000", "podman", "podman.sock"));
 
         var endpoint = DockerEndpointResolver.Resolve(_env);
 
-        endpoint.SocketPath.Should().Be(Path.Combine("/run/user/1000", "podman", "podman.sock"));
+        endpoint.SocketPath.Should().Be(U("/run/user/1000", "podman", "podman.sock"));
     }
 
     [Fact]
@@ -220,7 +220,7 @@ public class DockerEndpointResolverTests
         endpoint.Uri.Should().Be(new Uri("unix:///var/run/docker.sock"));
         endpoint.Source.Should().Contain("no Docker socket found");
         endpoint.SearchedPaths.Should().Contain("/var/run/docker.sock");
-        endpoint.SearchedPaths.Should().Contain(Path.Combine(_env.HomeDirectory, ".colima", "default", "docker.sock"));
+        endpoint.SearchedPaths.Should().Contain(U(_env.HomeDirectory, ".colima", "default", "docker.sock"));
         endpoint.SearchedPaths.Should().Contain("/run/podman/podman.sock");
     }
 
@@ -291,4 +291,7 @@ public class DockerEndpointResolverTests
         endpoint.Should().NotBeNull();
         endpoint.Source.Should().NotBeNullOrEmpty();
     }
+
+    /// <summary>Joins Unix path segments with '/', independent of the host that runs the tests.</summary>
+    private static string U(params string[] parts) => string.Join("/", parts.Select((p, i) => i == 0 ? p.TrimEnd('/') : p.Trim('/')));
 }

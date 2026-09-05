@@ -38,6 +38,7 @@ public class DockerContainerManagerTests : IDisposable
         _mockExec = new Mock<IExecOperations>();
         _mockLogger = new Mock<ILogger<DockerContainerManager>>();
         _environment = new FakeDockerHostEnvironment();
+        _environment.Files.Add(TestEndpoint.SocketPath!); // the socket is on disk unless a test says otherwise
 
         _mockDockerClient.Setup(x => x.Containers).Returns(_mockContainers.Object);
         _mockDockerClient.Setup(x => x.Images).Returns(_mockImages.Object);
@@ -1022,8 +1023,8 @@ public class DockerContainerManagerTests : IDisposable
 
         result.IsAvailable.Should().BeTrue();
         result.Version.Should().Be("24.0.6");
-        result.Platform.Should().StartWith("linux/x86_64");
-        result.Platform.Should().Contain("unix:///var/run/docker.sock");
+        result.Platform.Should().Be("linux/x86_64");
+        result.Endpoint.Should().Contain("unix:///var/run/docker.sock").And.Contain("test socket");
         result.ErrorType.Should().BeNull();
         result.ErrorMessage.Should().BeNull();
         _manager.DaemonOSType.Should().Be("linux");
@@ -1199,6 +1200,78 @@ public class DockerContainerManagerTests : IDisposable
         await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
+    [Fact]
+    public async Task GetDockerStatusAsync_ConnectionRefusedButSocketMissing_ReportsNotInstalled()
+    {
+        // Windows reports a missing AF_UNIX path as a refused connection; the socket not being on disk wins.
+        _environment.Files.Remove(TestEndpoint.SocketPath!);
+        _mockSystem
+            .Setup(x => x.PingAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("send failed", new SocketException((int)SocketError.ConnectionRefused)));
+
+        var result = await _manager.GetDockerStatusAsync();
+
+        result.ErrorType.Should().Be(DockerErrorType.NotInstalled);
+        result.ErrorMessage.Should().Contain("/home/tester/.docker/run/docker.sock");
+    }
+
+    [Fact]
+    public async Task GetDockerStatusAsync_UnrecognisedTransportFailureWithSocketMissing_ReportsNotInstalled()
+    {
+        _environment.Files.Remove(TestEndpoint.SocketPath!);
+        _mockSystem
+            .Setup(x => x.PingAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("send failed", new IOException("transport closed")));
+
+        var result = await _manager.GetDockerStatusAsync();
+
+        result.ErrorType.Should().Be(DockerErrorType.NotInstalled);
+        result.ErrorMessage.Should().Contain("unix:///var/run/docker.sock");
+    }
+
+    [Fact]
+    public async Task GetDockerStatusAsync_UnrecognisedTransportFailureWithSocketPresent_ReportsUnknownWithCause()
+    {
+        _mockSystem
+            .Setup(x => x.PingAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("send failed", new IOException("transport closed")));
+
+        var result = await _manager.GetDockerStatusAsync();
+
+        result.ErrorType.Should().Be(DockerErrorType.Unknown);
+        result.ErrorMessage.Should().Contain("IOException").And.Contain("transport closed");
+    }
+
+    [Fact]
+    public async Task GetDockerStatusAsync_UnknownErrorWithSocketMissing_StaysUnknown()
+    {
+        _environment.Files.Remove(TestEndpoint.SocketPath!);
+        _mockSystem
+            .Setup(x => x.PingAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Something went wrong"));
+
+        var result = await _manager.GetDockerStatusAsync();
+
+        result.ErrorType.Should().Be(DockerErrorType.Unknown);
+        result.ErrorMessage.Should().Contain("Something went wrong");
+    }
+
+    [Fact]
+    public async Task GetDockerStatusAsync_SocketPathTooLong_ExplainsTheLimit()
+    {
+        var path = "/tmp/" + new string('a', 100) + ".sock";
+        var endpoint = new DockerEndpoint(new Uri("unix://" + path), "DOCKER_HOST environment variable");
+        await using var manager = new DockerContainerManager(_mockDockerClient.Object, _mockLogger.Object, _environment, endpoint);
+        _mockSystem
+            .Setup(x => x.PingAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("send failed", new ArgumentOutOfRangeException("path")));
+
+        var result = await manager.GetDockerStatusAsync();
+
+        result.ErrorType.Should().Be(DockerErrorType.Unknown);
+        result.ErrorMessage.Should().Contain(path).And.Contain("91 bytes");
+    }
+
     #endregion
 
     #region Real endpoint tests
@@ -1206,15 +1279,18 @@ public class DockerContainerManagerTests : IDisposable
     [Fact]
     public async Task GetDockerStatusAsync_AgainstMissingSocket_ReportsNotInstalledNamingSocket()
     {
-        var socket = Path.Combine(Path.GetTempPath(), $"pdk-missing-{Guid.NewGuid():N}.sock");
+        // Keep the path short: the Docker client rejects Unix socket paths longer than 91 bytes and macOS
+        // temp directories are already about 50 characters long.
+        var socket = Path.Combine(Path.GetTempPath(), $"pdk-{Guid.NewGuid():N}"[..12] + ".sock");
         var endpoint = new DockerEndpoint(new Uri("unix://" + socket), "test") { SearchedPaths = new[] { socket } };
         await using var manager = new DockerContainerManager(endpoint) { PingTimeout = TimeSpan.FromSeconds(5) };
 
         var status = await manager.GetDockerStatusAsync();
 
         status.IsAvailable.Should().BeFalse();
-        status.ErrorType.Should().BeOneOf(DockerErrorType.NotInstalled, DockerErrorType.NotRunning);
-        status.ErrorMessage.Should().Contain(socket);
+        status.ErrorType.Should().Be(DockerErrorType.NotInstalled, "the socket file does not exist");
+        status.ErrorMessage.Should().Contain(socket, "the searched socket path is named as given");
+        status.Endpoint.Should().Contain("test");
         manager.Endpoint.Should().Be(endpoint);
     }
 

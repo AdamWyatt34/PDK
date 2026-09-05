@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Net.Sockets;
+using System.Text;
 using Docker.DotNet;
 using PDK.Core.Docker;
 
@@ -11,6 +12,12 @@ namespace PDK.Runners.Docker;
 /// </summary>
 internal static class DockerErrorClassifier
 {
+    /// <summary>
+    /// The longest Unix socket path the Docker client can address: <c>sun_path</c> minus the terminator on
+    /// the most restrictive platform the client supports.
+    /// </summary>
+    internal const int MaxUnixSocketPathLength = 91;
+
     private const int LinuxNoSuchFile = 2;
     private const int LinuxPermissionDenied = 13;
     private const int LinuxConnectionRefused = 111;
@@ -24,35 +31,39 @@ internal static class DockerErrorClassifier
     /// </summary>
     /// <param name="exception">The exception thrown by the Docker client.</param>
     /// <param name="endpoint">The endpoint that was contacted.</param>
+    /// <param name="environment">The host environment, used to check whether a local socket exists.</param>
     /// <returns>The error category and a user-facing message.</returns>
-    public static (DockerErrorType Type, string Message) Classify(Exception exception, DockerEndpoint endpoint)
+    public static (DockerErrorType Type, string Message) Classify(
+        Exception exception,
+        DockerEndpoint endpoint,
+        IDockerHostEnvironment environment)
     {
         ArgumentNullException.ThrowIfNull(exception);
         ArgumentNullException.ThrowIfNull(endpoint);
+        ArgumentNullException.ThrowIfNull(environment);
+
+        // Whether a local socket is on disk decides between "not installed" and "not running" where the
+        // socket stack alone cannot: Windows reports a missing AF_UNIX path as a refused connection, and
+        // each platform surfaces ENOENT through a different exception type.
+        var socketMissing = LocalSocketIsMissing(endpoint, environment);
 
         foreach (var current in Flatten(exception))
         {
             switch (current)
             {
                 case SocketException socket:
-                    if (IsConnectionRefused(socket))
-                    {
-                        return (DockerErrorType.NotRunning, NotRunningMessage(endpoint, "connection refused"));
-                    }
-
-                    if (IsNotFound(socket))
-                    {
-                        return endpoint.IsLocal
-                            ? (DockerErrorType.NotInstalled, NotFoundMessage(endpoint))
-                            : (DockerErrorType.NotRunning, NotRunningMessage(endpoint, socket.Message));
-                    }
-
                     if (IsAccessDenied(socket))
                     {
                         return (DockerErrorType.PermissionDenied, PermissionMessage(endpoint));
                     }
 
-                    return (DockerErrorType.NotRunning, NotRunningMessage(endpoint, socket.Message));
+                    if (socketMissing || (IsNotFound(socket) && endpoint.IsLocal))
+                    {
+                        return (DockerErrorType.NotInstalled, NotFoundMessage(endpoint));
+                    }
+
+                    return (DockerErrorType.NotRunning,
+                        NotRunningMessage(endpoint, IsConnectionRefused(socket) ? "connection refused" : socket.Message));
 
                 case FileNotFoundException:
                 case DirectoryNotFoundException:
@@ -73,6 +84,9 @@ internal static class DockerErrorClassifier
                 case DockerApiException api:
                     return (DockerErrorType.Unknown,
                         $"Docker daemon at {endpoint.Uri} returned an error ({(int)api.StatusCode}): {api.Message}");
+
+                case ArgumentException when SocketPathTooLong(endpoint):
+                    return (DockerErrorType.Unknown, SocketPathTooLongMessage(endpoint));
             }
         }
 
@@ -80,7 +94,9 @@ internal static class DockerErrorClassifier
 
         if (ContainsAny(text, "Connection refused", "No connection could be made", "actively refused"))
         {
-            return (DockerErrorType.NotRunning, NotRunningMessage(endpoint, "connection refused"));
+            return socketMissing
+                ? (DockerErrorType.NotInstalled, NotFoundMessage(endpoint))
+                : (DockerErrorType.NotRunning, NotRunningMessage(endpoint, "connection refused"));
         }
 
         if (ContainsAny(text, "No such file or directory", "cannot find the file", "could not find", "not found", "does not exist"))
@@ -93,8 +109,33 @@ internal static class DockerErrorClassifier
             return (DockerErrorType.PermissionDenied, PermissionMessage(endpoint));
         }
 
-        return (DockerErrorType.Unknown,
-            $"Unknown error checking Docker availability at {endpoint.Uri}: {exception.Message}");
+        // The connection attempt failed for a reason this platform's socket stack reports in a way not
+        // recognised above; a socket that is not on disk is still the most useful thing to report.
+        if (socketMissing && IsTransportFailure(exception))
+        {
+            return (DockerErrorType.NotInstalled, NotFoundMessage(endpoint));
+        }
+
+        var chain = string.Join(" -> ", Flatten(exception).Select(e => $"{e.GetType().Name}: {e.Message}"));
+        return (DockerErrorType.Unknown, $"Unknown error checking Docker availability at {endpoint.Uri}: {chain}");
+    }
+
+    private static bool LocalSocketIsMissing(DockerEndpoint endpoint, IDockerHostEnvironment environment)
+    {
+        return endpoint.SocketPath is { Length: > 0 } path
+               && !environment.FileExists(path)
+               && !environment.DirectoryExists(path);
+    }
+
+    private static bool SocketPathTooLong(DockerEndpoint endpoint)
+    {
+        return endpoint.SocketPath is { Length: > 0 } path
+               && Encoding.UTF8.GetByteCount(path) > MaxUnixSocketPathLength;
+    }
+
+    private static bool IsTransportFailure(Exception exception)
+    {
+        return Flatten(exception).Any(e => e is HttpRequestException or IOException or Win32Exception);
     }
 
     private static IEnumerable<Exception> Flatten(Exception exception)
@@ -174,5 +215,13 @@ internal static class DockerErrorClassifier
         return $"Permission denied accessing Docker at {endpoint.Uri} ({endpoint.Source}). " +
                "On Linux add your user to the docker group ('sudo usermod -aG docker $USER', then log out and back in); " +
                "on Windows make sure Docker Desktop is running for your user.";
+    }
+
+    private static string SocketPathTooLongMessage(DockerEndpoint endpoint)
+    {
+        var path = endpoint.SocketPath ?? string.Empty;
+        return $"The Docker socket path {path} ({endpoint.Source}) is {Encoding.UTF8.GetByteCount(path)} bytes long, " +
+               $"but Unix socket paths are limited to {MaxUnixSocketPathLength} bytes. " +
+               "Point DOCKER_HOST or your Docker context at a shorter path (for example a symlink such as /var/run/docker.sock).";
     }
 }

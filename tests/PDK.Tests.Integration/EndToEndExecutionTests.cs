@@ -277,12 +277,17 @@ public class EndToEndExecutionTests : IDisposable
                 workspacePath);
 
             // Assert
-            // PowerShell might not be available in buildpack-deps images
-            if (!result.Success && result.ErrorMessage != null &&
-                result.ErrorMessage.Contains("PowerShell") && result.ErrorMessage.Contains("not available"))
+            // PowerShell might not be available in buildpack-deps images: the step then fails with a
+            // message that names the missing shell and how to get it (executors never throw)
+            var unavailable = result.StepResults.FirstOrDefault(s =>
+                !s.Success &&
+                (s.ErrorOutput + s.Output).Contains("PowerShell", StringComparison.OrdinalIgnoreCase) &&
+                ((s.ErrorOutput + s.Output).Contains("not available", StringComparison.OrdinalIgnoreCase) ||
+                 (s.ErrorOutput + s.Output).Contains("not found", StringComparison.OrdinalIgnoreCase) ||
+                 (s.ErrorOutput + s.Output).Contains("Install PowerShell", StringComparison.OrdinalIgnoreCase)));
+            if (!result.Success && unavailable != null)
             {
-                _logger?.LogWarning("PowerShell not available in container - test passes as this is properly detected");
-                // This is acceptable - test passes as PowerShell unavailability is properly detected
+                _logger?.LogWarning("PowerShell not available in container - test passes as this is properly detected: {Message}", unavailable.ErrorOutput);
                 return;
             }
 
@@ -314,7 +319,7 @@ public class EndToEndExecutionTests : IDisposable
     [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
-    public async Task EndToEnd_FailingStep_StopsExecution()
+    public async Task EndToEnd_FailingStep_SkipsRemainingSteps()
     {
         // Arrange
 
@@ -331,7 +336,9 @@ public class EndToEndExecutionTests : IDisposable
 
             // Assert
             result.Success.Should().BeFalse("job should fail");
-            result.StepResults.Should().HaveCount(2, "only first 2 steps should execute");
+            result.StepResults.Should().HaveCount(3, "every step is accounted for");
+            result.StepResults[2].Skipped.Should().BeTrue("the step after the failure must not execute");
+            result.StepResults[2].Output.Should().NotContain("Step 3 - This should NOT execute");
 
             // First step should succeed
             result.StepResults[0].Success.Should().BeTrue("first step should succeed");

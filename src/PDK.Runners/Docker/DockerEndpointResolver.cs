@@ -80,6 +80,44 @@ public static class DockerEndpointResolver
     }
 
     /// <summary>
+    /// Joins path segments for the target host: Windows hosts use the platform separator, every other host
+    /// uses '/', so Unix socket and config paths stay valid no matter where PDK itself runs.
+    /// </summary>
+    /// <param name="environment">The host environment.</param>
+    /// <param name="parts">The path segments.</param>
+    /// <returns>The joined path.</returns>
+    public static string Join(IDockerHostEnvironment environment, params string[] parts)
+    {
+        ArgumentNullException.ThrowIfNull(environment);
+        ArgumentNullException.ThrowIfNull(parts);
+
+        if (environment.IsWindows)
+        {
+            return Path.Combine(parts);
+        }
+
+        var builder = new StringBuilder();
+        foreach (var part in parts)
+        {
+            if (string.IsNullOrEmpty(part))
+            {
+                continue;
+            }
+
+            if (builder.Length == 0)
+            {
+                builder.Append(part.TrimEnd('/'));
+            }
+            else
+            {
+                builder.Append('/').Append(part.Trim('/'));
+            }
+        }
+
+        return builder.Length == 0 ? string.Empty : builder.ToString();
+    }
+
+    /// <summary>
     /// Gets the socket locations that are probed, in order, on Unix-like hosts.
     /// </summary>
     /// <param name="environment">The host environment.</param>
@@ -94,20 +132,20 @@ public static class DockerEndpointResolver
 
         if (!string.IsNullOrWhiteSpace(runtimeDir))
         {
-            candidates.Add(Path.Combine(runtimeDir, "docker.sock"));
+            candidates.Add(Join(environment, runtimeDir, "docker.sock"));
         }
 
-        candidates.Add(Path.Combine(home, ".docker", "run", "docker.sock"));      // Docker Desktop (macOS)
-        candidates.Add(Path.Combine(home, ".docker", "desktop", "docker.sock"));  // Docker Desktop (Linux)
-        candidates.Add(Path.Combine(home, ".colima", "default", "docker.sock"));  // Colima
-        candidates.Add(Path.Combine(home, ".colima", "docker.sock"));
-        candidates.Add(Path.Combine(home, ".orbstack", "run", "docker.sock"));    // OrbStack
-        candidates.Add(Path.Combine(home, ".rd", "docker.sock"));                 // Rancher Desktop
-        candidates.Add(Path.Combine(home, ".lima", "default", "sock", "docker.sock")); // Lima
+        candidates.Add(Join(environment, home, ".docker", "run", "docker.sock"));      // Docker Desktop (macOS)
+        candidates.Add(Join(environment, home, ".docker", "desktop", "docker.sock"));  // Docker Desktop (Linux)
+        candidates.Add(Join(environment, home, ".colima", "default", "docker.sock"));  // Colima
+        candidates.Add(Join(environment, home, ".colima", "docker.sock"));
+        candidates.Add(Join(environment, home, ".orbstack", "run", "docker.sock"));    // OrbStack
+        candidates.Add(Join(environment, home, ".rd", "docker.sock"));                 // Rancher Desktop
+        candidates.Add(Join(environment, home, ".lima", "default", "sock", "docker.sock")); // Lima
 
         if (!string.IsNullOrWhiteSpace(runtimeDir))
         {
-            candidates.Add(Path.Combine(runtimeDir, "podman", "podman.sock"));    // rootless Podman
+            candidates.Add(Join(environment, runtimeDir, "podman", "podman.sock"));    // rootless Podman
         }
 
         candidates.Add("/run/podman/podman.sock");                                 // Podman (root)
@@ -234,13 +272,13 @@ public static class DockerEndpointResolver
         var configDir = environment.GetEnvironmentVariable("DOCKER_CONFIG");
         if (string.IsNullOrWhiteSpace(configDir))
         {
-            configDir = Path.Combine(environment.HomeDirectory, ".docker");
+            configDir = Join(environment, environment.HomeDirectory, ".docker");
         }
 
         var contextName = environment.GetEnvironmentVariable("DOCKER_CONTEXT");
         if (string.IsNullOrWhiteSpace(contextName))
         {
-            var configPath = Path.Combine(configDir, "config.json");
+            var configPath = Join(environment, configDir, "config.json");
             if (environment.FileExists(configPath))
             {
                 try
@@ -266,7 +304,7 @@ public static class DockerEndpointResolver
             return null;
         }
 
-        var metaPath = Path.Combine(configDir, "contexts", "meta", GetContextDirectoryName(contextName), "meta.json");
+        var metaPath = Join(environment, configDir, "contexts", "meta", GetContextDirectoryName(contextName), "meta.json");
         if (!environment.FileExists(metaPath))
         {
             searched.Add($"{metaPath} (context '{contextName}' metadata not found)");

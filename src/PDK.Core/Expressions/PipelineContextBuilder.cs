@@ -181,6 +181,13 @@ public static class PipelineContextBuilder
             env[k] = v;
         }
 
+        // Job-level variables (Azure pipeline/stage/job variables are merged into Job.Variables by the
+        // parser); exported here for every provider so a job run without its pipeline keeps them
+        foreach (var (k, v) in job.Variables)
+        {
+            env[k] = v;
+        }
+
         if (SyntaxFor(info.Provider) == ExpressionSyntax.Azure)
         {
             var git = info.Git;

@@ -157,10 +157,10 @@ internal sealed class DockerConfigAuthProvider : IDockerRegistryAuthProvider
         var configDir = _environment.GetEnvironmentVariable("DOCKER_CONFIG");
         if (string.IsNullOrWhiteSpace(configDir))
         {
-            configDir = Path.Combine(_environment.HomeDirectory, ".docker");
+            configDir = DockerEndpointResolver.Join(_environment, _environment.HomeDirectory, ".docker");
         }
 
-        return Path.Combine(configDir, "config.json");
+        return DockerEndpointResolver.Join(_environment, configDir, "config.json");
     }
 
     private static bool IsDockerHub(string registryHost)

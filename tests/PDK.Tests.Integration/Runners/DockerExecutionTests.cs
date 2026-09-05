@@ -477,7 +477,7 @@ INVALID_INSTRUCTION
     [DockerFact]
     [Trait("Category", "Integration")]
     [Trait("Category", "RequiresDocker")]
-    public async Task DockerNotInstalled_ThrowsToolNotFoundException()
+    public async Task DockerNotInstalled_ReturnsFailedStep()
     {
         // Arrange - Use Alpine image without Docker CLI
         await _containerManager.PullImageIfNeededAsync("alpine:latest");
@@ -517,10 +517,12 @@ INVALID_INSTRUCTION
             }
         };
 
-        // Act & Assert
-        await executor.Invoking(e => e.ExecuteAsync(step, context))
-            .Should().ThrowAsync<ToolNotFoundException>()
-            .WithMessage("*docker*not found*");
+        // Act
+        var result = await executor.ExecuteAsync(step, context);
+
+        // Assert: executors report a missing tool as a failed step (so continue-on-error applies) instead of throwing
+        result.Success.Should().BeFalse();
+        result.ErrorOutput.Should().ContainEquivalentOf("docker").And.ContainEquivalentOf("not found");
     }
 
     #endregion
