@@ -113,7 +113,7 @@ pdk version --full
 Expected output from `pdk version --full` (abridged):
 
 ```
-PDK v1.0.0+b45694f80797763319dacabc938a359187fcce92
+PDK v2.0.0+b45694f80797763319dacabc938a359187fcce92
 .NET Runtime: .NET 8.0.30
 OS: Windows 11 (x64)
 Commit: b45694f
