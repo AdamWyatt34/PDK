@@ -31,7 +31,7 @@ pdk version
 ```
 
 ```
-PDK v1.0.0+b45694f80797763319dacabc938a359187fcce92
+PDK v2.0.0+b45694f80797763319dacabc938a359187fcce92
 .NET Runtime: .NET 8.0.30
 OS: Ubuntu 24.04.4 LTS (x64)
 Commit: b45694f
@@ -47,7 +47,7 @@ pdk version --full
 ```
 
 ```
-PDK v1.0.0+b45694f80797763319dacabc938a359187fcce92
+PDK v2.0.0+b45694f80797763319dacabc938a359187fcce92
 .NET Runtime: .NET 8.0.30
 OS: Ubuntu 24.04.4 LTS (x64)
 Commit: b45694f
@@ -89,8 +89,8 @@ pdk version --full --format Json
 ```json
 {
   "pdk": {
-    "version": "1.0.0.0",
-    "informationalVersion": "1.0.0+b45694f80797763319dacabc938a359187fcce92",
+    "version": "2.0.0.0",
+    "informationalVersion": "2.0.0+b45694f80797763319dacabc938a359187fcce92",
     "commitHash": "b45694f80797763319dacabc938a359187fcce92"
   },
   "runtime": {
@@ -105,8 +105,9 @@ pdk version --full --format Json
     "platform": "linux"
   },
   "providers": [
-    { "name": "GitHubActions", "version": "1.0.0", "available": true },
-    { "name": "AzureDevOps", "version": "1.0.0", "available": true }
+    { "name": "GitHubActions", "version": "2.0.0.0", "available": true },
+    { "name": "AzureDevOps", "version": "2.0.0.0", "available": true },
+    { "name": "GitLabCi", "version": "2.0.0.0", "available": true }
   ],
   "executors": [
     { "name": "Checkout", "stepType": "checkout" },
@@ -166,8 +167,8 @@ retried next time). If a newer version is available a panel is shown:
 
 ```
 Update Available
-Current:  1.0.0
-Latest:   1.1.0
+Current:  2.0.0
+Latest:   2.1.0
 
 Update with:
   dotnet tool update -g pdk

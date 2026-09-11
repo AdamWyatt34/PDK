@@ -6,6 +6,8 @@
       href: getting-started.md
     - name: Installation
       href: installation.md
+    - name: Upgrading to 2.0
+      href: upgrading-to-2.0.md
 - name: Commands
   items:
     - name: Overview

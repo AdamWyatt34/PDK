@@ -42,7 +42,7 @@ pdk --version
 You should see the version, for example:
 
 ```
-1.0.0+b45694f80797763319dacabc938a359187fcce92
+2.0.0+b45694f80797763319dacabc938a359187fcce92
 ```
 
 For detailed installation instructions including troubleshooting, see the [Installation Guide](installation.md).

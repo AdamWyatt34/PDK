@@ -43,6 +43,9 @@ dotnet pack src/PDK.CLI -c Release -o ./artifacts
 dotnet tool install --global --add-source ./artifacts pdk
 ```
 
+Upgrading from 1.x? See [docs/upgrading-to-2.0.md](docs/upgrading-to-2.0.md) - exit codes, step
+filtering, host environment variables and the secret store all changed.
+
 ### Usage
 
 ```bash

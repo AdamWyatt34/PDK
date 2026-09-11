@@ -14,6 +14,7 @@ PDK (Pipeline Development Kit) is a command-line tool that lets you run CI/CD pi
 ### Getting Started
 - [Quick Start Guide](getting-started.md) - Run your first pipeline in under 5 minutes
 - [Installation](installation.md) - Detailed installation instructions
+- [Upgrading to 2.0](upgrading-to-2.0.md) - What changed since 1.x and what to do about it
 
 ### Reference
 - [Command Reference](commands/README.md) - All PDK commands and options

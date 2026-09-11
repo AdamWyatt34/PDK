@@ -71,7 +71,7 @@ File: /work/.github/workflows/ci.yml
 Provider: GitHub
 
 Variables:
-  PDK_VERSION: 1.0.0
+  PDK_VERSION: 2.0.0
   PDK_WORKSPACE: /work
   ... and 6 more
 
@@ -152,7 +152,7 @@ pdk run --dry-run-json report.json
       }
     ],
     "variables": {
-      "PDK_VERSION": "1.0.0",
+      "PDK_VERSION": "2.0.0",
       "API_TOKEN": "***MASKED***"
     }
   },
