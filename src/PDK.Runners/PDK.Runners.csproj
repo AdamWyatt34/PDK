@@ -14,6 +14,9 @@
     <PackageReference Include="CliWrap" />
     <PackageReference Include="Docker.DotNet" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Serilog.Formatting.Compact" />
+    <PackageReference Include="Serilog.Sinks.Console" />
+    <PackageReference Include="Serilog.Sinks.File" />
     <PackageReference Include="SharpZipLib" />
   </ItemGroup>
 
